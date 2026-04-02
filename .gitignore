@@ -1,0 +1,57 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+
+# ── Node ──
+node_modules/
+frontend/dist/
+
+# ── Environment & Secrets ──
+.env
+backend/.env
+
+# ── Forensic Data (case-specific, NEVER commit) ──
+backend/.active_case.json
+backend/.mcp_events.jsonl
+backend/extracted/
+audit_log.jsonl
+*.mfdb
+*.raw
+*.vmem
+*.e01
+*.E01
+*.pcap
+*.pcapng
+
+# ── Analysis Results (local only) ──
+i30_results.txt
+pagefile_results.txt
+*_results.txt
+backend/core/report_*.html
+backend/core/masking_map.json
+
+# ── Claude Code (local session data) ──
+.claude/settings.local.json
+.claude/projects/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# ── OS ──
+Thumbs.db
+Desktop.ini
+
+# ── Build artifacts ──
+skills-lock.json

@@ -1,0 +1,103 @@
+import { useEffect, useRef, useState } from 'react';
+import { post } from '../hooks/useApi';
+import { useStore } from '../hooks/useStore';
+
+export default function TimelineView() {
+  const { caseInfo } = useStore();
+  const [entries, setEntries] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [filter, setFilter] = useState('');
+  const [limit] = useState(500);
+  const didAutoLoad = useRef(false);
+
+  const load = async (start?: string, end?: string) => {
+    setLoading(true);
+    try {
+      const data = await post('/api/timeline', {
+        start_date: start ?? startDate, end_date: end ?? endDate, limit,
+      });
+      setEntries(data.entries || []);
+      setTotal(data.total_events || 0);
+    } catch {} finally { setLoading(false); }
+  };
+
+  // Auto-load timeline using case date range on first mount
+  useEffect(() => {
+    if (didAutoLoad.current) return;
+    didAutoLoad.current = true;
+    const start = caseInfo?.date_range_start ? caseInfo.date_range_start.slice(0, 10) : '';
+    const end = caseInfo?.date_range_end ? caseInfo.date_range_end.slice(0, 10) : '';
+    if (start) setStartDate(start);
+    if (end) setEndDate(end);
+    load(start, end);
+  }, []);
+
+  const filtered = filter
+    ? entries.filter(e =>
+        (e.description || '').toLowerCase().includes(filter.toLowerCase()) ||
+        (e.artifact_type || '').toLowerCase().includes(filter.toLowerCase()))
+    : entries;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Controls */}
+      <div style={{
+        padding: '10px 16px', display: 'flex', gap: 8, borderBottom: '1px solid var(--border)',
+        background: 'var(--surface)', alignItems: 'center', flexWrap: 'wrap',
+      }}>
+        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>From</label>
+        <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+          style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
+        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>To</label>
+        <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+          style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
+        <button className="btn btn-primary btn-sm" onClick={() => load()} disabled={loading}>
+          {loading ? 'Loading...' : 'Load Timeline'}
+        </button>
+        <div style={{ flex: 1 }} />
+        <input type="text" placeholder="Filter events..." value={filter} onChange={e => setFilter(e.target.value)}
+          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12, width: 200 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+          {filtered.length}/{total} events
+        </span>
+      </div>
+
+      {/* Timeline list */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {filtered.length === 0 && !loading && (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
+            {entries.length === 0 ? 'No timeline events found. Adjust the date range and try again.' : 'No events match the filter.'}
+          </div>
+        )}
+        {loading && (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
+            <div style={{ width: 20, height: 20, border: '3px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
+            Building timeline...
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        )}
+        {filtered.map((e, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '150px 180px 1fr', gap: 8,
+            padding: '6px 16px', borderBottom: '1px solid var(--border-light)',
+            fontSize: 12, alignItems: 'start',
+          }}>
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+              {(e.timestamp || '').substring(0, 23)}
+            </span>
+            <span style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 11 }}>
+              {e.artifact_type}
+            </span>
+            <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={e.description}>
+              {e.description}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
