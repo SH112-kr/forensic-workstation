@@ -3,7 +3,7 @@ import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
 export default function Dashboard() {
-  const { caseInfo, detection, mitre, detectionLoading, setDetection, setDetectionLoading, setActiveView, setLastAction } = useStore();
+  const { caseInfo, detection, mitre, detectionLoading, setDetection, setDetectionLoading, setActiveView, setLastAction, kapeDiagnostics, setKapeDiagnostics } = useStore();
   const [topTypes, setTopTypes] = useState<any[]>([]);
 
   useEffect(() => {
@@ -51,6 +51,73 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      {/* KAPE Diagnostics Banner */}
+      {kapeDiagnostics && kapeDiagnostics.modules_failed > 0 && (
+        <div style={{
+          padding: '14px 18px', borderRadius: 10, marginBottom: 16,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{ fontSize: 16 }}>{'\u26A0'}</span>
+            <span style={{ fontWeight: 700, fontSize: 13, color: '#f59e0b' }}>
+              KAPE Parsing Incomplete — {kapeDiagnostics.modules_failed} module{kapeDiagnostics.modules_failed > 1 ? 's' : ''} failed
+            </span>
+            <div style={{ flex: 1 }} />
+            <span onClick={() => setKapeDiagnostics(null)}
+              style={{ cursor: 'pointer', color: 'var(--text-dim)', fontSize: 18, lineHeight: 1 }}>{'\u00D7'}</span>
+          </div>
+
+          {/* Failed modules grouped by reason */}
+          {kapeDiagnostics.dotnet_errors > 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>.NET runtimeconfig missing:</span>{' '}
+              {[...new Set((kapeDiagnostics.failed_modules || [])
+                .filter((m: any) => m.reason?.includes('runtimeconfig'))
+                .map((m: any) => m.module))]
+                .join(', ') || `${kapeDiagnostics.dotnet_errors} modules`}
+            </div>
+          )}
+
+          {kapeDiagnostics.missing_modules?.length > 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
+              <span style={{ color: '#ef4444', fontWeight: 600 }}>Missing modules:</span>{' '}
+              {kapeDiagnostics.missing_modules.join(', ')}
+            </div>
+          )}
+
+          {/* Loaded artifact types */}
+          {caseInfo && Object.keys(caseInfo.artifact_types || {}).length > 0 && (
+            <div style={{ fontSize: 12, marginBottom: 6 }}>
+              <span style={{ color: '#4ade80', fontWeight: 600 }}>Loaded:</span>{' '}
+              <span style={{ color: 'var(--text-dim)' }}>
+                {Object.entries(caseInfo.artifact_types)
+                  .map(([name, count]) => `${name} (${(count as number).toLocaleString()})`)
+                  .join(', ')}
+              </span>
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {kapeDiagnostics.recommendations?.map((r: string, i: number) => (
+            <div key={i} style={{
+              fontSize: 11, color: '#60a5fa', marginTop: 4,
+              padding: '4px 8px', borderRadius: 4, background: 'rgba(96,165,250,0.08)',
+            }}>
+              {r}
+            </div>
+          ))}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button onClick={() => setActiveView('settings')} style={{
+              padding: '5px 14px', borderRadius: 5, border: 'none', fontSize: 11,
+              background: '#f59e0b', color: '#000', fontWeight: 600, cursor: 'pointer',
+            }}>
+              Run KAPE Health Check
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Risk Banner */}
       {loading ? (
         <div style={{

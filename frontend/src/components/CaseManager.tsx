@@ -62,7 +62,7 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export default function CaseManager() {
-  const { setCaseInfo, setActiveView, setEvidenceDir } = useStore();
+  const { setCaseInfo, setActiveView, setEvidenceDir, setKapeDiagnostics } = useStore();
 
   // Tab: 'quick' (single file) or 'project'
   const [tab, setTab] = useState<'project' | 'quick'>('project');
@@ -201,6 +201,7 @@ export default function CaseManager() {
         try {
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
+          setKapeDiagnostics(caseData.kape_diagnostics || null);
           const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDir, source: 'project', totalHits: loaded.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
           setActiveView('dashboard');
@@ -262,6 +263,7 @@ export default function CaseManager() {
     try {
       const data = await post('/api/cases/open', { path: quickPath.trim() });
       setCaseInfo(data);
+      setKapeDiagnostics(data.kape_diagnostics || null);
       const src = quickPath.trim().endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
       saveRecent({ name: data.case_name || quickPath.trim().split(/[\\/]/).pop() || '', path: quickPath.trim(), source: src, totalHits: data.total_hits, openedAt: '' });
       setRecentCases(loadRecent());
@@ -285,6 +287,7 @@ export default function CaseManager() {
         if (loaded) {
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: rc.name || caseData.case_name });
+          setKapeDiagnostics(caseData.kape_diagnostics || null);
           saveRecent({ ...rc, totalHits: loaded.total_hits }); setRecentCases(loadRecent());
           setActiveView('dashboard');
         } else {
@@ -293,6 +296,7 @@ export default function CaseManager() {
       } else {
         const data = await post('/api/cases/open', { path: rc.path });
         setCaseInfo(data);
+        setKapeDiagnostics(data.kape_diagnostics || null);
         saveRecent({ ...rc, totalHits: data.total_hits }); setRecentCases(loadRecent());
         setActiveView('dashboard');
       }

@@ -40,6 +40,10 @@ interface AppState {
   evidenceDir: string;
   setEvidenceDir: (v: string) => void;
 
+  // KAPE diagnostics
+  kapeDiagnostics: any | null;
+  setKapeDiagnostics: (v: any | null) => void;
+
   // Copilot
   copilotOpen: boolean;
   toggleCopilot: () => void;
@@ -79,6 +83,9 @@ export const useStore = create<AppState>((set) => ({
 
   evidenceDir: '',
   setEvidenceDir: (v) => set({ evidenceDir: v }),
+
+  kapeDiagnostics: null,
+  setKapeDiagnostics: (v) => set({ kapeDiagnostics: v }),
 
   copilotOpen: false,
   toggleCopilot: () => set((s) => ({ copilotOpen: !s.copilotOpen })),

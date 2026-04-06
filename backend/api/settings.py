@@ -271,3 +271,78 @@ async def scan_and_save(req: ScanRequest):
         ],
         "tools": _check_tool_status(env),
     }
+
+
+# ── KAPE Health Check ──
+
+# EZ tools that require .NET runtimeconfig.json
+_EZ_TOOLS = [
+    "PECmd", "LECmd", "MFTECmd", "EvtxECmd", "SrumECmd",
+    "AmcacheParser", "AppCompatCacheParser", "SBECmd", "RECmd",
+    "RBCmd", "JLECmd", "WxTCmd", "SQLECmd", "SumECmd", "WxTCmd",
+]
+
+
+def _check_kape_health(kape_dir: str) -> list[dict]:
+    """Check EZ tools for missing runtimeconfig.json and auto-fix."""
+    bin_dir = os.path.join(kape_dir, "Modules", "bin")
+    if not os.path.isdir(bin_dir):
+        return []
+
+    results: list[dict] = []
+    for tool in _EZ_TOOLS:
+        dll = os.path.join(bin_dir, f"{tool}.dll")
+        if not os.path.isfile(dll):
+            continue
+
+        rc = os.path.join(bin_dir, f"{tool}.runtimeconfig.json")
+        if os.path.isfile(rc):
+            results.append({"tool": tool, "status": "ok", "detail": ""})
+            continue
+
+        # Search subdirectories for the runtimeconfig
+        matches = glob.glob(os.path.join(bin_dir, "**", f"{tool}.runtimeconfig.json"), recursive=True)
+        if matches:
+            try:
+                import shutil as _shutil
+                _shutil.copy2(matches[0], rc)
+                results.append({
+                    "tool": tool, "status": "fixed",
+                    "detail": f"Copied from {os.path.relpath(matches[0], bin_dir)}",
+                })
+            except OSError as e:
+                results.append({"tool": tool, "status": "fix_failed", "detail": str(e)})
+        else:
+            results.append({
+                "tool": tool, "status": "missing",
+                "detail": "runtimeconfig.json not found anywhere",
+            })
+
+    return results
+
+
+@router.post("/kape-health")
+async def kape_health():
+    """Check KAPE EZ tool health and auto-fix missing runtimeconfig.json files."""
+    from core.config import find_kape
+
+    kape = find_kape()
+    if not kape or not os.path.isfile(kape):
+        return {"error": "KAPE not found. Configure in Settings."}
+
+    kape_dir = os.path.dirname(kape)
+    tools = _check_kape_health(kape_dir)
+
+    summary = {
+        "ok": sum(1 for t in tools if t["status"] == "ok"),
+        "fixed": sum(1 for t in tools if t["status"] == "fixed"),
+        "missing": sum(1 for t in tools if t["status"] == "missing"),
+        "fix_failed": sum(1 for t in tools if t["status"] == "fix_failed"),
+    }
+
+    return {
+        "kape_dir": kape_dir,
+        "bin_dir": os.path.join(kape_dir, "Modules", "bin"),
+        "tools": tools,
+        "summary": summary,
+    }

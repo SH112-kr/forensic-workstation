@@ -18,6 +18,28 @@ async def open_case(req: OpenCaseRequest):
     from state import app_state
     try:
         result = app_state.open_axiom(req.path, req.case_name)
+
+        # For KAPE sources, attach diagnostics (loaded vs missing artifacts)
+        if result.get("source_type") == "kape":
+            try:
+                from core.kape_log_parser import get_diagnostics
+                diag = get_diagnostics(req.path)
+                if "error" not in diag:
+                    result["kape_diagnostics"] = {
+                        "modules_total": diag["summary"]["total"],
+                        "modules_success": diag["summary"]["success"],
+                        "modules_failed": diag["summary"]["failed"],
+                        "dotnet_errors": diag["summary"]["dotnet_errors"],
+                        "missing_modules": diag["missing_modules"],
+                        "failed_modules": [
+                            {"module": m["module"], "reason": m["errors"][0][:100] if m["errors"] else "unknown"}
+                            for m in diag["modules"] if m["status"].startswith("failed")
+                        ],
+                        "recommendations": diag.get("recommendations", []),
+                    }
+            except Exception:
+                pass
+
         return {"status": "success", **result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

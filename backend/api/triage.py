@@ -121,6 +121,47 @@ def _run_triage_background(req: TriageRequest, out_dir: str, collected_dir: str,
         })
         _triage_state["progress"].append({"time": time.time(), "msg": f"KAPE complete ({kape_duration}s)"})
 
+        # ── Phase 1.5: Console Log Diagnostics + SRUM Repair ──
+        try:
+            from core.kape_log_parser import get_diagnostics
+            diag = get_diagnostics(parsed_dir)
+            failed_mods = [m for m in diag.get("modules", []) if m["status"].startswith("failed")]
+            if failed_mods:
+                for fm in failed_mods[:5]:
+                    err_msg = fm["errors"][0][:80] if fm["errors"] else "unknown error"
+                    _triage_state["progress"].append({
+                        "time": time.time(),
+                        "msg": f"Module FAILED: {fm['module']} — {err_msg}",
+                    })
+            steps.append({"step": "log_diagnostics", "failed_modules": len(failed_mods)})
+        except Exception:
+            pass
+
+        try:
+            from core.srum_repair import find_srudb_in_collection, repair_and_parse_srum
+            import glob as _glob
+            srum_csvs = _glob.glob(os.path.join(parsed_dir, "**", "*SrumECmd*"), recursive=True)
+            if not srum_csvs:
+                srudbs = find_srudb_in_collection(collected_dir)
+                if srudbs:
+                    _triage_state["phase"] = "srum_repair"
+                    _triage_state["progress"].append({"time": time.time(), "msg": "Repairing dirty SRUM database..."})
+                    srum_out = os.path.join(parsed_dir, "SRUMDatabase")
+                    srum_result = repair_and_parse_srum(srudbs[0], srum_out)
+                    if srum_result.get("status") == "ok":
+                        _triage_state["progress"].append({
+                            "time": time.time(),
+                            "msg": f"SRUM parsed: {srum_result.get('total_records', 0):,} records",
+                        })
+                    else:
+                        _triage_state["progress"].append({
+                            "time": time.time(),
+                            "msg": f"SRUM repair: {srum_result.get('detail', 'failed')[:80]}",
+                        })
+                    steps.append({"step": "srum_repair", **srum_result})
+        except Exception:
+            pass
+
         # ── Phase 2: Open Case ──
         _triage_state["phase"] = "opening_case"
         _triage_state["progress"].append({"time": time.time(), "msg": "Loading parsed data..."})
@@ -443,3 +484,35 @@ async def stop_triage():
     _triage_state["phase"] = "stopped"
     _triage_state["progress"].append({"time": time.time(), "msg": "Triage stopped by user"})
     return {"status": "stop_requested"}
+
+
+@router.get("/diagnostics")
+async def triage_diagnostics(parsed_dir: str = ""):
+    """Parse KAPE console logs and report module failures."""
+    from core.kape_log_parser import get_diagnostics
+
+    target = parsed_dir or _triage_state.get("parsed_dir", "")
+    if not target:
+        return {"error": "No parsed directory specified. Run triage first or provide parsed_dir."}
+    return get_diagnostics(target)
+
+
+class SrumRepairRequest(BaseModel):
+    collected_dir: str
+    output_dir: str
+
+
+@router.post("/srum-repair")
+async def srum_repair(req: SrumRepairRequest):
+    """Find and repair dirty SRUM databases, then parse with SrumECmd."""
+    from core.srum_repair import find_srudb_in_collection, repair_and_parse_srum
+
+    srudbs = find_srudb_in_collection(req.collected_dir)
+    if not srudbs:
+        return {"status": "not_found", "detail": "No SRUDB.dat found in collected directory"}
+
+    # Use the first (current volume, not VSS) SRUDB.dat
+    result = repair_and_parse_srum(srudbs[0], req.output_dir)
+    result["srudb_path"] = srudbs[0]
+    result["total_srudbs_found"] = len(srudbs)
+    return result
