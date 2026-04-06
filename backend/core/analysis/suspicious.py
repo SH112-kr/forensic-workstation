@@ -599,9 +599,11 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
                 startup_sw_names.add(sw_name)
 
     # Build a set of security SW execution timestamps (date-level for correlation)
+    # Handle both AXIOM and KAPE field names
     sec_sw_dates: dict[str, list[str]] = {}  # date -> list of SW names
     for h in sec_sw_hits:
-        ts = h.get("Last Run Date/Time - UTC (yyyy-mm-dd)", "")
+        ts = (h.get("Last Run Date/Time - UTC (yyyy-mm-dd)", "")
+              or h.get("Last Run Time", ""))
         app_name = h.get("Application Name", "")
         if ts:
             date_part = ts[:10]  # yyyy-mm-dd
@@ -610,8 +612,13 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
     # Correlate: find WerFault entries on dates when security SW was active
     correlated = []
     for wf in werfault_hits:
-        wf_ts = wf.get("Last Run Date/Time - UTC (yyyy-mm-dd)", "")
-        wf_path = wf.get("Application Path", "")
+        wf_ts = (wf.get("Last Run Date/Time - UTC (yyyy-mm-dd)", "")
+                 or wf.get("Last Run Time", ""))
+        # Application Path: AXIOM uses "Application Path", KAPE uses "Files Loaded" (contains EXE path)
+        # "Source File" in KAPE is the .pf file path, not the executable path
+        wf_path = (wf.get("Application Path", "")
+                   or wf.get("Files Loaded", "")
+                   or wf.get("Source File", ""))
         if not wf_ts:
             continue
         wf_date = wf_ts[:10]
@@ -632,7 +639,7 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
                 "evidence": f"WerFault crash ({bitness}) on same date as security SW execution",
                 "WerFault Path": wf_path,
                 "WerFault Bitness": bitness,
-                "Run Count": wf.get("Application Run Count", ""),
+                "Run Count": wf.get("Application Run Count", "") or wf.get("Run Count", ""),
                 "Nearby Security SW": sec_sw_dates[wf_date],
             })
 
@@ -706,13 +713,20 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
     if not program_hits:
         return None
 
-    # Filter to MSI source
+    # Filter to MSI source — handle both AXIOM and KAPE field names
     msi_installs = [
         h for h in program_hits
         if "msi" in str(h.get("AppSource", "")).lower()
         or "msi" in str(h.get("Install Source", "")).lower()
+        or "msi" in str(h.get("Source", "")).lower()
         or ".msi" in str(h.get("Full Path", "")).lower()
+        or h.get("MSI Package Code", "")
     ]
+
+    # If no MSI filter matches, only check against suspicious tool patterns
+    # (skip time-based check to avoid false positives on non-MSI installs)
+    check_all = msi_installs
+    check_all_tools_only = not msi_installs  # only match tool patterns, not install time
 
     # Known suspicious tool patterns
     suspicious_tool_patterns = [
@@ -721,21 +735,38 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
         "radmin", "vnc", "vpn", "wireguard", "openvpn",
     ]
 
+    # If no MSI matches, fall back to checking ALL programs but only for tool patterns
+    if check_all_tools_only:
+        check_all = program_hits
+
     flagged = []
-    for h in msi_installs:
-        name = str(h.get("Name", "")).lower()
-        install_date = h.get("Install Date/Time - UTC (yyyy-mm-dd)", "") or h.get("Created Date/Time - UTC (yyyy-mm-dd)", "")
-        publisher = h.get("Publisher", "")
+    for h in check_all:
+        # Handle both AXIOM ("Name") and KAPE ("Program Name") field names
+        name = str(h.get("Name", "") or h.get("Program Name", "")).lower()
+        install_date = (h.get("Install Date/Time - UTC (yyyy-mm-dd)", "")
+                       or h.get("Created Date/Time - UTC (yyyy-mm-dd)", "")
+                       or h.get("Install Date ARP", "")
+                       or h.get("Key Last Write Time", ""))
+        publisher = h.get("Publisher", "") or h.get("Manufacturer", "")
         version = h.get("Version", "")
         install_path = h.get("Full Path", "") or h.get("Install Path", "")
         reasons = []
 
-        # Check install time (outside 07:00-19:00 UTC)
-        if install_date and len(install_date) >= 16:
+        # Check install time — only for confirmed MSI installs (not fallback)
+        # Apply local timezone offset (default KST=UTC+9) for work hours check
+        if not check_all_tools_only and install_date and len(install_date) >= 16:
             try:
-                hour = int(install_date[11:13])
-                if hour < 7 or hour >= 19:
-                    reasons.append(f"Installed outside work hours (UTC {hour:02d}:xx)")
+                utc_hour = int(install_date[11:13])
+                tz_offset = 9  # KST default
+                try:
+                    import mcp_bridge
+                    if hasattr(mcp_bridge, '_tz_config'):
+                        tz_offset = int(mcp_bridge._tz_config.get("local_tz_offset_hours", 9))
+                except Exception:
+                    pass
+                local_hour = (utc_hour + tz_offset) % 24
+                if local_hour < 7 or local_hour >= 22:
+                    reasons.append(f"Installed outside work hours (local {local_hour:02d}:xx)")
             except (ValueError, IndexError):
                 pass
 
@@ -748,9 +779,9 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
         if reasons:
             flagged.append({
                 "hit_id": h["hit_id"],
-                "artifact_type": h.get("artifact_type", "AmCache"),
+                "artifact_type": h.get("artifact_type", "AmCache Program Entries"),
                 "evidence": "; ".join(reasons),
-                "Program Name": h.get("Name", ""),
+                "Program Name": h.get("Name", "") or h.get("Program Name", ""),
                 "Version": version,
                 "Publisher": publisher,
                 "Install Date": install_date,
