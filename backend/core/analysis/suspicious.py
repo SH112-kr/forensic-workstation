@@ -465,12 +465,21 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
         "\\temp\\", "\\tmp\\", "\\public\\", "\\perflogs\\",
         "\\appdata\\", "\\programdata\\",
     ]
-    # Known-good ProgramData paths — exclude from suspicion
-    known_good = [
-        "windows defender", "microsoft\\windows defender",
-        "microsoft\\edge", "google\\chrome", "google\\update",
-        "adobe", "mozilla", "dell", "intel", "nvidia",
-        "package cache",
+    # Known-good ProgramData paths — exact directory segment matches only.
+    # Uses path separators to prevent bypass (e.g. "nvidia" won't match "n_vidia")
+    _known_good_segments = [
+        "\\microsoft\\windows defender\\",
+        "\\microsoft\\edge\\",
+        "\\google\\chrome\\",
+        "\\google\\update\\",
+        "\\google\\googleupdater\\",
+        "\\adobe\\arm\\",
+        "\\adobe\\acrobat\\",
+        "\\mozilla\\updates\\",
+        "\\dell\\supportassist",
+        "\\intel\\shadercache\\",
+        "\\nvidia corporation\\",
+        "\\package cache\\",
     ]
 
     for svc in services:
@@ -479,8 +488,8 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
             continue
         for p in suspicious_paths:
             if p in location:
-                # Skip known-good software in ProgramData
-                if p == "\\programdata\\" and any(kg in location for kg in known_good):
+                # Skip known-good software — exact path segment match only
+                if p == "\\programdata\\" and any(seg in location for seg in _known_good_segments):
                     continue
                 suspicious.append({
                     "hit_id": svc["hit_id"],
