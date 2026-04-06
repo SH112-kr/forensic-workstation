@@ -176,22 +176,39 @@ class KapeCsvConnector(AxiomMfdbConnector):
         cur.execute("INSERT INTO source_path VALUES (1, ?)", (dir_path,))
         cur.execute("INSERT INTO source_evidence VALUES ('KAPE', ?)", (dir_path,))
 
+        # Group files by tool for dedup handling
+        tool_files: dict[str, list[str]] = {}
         for csv_path in csv_files:
             filename = os.path.basename(csv_path)
             tool_name = detect_tool(filename)
             if not tool_name:
                 continue
-
             mapping = TOOL_MAPPINGS.get(tool_name)
             if not mapping:
                 continue
+            tool_files.setdefault(tool_name, []).append(csv_path)
 
-            self._ingest_single_csv(cur, csv_path, tool_name, mapping)
+        # Dedup key sets per tool (for VSS deduplication)
+        self._dedup_seen: dict[str, set] = {}
+
+        for tool_name, paths in tool_files.items():
+            mapping = TOOL_MAPPINGS[tool_name]
+            dedup_cols = mapping.get("dedup_columns")
+
+            if dedup_cols:
+                # VSS dedup: process newest files first, skip already-seen keys
+                self._dedup_seen[tool_name] = set()
+                for csv_path in reversed(paths):  # reversed = newest first
+                    self._ingest_single_csv(cur, csv_path, tool_name, mapping)
+            else:
+                for csv_path in paths:
+                    self._ingest_single_csv(cur, csv_path, tool_name, mapping)
 
         self._conn.commit()
         # Cleanup temp registries
         del self._av_registry
         del self._frag_def_registry
+        del self._dedup_seen
 
     def _ingest_single_csv(
         self, cur: sqlite3.Cursor, csv_path: str,
@@ -201,7 +218,8 @@ class KapeCsvConnector(AxiomMfdbConnector):
         field_mapping = mapping["field_mapping"]
         hash_columns = mapping.get("hash_columns", [])
         location_column = mapping.get("location_column", "")
-        max_rows = mapping.get("max_rows", 0)  # 0 = unlimited
+        dedup_cols = mapping.get("dedup_columns")
+        dedup_set = self._dedup_seen.get(tool_name) if dedup_cols else None
 
         # Register artifact version if not yet done
         av_id = self._ensure_artifact_version(cur, artifact_name)
@@ -218,81 +236,93 @@ class KapeCsvConnector(AxiomMfdbConnector):
             # Try UTF-8 first, fall back to cp949 (Korean), then latin-1
             for encoding in ("utf-8-sig", "utf-8", "cp949", "latin-1"):
                 try:
-                    with open(csv_path, "r", encoding=encoding, errors="strict") as f:
-                        reader = csv.DictReader(f)
-                        if reader.fieldnames is None:
-                            break
+                    # Stream lines, stripping NUL bytes on the fly (VSS artifacts)
+                    def _lines(path, enc):
+                        with open(path, "rb") as fb:
+                            for raw_line in fb:
+                                if b"\x00" in raw_line:
+                                    raw_line = raw_line.replace(b"\x00", b"")
+                                yield raw_line.decode(enc, errors="strict")
 
-                        # Batch buffers
-                        hit_batch: list[tuple] = []
-                        str_batch: list[tuple] = []
-                        date_batch: list[tuple] = []
-                        int_batch: list[tuple] = []
-                        float_batch: list[tuple] = []
-                        hash_batch: list[tuple] = []
-                        loc_batch: list[tuple] = []
+                    import io
+                    reader = csv.DictReader(_lines(csv_path, encoding))
+                    if reader.fieldnames is None:
+                        break
 
-                        for row in reader:
-                            if max_rows and rows_ingested >= max_rows:
-                                break
+                    # Batch buffers
+                    hit_batch: list[tuple] = []
+                    str_batch: list[tuple] = []
+                    date_batch: list[tuple] = []
+                    int_batch: list[tuple] = []
+                    float_batch: list[tuple] = []
+                    hash_batch: list[tuple] = []
+                    loc_batch: list[tuple] = []
 
-                            hit_id = self._next_hit_id
-                            self._next_hit_id += 1
-                            hit_batch.append((hit_id, av_id))
+                    for row in reader:
+                        # VSS dedup: skip if this (EntryNumber, SeqNumber) already seen
+                        if dedup_set is not None:
+                            key = tuple(row.get(c, "") for c in dedup_cols)
+                            if key in dedup_set:
+                                continue
+                            dedup_set.add(key)
 
-                            for csv_col, (dtype, frag_id) in frag_defs.items():
-                                raw_val = row.get(csv_col, "")
-                                if not raw_val or raw_val.strip() == "":
-                                    continue
+                        hit_id = self._next_hit_id
+                        self._next_hit_id += 1
+                        hit_batch.append((hit_id, av_id))
 
-                                raw_val = raw_val.strip()
+                        for csv_col, (dtype, frag_id) in frag_defs.items():
+                            raw_val = row.get(csv_col, "")
+                            if not raw_val or raw_val.strip() == "":
+                                continue
 
-                                if dtype == "Date":
-                                    ts_ms, formatted = self._parse_timestamp(raw_val)
-                                    if ts_ms:
-                                        date_batch.append((hit_id, frag_id, ts_ms, formatted))
-                                elif dtype == "Int":
-                                    int_val = self._parse_int(raw_val)
-                                    if int_val is not None:
-                                        int_batch.append((hit_id, frag_id, int_val))
-                                elif dtype == "Float":
-                                    float_val = self._parse_float(raw_val)
-                                    if float_val is not None:
-                                        float_batch.append((hit_id, frag_id, float_val))
-                                else:  # String
-                                    str_batch.append((hit_id, frag_id, raw_val))
+                            raw_val = raw_val.strip()
 
-                            # Hash columns
-                            for hcol in hash_columns:
-                                hval = row.get(hcol, "").strip()
-                                if hval:
-                                    hash_batch.append((hit_id, hval))
+                            if dtype == "Date":
+                                ts_ms, formatted = self._parse_timestamp(raw_val)
+                                if ts_ms:
+                                    date_batch.append((hit_id, frag_id, ts_ms, formatted))
+                            elif dtype == "Int":
+                                int_val = self._parse_int(raw_val)
+                                if int_val is not None:
+                                    int_batch.append((hit_id, frag_id, int_val))
+                            elif dtype == "Float":
+                                float_val = self._parse_float(raw_val)
+                                if float_val is not None:
+                                    float_batch.append((hit_id, frag_id, float_val))
+                            else:  # String
+                                str_batch.append((hit_id, frag_id, raw_val))
 
-                            # Location
-                            if location_column:
-                                loc_val = row.get(location_column, "").strip()
-                                if loc_val:
-                                    loc_batch.append((hit_id, loc_val, 1, 0))
+                        # Hash columns
+                        for hcol in hash_columns:
+                            hval = row.get(hcol, "").strip()
+                            if hval:
+                                hash_batch.append((hit_id, hval))
 
-                            rows_ingested += 1
+                        # Location
+                        if location_column:
+                            loc_val = row.get(location_column, "").strip()
+                            if loc_val:
+                                loc_batch.append((hit_id, loc_val, 1, 0))
 
-                            # Flush batches every 5000 rows
-                            if rows_ingested % 5000 == 0:
-                                self._flush_batches(cur, hit_batch, str_batch,
-                                                    date_batch, int_batch, float_batch,
-                                                    hash_batch, loc_batch)
-                                hit_batch.clear()
-                                str_batch.clear()
-                                date_batch.clear()
-                                int_batch.clear()
-                                float_batch.clear()
-                                hash_batch.clear()
-                                loc_batch.clear()
+                        rows_ingested += 1
 
-                        # Flush remaining
-                        self._flush_batches(cur, hit_batch, str_batch,
-                                            date_batch, int_batch, float_batch,
-                                            hash_batch, loc_batch)
+                        # Flush batches every 5000 rows
+                        if rows_ingested % 5000 == 0:
+                            self._flush_batches(cur, hit_batch, str_batch,
+                                                date_batch, int_batch, float_batch,
+                                                hash_batch, loc_batch)
+                            hit_batch.clear()
+                            str_batch.clear()
+                            date_batch.clear()
+                            int_batch.clear()
+                            float_batch.clear()
+                            hash_batch.clear()
+                            loc_batch.clear()
+
+                    # Flush remaining
+                    self._flush_batches(cur, hit_batch, str_batch,
+                                        date_batch, int_batch, float_batch,
+                                        hash_batch, loc_batch)
                     break  # Successfully read with this encoding
                 except (UnicodeDecodeError, UnicodeError):
                     continue

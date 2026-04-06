@@ -183,7 +183,7 @@ TOOL_MAPPINGS: dict[str, dict] = {
         },
         "hash_columns": [],
         "location_column": "ParentPath",
-        "max_rows": 500000,  # MFT can be very large
+        "dedup_columns": ["EntryNumber", "SequenceNumber"],  # VSS dedup key
     },
 
     # ── LECmd: LNK Files ──
@@ -622,6 +622,17 @@ def detect_tool(filename: str) -> str | None:
     for prefix, suffix, tool_id in _sqle_patterns:
         if prefix in fn_lower and suffix in fn_lower:
             return tool_id
+
+    # Amcache outputs: <timestamp>_Amcache_<SubType>.csv (no "Parser" in filename)
+    if "amcache" in fn_lower:
+        # Only match file entry CSVs (Associated/Unassociated), skip DeviceContainers etc.
+        if "associatedfileentries" in fn_lower or "unassociatedfileentries" in fn_lower:
+            return "AmcacheParser"
+        return None
+
+    # AppCompatCache: <timestamp>_Windows10Creators_SYSTEM_AppCompatCache.csv
+    if "appcompatcache" in fn_lower:
+        return "AppCompatCacheParser"
 
     # Match by tool name in filename (check longer names first to avoid false matches)
     tool_names = [

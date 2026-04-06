@@ -21,6 +21,34 @@ interface SavedProject {
   path: string;
 }
 
+// ── Recent Cases (localStorage) ──
+
+interface RecentCase {
+  name: string;
+  path: string;
+  source: 'project' | 'axiom' | 'kape';
+  totalHits?: number;
+  openedAt: string; // ISO
+}
+
+const RECENT_KEY = 'fw_recent_cases';
+const MAX_RECENT = 8;
+
+function loadRecent(): RecentCase[] {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+}
+
+function saveRecent(entry: RecentCase) {
+  const list = loadRecent().filter(r => r.path !== entry.path);
+  list.unshift({ ...entry, openedAt: new Date().toISOString() });
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, MAX_RECENT)));
+}
+
+function removeRecent(path: string) {
+  const list = loadRecent().filter(r => r.path !== path);
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+}
+
 const TYPE_ICONS: Record<string, string> = {
   axiom: 'DB', kape: 'CSV', memory: 'MEM',
   disk_image: 'IMG', evtx: 'EVT', pcap: 'NET',
@@ -63,6 +91,9 @@ export default function CaseManager() {
 
   // Saved projects
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+
+  // Recent cases
+  const [recentCases, setRecentCases] = useState<RecentCase[]>(loadRecent());
 
   // Folder browser
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -170,6 +201,8 @@ export default function CaseManager() {
         try {
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
+          const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDir, source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          saveRecent(rc); setRecentCases(loadRecent());
           setActiveView('dashboard');
         } catch {
           // Case loaded but summary failed — go to dashboard anyway
@@ -182,6 +215,8 @@ export default function CaseManager() {
             evidence_sources: [],
             artifact_types: {},
           });
+          const rc: RecentCase = { name: projectName, path: data.project_path || scanDir, source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          saveRecent(rc); setRecentCases(loadRecent());
           setActiveView('dashboard');
         }
       } else {
@@ -206,6 +241,8 @@ export default function CaseManager() {
       if (loaded) {
         const caseData = await get('/api/cases/summary');
         setCaseInfo({ ...caseData, case_name: proj.name || caseData.case_name });
+        saveRecent({ name: proj.name, path: proj.path, source: 'project', totalHits: loaded.total_hits, openedAt: '' });
+        setRecentCases(loadRecent());
         setActiveView('dashboard');
       } else {
         setError('Project opened but no case data loaded.');
@@ -225,12 +262,51 @@ export default function CaseManager() {
     try {
       const data = await post('/api/cases/open', { path: quickPath.trim() });
       setCaseInfo(data);
+      const src = quickPath.trim().endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
+      saveRecent({ name: data.case_name || quickPath.trim().split(/[\\/]/).pop() || '', path: quickPath.trim(), source: src, totalHits: data.total_hits, openedAt: '' });
+      setRecentCases(loadRecent());
       setActiveView('dashboard');
     } catch (e: any) {
       setQuickError(e.message);
     } finally {
       setQuickLoading(false);
     }
+  };
+
+  // Reopen a recent case
+  const handleOpenRecent = async (rc: RecentCase) => {
+    setQuickLoading(true);
+    setError('');
+    try {
+      if (rc.source === 'project') {
+        const data = await post('/api/project/open', { path: rc.path });
+        const loadResults = data.load_results || [];
+        const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+        if (loaded) {
+          const caseData = await get('/api/cases/summary');
+          setCaseInfo({ ...caseData, case_name: rc.name || caseData.case_name });
+          saveRecent({ ...rc, totalHits: loaded.total_hits }); setRecentCases(loadRecent());
+          setActiveView('dashboard');
+        } else {
+          setError('Project opened but no case data loaded. Evidence files may have moved.');
+        }
+      } else {
+        const data = await post('/api/cases/open', { path: rc.path });
+        setCaseInfo(data);
+        saveRecent({ ...rc, totalHits: data.total_hits }); setRecentCases(loadRecent());
+        setActiveView('dashboard');
+      }
+    } catch (e: any) {
+      setError(`Failed to open: ${e.message}`);
+    } finally {
+      setQuickLoading(false);
+    }
+  };
+
+  const handleRemoveRecent = (e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    removeRecent(path);
+    setRecentCases(loadRecent());
   };
 
   const inputStyle: React.CSSProperties = {
@@ -284,6 +360,65 @@ export default function CaseManager() {
           padding: '10px 16px', borderRadius: 6, marginBottom: 16, fontSize: 12,
           background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)',
         }}>{error}</div>
+      )}
+
+      {/* ── RECENT CASES ── */}
+      {recentCases.length > 0 && (
+        <div style={{ ...sectionStyle, padding: 16, marginBottom: 20 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+            Recent Cases
+          </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginTop: 8 }}>
+            {recentCases.map((rc, i) => {
+              const sourceTag = rc.source === 'project' ? 'PRJ' : rc.source === 'kape' ? 'KAPE' : 'AXIOM';
+              const sourceColor = rc.source === 'project' ? '#a78bfa' : rc.source === 'kape' ? '#60a5fa' : '#4ade80';
+              const timeAgo = (() => {
+                const diff = Date.now() - new Date(rc.openedAt).getTime();
+                const mins = Math.floor(diff / 60000);
+                if (mins < 60) return `${mins}m ago`;
+                const hrs = Math.floor(mins / 60);
+                if (hrs < 24) return `${hrs}h ago`;
+                const days = Math.floor(hrs / 24);
+                return `${days}d ago`;
+              })();
+              return (
+                <div key={i} onClick={() => handleOpenRecent(rc)}
+                  style={{
+                    padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                    border: '1px solid var(--border)', background: 'var(--bg)',
+                    position: 'relative', transition: 'border-color 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                      background: `${sourceColor}22`, color: sourceColor, fontFamily: 'monospace',
+                    }}>{sourceTag}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {rc.name}
+                    </span>
+                    <span onClick={(e) => handleRemoveRecent(e, rc.path)}
+                      style={{ fontSize: 14, color: 'var(--text-dim)', cursor: 'pointer', lineHeight: 1, padding: '0 2px' }}
+                      title="Remove from recent"
+                    >{'\u00D7'}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: 'var(--text-dim)' }}>
+                    <span>{timeAgo}</span>
+                    {rc.totalHits != null && <span>{rc.totalHits.toLocaleString()} artifacts</span>}
+                  </div>
+                  <div style={{
+                    fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace', marginTop: 4,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {rc.path}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {/* ── PROJECT TAB ── */}
