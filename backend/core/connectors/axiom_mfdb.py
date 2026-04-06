@@ -374,23 +374,24 @@ class AxiomMfdbConnector(BaseConnector):
     def get_timeline(
         self, start_date: str = "", end_date: str = "",
         artifact_types: list[str] | None = None, limit: int = 200,
+        offset: int = 0,
     ) -> dict:
         cur = self._cursor()
         no_date_filter = not start_date and not end_date
 
         if no_date_filter and not artifact_types:
-            cur.execute(Q.TIMELINE_ALL, (limit,))
+            cur.execute(Q.TIMELINE_ALL.replace("LIMIT ?", "LIMIT ? OFFSET ?"), (limit, offset))
         elif artifact_types:
             start_ms = self._iso_to_ms(start_date) if start_date else 0
             end_ms = self._iso_to_ms(end_date) if end_date else 9999999999999
             placeholders = ",".join("?" * len(artifact_types))
-            query = Q.TIMELINE_WITH_TYPE.format(placeholders=placeholders)
-            params = [start_ms, end_ms] + artifact_types + [limit]
+            query = Q.TIMELINE_WITH_TYPE.format(placeholders=placeholders).replace("LIMIT ?", "LIMIT ? OFFSET ?")
+            params = [start_ms, end_ms] + artifact_types + [limit, offset]
             cur.execute(query, params)
         else:
             start_ms = self._iso_to_ms(start_date) if start_date else 0
             end_ms = self._iso_to_ms(end_date) if end_date else 9999999999999
-            cur.execute(Q.TIMELINE, (start_ms, end_ms, limit))
+            cur.execute(Q.TIMELINE.replace("LIMIT ?", "LIMIT ? OFFSET ?"), (start_ms, end_ms, limit, offset))
 
         rows = cur.fetchall()
 

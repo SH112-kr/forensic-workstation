@@ -405,6 +405,7 @@ async def build_timeline(
     artifact_types: str = "",
     keywords: str = "",
     limit: int = 200,
+    offset: int = 0,
 ) -> dict:
     """Build chronological timeline.
 
@@ -416,9 +417,10 @@ async def build_timeline(
                   Only events whose associated hits contain ANY of these keywords are included.
                   e.g. "SearchHost,sshd,task.vbs" to build a timeline around specific IOCs.
         limit: Max events (default 200, max 500).
+        offset: Skip first N events (for pagination).
     """
     params = {"start_date": start_date, "end_date": end_date,
-              "artifact_types": artifact_types, "keywords": keywords, "limit": limit}
+              "artifact_types": artifact_types, "keywords": keywords, "limit": limit, "offset": offset}
     def fn():
         axiom = _get_axiom()
         cap = min(limit, config.timeline_max_limit)
@@ -426,13 +428,13 @@ async def build_timeline(
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
 
         if kw_list:
-            return _mask(_timeline_with_keywords(axiom, start_date, end_date, kw_list, cap))
+            return _mask(_timeline_with_keywords(axiom, start_date, end_date, kw_list, cap, offset))
         else:
-            return _mask(axiom.get_timeline(start_date, end_date, type_list, cap))
+            return _mask(axiom.get_timeline(start_date, end_date, type_list, cap, offset))
     return _traced("build_timeline", params, fn)
 
 
-def _timeline_with_keywords(axiom, start_date, end_date, kw_list, limit):
+def _timeline_with_keywords(axiom, start_date, end_date, kw_list, limit, offset=0):
     """Build timeline filtered by keywords — finds events associated with matching hits."""
     from core.sql import axiom_queries as Q
 
@@ -442,7 +444,9 @@ def _timeline_with_keywords(axiom, start_date, end_date, kw_list, limit):
 
     conditions = " OR ".join(["hfs.value LIKE ?"] * len(kw_list))
     query = Q.TIMELINE_WITH_KEYWORD.format(keyword_conditions=conditions)
-    params = [start_ms, end_ms] + [f"%{kw}%" for kw in kw_list] + [limit]
+    # Replace LIMIT with LIMIT+OFFSET for pagination
+    query = query.replace("LIMIT ?", "LIMIT ? OFFSET ?")
+    params = [start_ms, end_ms] + [f"%{kw}%" for kw in kw_list] + [limit, offset]
     cur.execute(query, params)
     rows = cur.fetchall()
 
@@ -521,6 +525,7 @@ async def correlate(
     end_date: str = "",
     window_minutes: int = 5,
     limit: int = 100,
+    offset: int = 0,
 ) -> dict:
     """Cross-reference artifacts.
 
@@ -543,23 +548,24 @@ async def correlate(
         end_date: Date filter (ISO). Used in keywords mode.
         window_minutes: Time window for co-occurrence detection (default 5 min).
         limit: Max results per keyword (default 100).
+        offset: Skip first N results per keyword (for pagination).
     """
     params = {"pivot_field": pivot_field, "pivot_value": pivot_value,
-              "keywords": keywords, "window_minutes": window_minutes, "limit": limit}
+              "keywords": keywords, "window_minutes": window_minutes, "limit": limit, "offset": offset}
     def fn():
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
 
         if kw_list:
-            return _mask(_correlate_keywords(_get_axiom(), kw_list, start_date, end_date, window_minutes, limit))
+            return _mask(_correlate_keywords(_get_axiom(), kw_list, start_date, end_date, window_minutes, limit, offset))
         elif pivot_field and pivot_value:
             from core.analysis.correlator import correlate as _corr
-            return _mask(_corr(_get_axiom(), pivot_field, pivot_value, window_minutes, limit))
+            return _mask(_corr(_get_axiom(), pivot_field, pivot_value, window_minutes, limit, offset))
         else:
             return {"error": "Provide either keywords for multi-keyword correlation, or pivot_field + pivot_value for classic mode."}
     return _traced("correlate", params, fn)
 
 
-def _correlate_keywords(axiom, kw_list, start_date, end_date, window_minutes, limit):
+def _correlate_keywords(axiom, kw_list, start_date, end_date, window_minutes, limit, offset=0):
     """Multi-keyword correlation: find where keywords co-occur in time."""
     per_keyword = {}
     all_events = []
@@ -569,7 +575,7 @@ def _correlate_keywords(axiom, kw_list, start_date, end_date, window_minutes, li
         result = axiom.search(
             keyword=kw,
             filters={"start_date": start_date, "end_date": end_date},
-            limit=cap,
+            limit=cap, offset=offset,
         )
         hits = result.get("hits", [])
         true_total = result.get("total", len(hits))
@@ -695,9 +701,10 @@ async def get_tagged_hits(tag_name: str = "") -> dict:
 
 
 @mcp.tool()
-async def search_by_hash(hash_value: str, limit: int = 50) -> dict:
+async def search_by_hash(hash_value: str, limit: int = 50, offset: int = 0) -> dict:
     """Find artifacts by hash."""
-    return _traced("search_by_hash", {"hash": hash_value}, lambda: _mask(_get_axiom().search_by_hash(hash_value, limit)))
+    return _traced("search_by_hash", {"hash": hash_value, "limit": limit, "offset": offset},
+                   lambda: _mask(_get_axiom().search_by_hash(hash_value, limit, offset)))
 
 
 @mcp.tool()
@@ -887,25 +894,27 @@ async def ghidra_suspicious_apis() -> dict:
 
 
 @mcp.tool()
-async def ghidra_strings(keyword: str = "", min_length: int = 4, limit: int = 200) -> dict:
+async def ghidra_strings(keyword: str = "", min_length: int = 4, limit: int = 200, offset: int = 0) -> dict:
     """Extract and search strings from the loaded binary."""
-    params = {"keyword": keyword, "min_length": min_length, "limit": limit}
+    params = {"keyword": keyword, "min_length": min_length, "limit": limit, "offset": offset}
     def fn():
         strings = _get_ghidra().list_strings(min_length=min_length, limit=1000)
         if keyword:
             kw = keyword.lower()
             strings = [s for s in strings if kw in s.get("value", "").lower()]
-        return _mask({"total": len(strings), "strings": strings[:limit]})
+        page = strings[offset:offset + limit]
+        return _mask({"total": len(strings), "returned": len(page), "offset": offset, "strings": page})
     return _traced("ghidra_strings", params, fn)
 
 
 @mcp.tool()
-async def ghidra_functions(filter_pattern: str = "", limit: int = 100) -> dict:
+async def ghidra_functions(filter_pattern: str = "", limit: int = 100, offset: int = 0) -> dict:
     """List functions in the loaded binary with optional name filter."""
-    params = {"filter_pattern": filter_pattern, "limit": limit}
+    params = {"filter_pattern": filter_pattern, "limit": limit, "offset": offset}
     def fn():
-        funcs = _get_ghidra().list_functions(filter_pattern=filter_pattern, limit=limit)
-        return _mask({"total": len(funcs), "functions": funcs})
+        funcs = _get_ghidra().list_functions(filter_pattern=filter_pattern, limit=limit + offset)
+        page = funcs[offset:offset + limit]
+        return _mask({"total": len(funcs), "returned": len(page), "offset": offset, "functions": page})
     return _traced("ghidra_functions", params, fn)
 
 
@@ -988,6 +997,7 @@ async def srum_by_process(
     start_date: str = "",
     end_date: str = "",
     limit: int = 50,
+    offset: int = 0,
 ) -> dict:
     """Query SRUM data (CPU/IO + Network) for processes.
 
@@ -998,9 +1008,10 @@ async def srum_by_process(
         start_date: Date filter start (ISO format).
         end_date: Date filter end (ISO format).
         limit: Max results per process (default 50).
+        offset: Skip first N results per process (for pagination).
     """
     params = {"process_name": process_name, "process_names": process_names,
-              "start_date": start_date, "end_date": end_date, "limit": limit}
+              "start_date": start_date, "end_date": end_date, "limit": limit, "offset": offset}
     def fn():
         axiom = _get_axiom()
         cap = min(limit, config.srum_max_limit)
@@ -1033,13 +1044,13 @@ async def srum_by_process(
                 keyword=pn,
                 filters={"artifact_type": "SRUM Application Resource Usage",
                           "start_date": start_date, "end_date": end_date},
-                limit=cap,
+                limit=cap, offset=offset,
             )
             net_results = axiom.search(
                 keyword=pn,
                 filters={"artifact_type": "SRUM Network Usage",
                           "start_date": start_date, "end_date": end_date},
-                limit=cap,
+                limit=cap, offset=offset,
             )
 
             app_hits = [h for h in app_results.get("hits", []) if _match_hit(h, pn_lower)]
