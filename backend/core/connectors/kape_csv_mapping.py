@@ -56,24 +56,29 @@ TOOL_MAPPINGS: dict[str, dict] = {
         "artifact_name": "Prefetch Files - Windows 8/10/11",
         "file_pattern": "*PECmd*Output*.csv",
         "field_mapping": {
-            "SourceFilename":       ("String", "Application Name"),
+            "SourceFilename":       ("String", "Source File"),
+            "ExecutableName":       ("String", "Application Name"),
             "SourceCreated":        ("Date",   "Source Created"),
             "SourceModified":       ("Date",   "Source Modified"),
             "LastRun":              ("Date",   "Last Run Time"),
             "PreviousRun0":         ("Date",   "Previous Run 0"),
             "PreviousRun1":         ("Date",   "Previous Run 1"),
             "PreviousRun2":         ("Date",   "Previous Run 2"),
+            "PreviousRun3":         ("Date",   "Previous Run 3"),
+            "PreviousRun4":         ("Date",   "Previous Run 4"),
+            "PreviousRun5":         ("Date",   "Previous Run 5"),
+            "PreviousRun6":         ("Date",   "Previous Run 6"),
             "RunCount":             ("Int",    "Run Count"),
             "Size":                 ("String", "Size"),
             "Hash":                 ("String", "Prefetch Hash"),
+            "Version":              ("String", "Version"),
             "Volume0Name":          ("String", "Volume 0 Name"),
             "Volume0Serial":        ("String", "Volume 0 Serial"),
             "FilesLoaded":          ("String", "Files Loaded"),
             "Directories":          ("String", "Directories"),
-            "SourceFile":           ("String", "Source File"),
         },
         "hash_columns": ["Hash"],
-        "location_column": "SourceFile",
+        "location_column": "ExecutableName",
     },
 
     # ── AmcacheParser: AmCache File Entries ──
@@ -313,6 +318,92 @@ TOOL_MAPPINGS: dict[str, dict] = {
         },
         "hash_columns": [],
         "location_column": "AbsolutePath",
+    },
+
+    # ══════════════════════════════════════════
+    # AmCache Program Entries (install history)
+    # ══════════════════════════════════════════
+
+    "AmcacheParser_Programs": {
+        "artifact_name": "AmCache Program Entries",
+        "file_pattern": "*Amcache*ProgramEntries*.csv",
+        "field_mapping": {
+            "Name":                     ("String", "Program Name"),
+            "Version":                  ("String", "Version"),
+            "Publisher":                ("String", "Publisher"),
+            "Manufacturer":             ("String", "Manufacturer"),
+            "InstallDate":              ("String", "Install Date"),
+            "InstallDateMsi":           ("String", "Install Date MSI"),
+            "InstallDateArpLastModified": ("Date", "Install Date ARP"),
+            "InstallDateFromLinkFile":  ("Date",   "Install Date Link File"),
+            "KeyLastWriteTimestamp":    ("Date",   "Key Last Write Time"),
+            "OSVersionAtInstallTime":   ("String", "OS Version At Install"),
+            "RootDirPath":              ("String", "Install Path"),
+            "UninstallString":          ("String", "Uninstall String"),
+            "Source":                   ("String", "Source"),
+            "Type":                     ("String", "Type"),
+            "ProgramId":                ("String", "Program ID"),
+            "Language":                 ("String", "Language"),
+            "MsiPackageCode":           ("String", "MSI Package Code"),
+            "MsiProductCode":           ("String", "MSI Product Code"),
+            "RegistryKeyPath":          ("String", "Registry Key Path"),
+        },
+        "hash_columns": [],
+        "location_column": "RootDirPath",
+    },
+
+    # ══════════════════════════════════════════
+    # Autoruns — persistence mechanisms
+    # ══════════════════════════════════════════
+
+    "Autoruns": {
+        "artifact_name": "AutoRun Items",
+        "file_pattern": "Autoruns.csv",
+        "field_mapping": {
+            "Time":            ("Date",   "Timestamp"),
+            "Entry Location":  ("String", "Entry Location"),
+            "Entry":           ("String", "Entry"),
+            "Enabled":         ("String", "Enabled"),
+            "Category":        ("String", "Category"),
+            "Profile":         ("String", "Profile"),
+            "Description":     ("String", "Description"),
+            "Signer":          ("String", "Signer"),
+            "Company":         ("String", "Company"),
+            "Image Path":      ("String", "Image Path"),
+            "Version":         ("String", "Version"),
+            "Launch String":   ("String", "Launch String"),
+            "SHA-1":           ("String", "SHA-1"),
+            "SHA-256":         ("String", "SHA-256"),
+            "MD5":             ("String", "MD5"),
+        },
+        "hash_columns": ["SHA-1", "SHA-256", "MD5"],
+        "location_column": "Image Path",
+    },
+
+    # ══════════════════════════════════════════
+    # RECmd Kroll — registry analysis
+    # ══════════════════════════════════════════
+
+    "RECmd_Kroll": {
+        "artifact_name": "Registry",
+        "file_pattern": "*RECmd*Kroll*.csv",
+        "field_mapping": {
+            "HivePath":            ("String", "Hive Path"),
+            "HiveType":            ("String", "Hive Type"),
+            "Description":         ("String", "Description"),
+            "Category":            ("String", "Category"),
+            "KeyPath":             ("String", "Key Path"),
+            "ValueName":           ("String", "Value Name"),
+            "ValueType":           ("String", "Value Type"),
+            "ValueData":           ("String", "Value Data"),
+            "ValueData2":          ("String", "Value Data 2"),
+            "ValueData3":          ("String", "Value Data 3"),
+            "Comment":             ("String", "Comment"),
+            "LastWriteTimestamp":   ("Date",   "Last Write Time"),
+            "PluginDetailFile":    ("String", "Plugin Detail File"),
+        },
+        "hash_columns": [],
+        "location_column": "HivePath",
     },
 
     # ══════════════════════════════════════════
@@ -625,7 +716,8 @@ def detect_tool(filename: str) -> str | None:
 
     # Amcache outputs: <timestamp>_Amcache_<SubType>.csv (no "Parser" in filename)
     if "amcache" in fn_lower:
-        # Only match file entry CSVs (Associated/Unassociated), skip DeviceContainers etc.
+        if "programentries" in fn_lower:
+            return "AmcacheParser_Programs"
         if "associatedfileentries" in fn_lower or "unassociatedfileentries" in fn_lower:
             return "AmcacheParser"
         return None
@@ -633,6 +725,14 @@ def detect_tool(filename: str) -> str | None:
     # AppCompatCache: <timestamp>_Windows10Creators_SYSTEM_AppCompatCache.csv
     if "appcompatcache" in fn_lower:
         return "AppCompatCacheParser"
+
+    # Autoruns.csv (from autorunsc.exe)
+    if fn_lower == "autoruns.csv":
+        return "Autoruns"
+
+    # RECmd Kroll batch output
+    if "recmd" in fn_lower and "kroll" in fn_lower:
+        return "RECmd_Kroll"
 
     # Match by tool name in filename (check longer names first to avoid false matches)
     tool_names = [

@@ -179,23 +179,100 @@ def get_diagnostics(parsed_dir: str) -> dict[str, Any]:
     # Parse the most recent log (last in sorted order)
     log_result = parse_console_log(logs[-1])
 
-    # Check what CSVs actually exist
+    # Check what CSVs actually exist — cross-reference with log results
     existing_csvs = glob.glob(os.path.join(parsed_dir, "**", "*.csv"), recursive=True)
     csv_basenames = {os.path.basename(f).lower() for f in existing_csvs}
 
-    # Identify modules that "succeeded" in the log but produced no CSV
+    # Map tool names to CSV filename patterns for recovery detection
+    _TOOL_CSV_PATTERNS: dict[str, list[str]] = {
+        "PECmd": ["pecmd"],
+        "LECmd": ["lecmd"],
+        "JLECmd": ["automaticdestinations", "customdestinations"],
+        "SBECmd": ["usrclass", "ntuser"],
+        "RBCmd": ["rbcmd"],
+        "WxTCmd": ["activity"],
+        "SrumECmd": ["srumecmd"],
+        "SumECmd": ["sumecmd", "sumedb"],
+        "AmcacheParser": ["amcache"],
+        "AppCompatCacheParser": ["appcompatcache"],
+        "MFTECmd": ["mftecmd"],
+        "RECmd": ["recmd"],
+        "SQLECmd": ["googlechrome", "chromiumbrowser", "firefox"],
+    }
+
     for mod in log_result["modules"]:
+        tool = mod["module"]
+
+        # If log says failed but CSV output actually exists (e.g. manual re-run)
+        if mod["status"].startswith("failed"):
+            patterns = _TOOL_CSV_PATTERNS.get(tool, [tool.lower()])
+            has_csv = any(
+                any(pat in csv_name for pat in patterns)
+                for csv_name in csv_basenames
+            )
+            if has_csv:
+                mod["status"] = "recovered"
+                mod["errors"] = [f"Failed in original KAPE run but CSV output exists (re-parsed)"]
+
+        # If log says success but no CSV found
         if mod["status"] == "success" and mod["csv_output"]:
             csv_name = os.path.basename(mod["csv_output"]).lower()
             if csv_name not in csv_basenames:
                 mod["status"] = "no_output"
                 mod["errors"].append("Module reported success but CSV file not found")
 
-    # Actionable recommendations
+    # Recalculate summary after recovery detection
+    success = sum(1 for m in log_result["modules"] if m["status"] in ("success", "recovered"))
+    failed = sum(1 for m in log_result["modules"] if m["status"].startswith("failed"))
+    recovered = sum(1 for m in log_result["modules"] if m["status"] == "recovered")
+    dotnet_errors = sum(1 for m in log_result["modules"] if m["status"] == "failed_dotnet")
+    log_result["summary"] = {
+        "total": len(log_result["modules"]),
+        "success": success,
+        "failed": failed,
+        "recovered": recovered,
+        "dotnet_errors": dotnet_errors,
+    }
+
+    # Check missing modules against actual CSV output
+    # e.g. RECmd_Kroll was missing in KAPE run but we created the module and ran it manually
+    _MISSING_MODULE_PATTERNS: dict[str, list[str]] = {
+        "RECmd_Kroll": ["recmd", "kroll"],
+    }
+    resolved_missing = []
+    for mm in log_result["missing_modules"]:
+        patterns = _MISSING_MODULE_PATTERNS.get(mm, [mm.lower()])
+        has_csv = any(
+            any(pat in cn for pat in patterns) for cn in csv_basenames
+        )
+        if has_csv:
+            resolved_missing.append(mm)
+    for rm in resolved_missing:
+        log_result["missing_modules"].remove(rm)
+
+    # Also check: if data doesn't exist on this system (e.g. SUMDatabase on workstation)
+    # and the tool has no CSV, mark as "no_data" instead of "failed"
+    for mod in log_result["modules"]:
+        if mod["status"] == "failed_dotnet" and mod["module"] == "SumECmd":
+            # SUMDatabase only exists on Windows Server
+            patterns = _TOOL_CSV_PATTERNS.get("SumECmd", [])
+            has_csv = any(any(p in cn for p in patterns) for cn in csv_basenames)
+            if not has_csv:
+                mod["status"] = "no_data"
+                mod["errors"] = ["SUMDatabase (Windows Server only) — not applicable to this system"]
+
+    # Recalculate after no_data adjustment
+    dotnet_errors = sum(1 for m in log_result["modules"] if m["status"] == "failed_dotnet")
+    failed = sum(1 for m in log_result["modules"] if m["status"].startswith("failed"))
+    log_result["summary"]["failed"] = failed
+    log_result["summary"]["dotnet_errors"] = dotnet_errors
+
+    # Actionable recommendations — only for genuinely failed modules
     recommendations: list[str] = []
-    if log_result["summary"]["dotnet_errors"] > 0:
+    if dotnet_errors > 0:
+        failed_tools = sorted({m["module"] for m in log_result["modules"] if m["status"] == "failed_dotnet"})
         recommendations.append(
-            f"{log_result['summary']['dotnet_errors']} modules failed due to missing .NET runtimeconfig.json. "
+            f"{dotnet_errors} modules failed due to missing .NET runtimeconfig.json ({', '.join(failed_tools)}). "
             "Run KAPE Health Check in Settings to auto-fix."
         )
     if log_result["missing_modules"]:

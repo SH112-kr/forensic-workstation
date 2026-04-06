@@ -8,6 +8,36 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 
+def _build_kape_diagnostics(diag: dict) -> dict:
+    """Build deduplicated KAPE diagnostics summary from raw log parse."""
+    # Deduplicate modules (same tool runs multiple times for VSS)
+    seen_failed: dict[str, str] = {}
+    for m in diag["modules"]:
+        if m["status"].startswith("failed") and m["module"] not in seen_failed:
+            seen_failed[m["module"]] = m["errors"][0][:100] if m["errors"] else "unknown"
+    seen_recovered: set[str] = set()
+    for m in diag["modules"]:
+        if m["status"] == "recovered":
+            seen_recovered.add(m["module"])
+    # Remove from failed if recovered
+    for tool in seen_recovered:
+        seen_failed.pop(tool, None)
+
+    return {
+        "modules_total": diag["summary"]["total"],
+        "modules_success": diag["summary"]["success"],
+        "modules_failed": len(seen_failed),
+        "modules_recovered": len(seen_recovered),
+        "dotnet_errors": diag["summary"]["dotnet_errors"],
+        "missing_modules": diag["missing_modules"],
+        "failed_modules": [
+            {"module": k, "reason": v} for k, v in seen_failed.items()
+        ],
+        "recovered_modules": sorted(seen_recovered),
+        "recommendations": diag.get("recommendations", []),
+    }
+
+
 class OpenCaseRequest(BaseModel):
     path: str
     case_name: str = ""
@@ -25,18 +55,7 @@ async def open_case(req: OpenCaseRequest):
                 from core.kape_log_parser import get_diagnostics
                 diag = get_diagnostics(req.path)
                 if "error" not in diag:
-                    result["kape_diagnostics"] = {
-                        "modules_total": diag["summary"]["total"],
-                        "modules_success": diag["summary"]["success"],
-                        "modules_failed": diag["summary"]["failed"],
-                        "dotnet_errors": diag["summary"]["dotnet_errors"],
-                        "missing_modules": diag["missing_modules"],
-                        "failed_modules": [
-                            {"module": m["module"], "reason": m["errors"][0][:100] if m["errors"] else "unknown"}
-                            for m in diag["modules"] if m["status"].startswith("failed")
-                        ],
-                        "recommendations": diag.get("recommendations", []),
-                    }
+                    result["kape_diagnostics"] = _build_kape_diagnostics(diag)
             except Exception:
                 pass
 
@@ -56,7 +75,18 @@ async def close_case():
 async def get_summary():
     from state import app_state
     try:
-        return app_state.get_axiom().get_metadata()
+        result = app_state.get_axiom().get_metadata()
+
+        if result.get("source_type") == "kape":
+            try:
+                from core.kape_log_parser import get_diagnostics
+                diag = get_diagnostics(result.get("source_path", ""))
+                if "error" not in diag:
+                    result["kape_diagnostics"] = _build_kape_diagnostics(diag)
+            except Exception:
+                pass
+
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

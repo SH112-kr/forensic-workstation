@@ -242,6 +242,7 @@ export default function CaseManager() {
       if (loaded) {
         const caseData = await get('/api/cases/summary');
         setCaseInfo({ ...caseData, case_name: proj.name || caseData.case_name });
+        setKapeDiagnostics(caseData.kape_diagnostics || null);
         saveRecent({ name: proj.name, path: proj.path, source: 'project', totalHits: loaded.total_hits, openedAt: '' });
         setRecentCases(loadRecent());
         setActiveView('dashboard');

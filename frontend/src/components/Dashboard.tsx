@@ -23,6 +23,13 @@ export default function Dashboard() {
 
     // Fetch top artifact types for bar chart
     get('/api/cases/types').then(data => setTopTypes((data.artifact_types || []).slice(0, 10))).catch(() => {});
+
+    // Fetch KAPE diagnostics if not already loaded
+    if (!kapeDiagnostics) {
+      get('/api/cases/summary').then(data => {
+        if (data.kape_diagnostics) setKapeDiagnostics(data.kape_diagnostics);
+      }).catch(() => {});
+    }
   }, [caseInfo, detection]);
 
   if (!caseInfo) return null;
@@ -82,6 +89,14 @@ export default function Dashboard() {
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
               <span style={{ color: '#ef4444', fontWeight: 600 }}>Missing modules:</span>{' '}
               {kapeDiagnostics.missing_modules.join(', ')}
+            </div>
+          )}
+
+          {/* Recovered modules */}
+          {kapeDiagnostics.recovered_modules?.length > 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
+              <span style={{ color: '#4ade80', fontWeight: 600 }}>Recovered (re-parsed):</span>{' '}
+              {kapeDiagnostics.recovered_modules.join(', ')}
             </div>
           )}
 

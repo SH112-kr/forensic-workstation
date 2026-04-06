@@ -434,6 +434,12 @@ class KapeCsvConnector(AxiomMfdbConnector):
         # Fallback: try datetime.fromisoformat
         try:
             clean = clean.replace("Z", "+00:00")
+            # Hayabusa format: "2026-03-05 07:29:05.295 +00:00" — space before tz
+            # fromisoformat needs "2026-03-05T07:29:05.295+00:00"
+            import re as _re
+            clean = _re.sub(r'(\d) ([+-]\d{2}:\d{2})$', r'\1\2', clean)
+            if ' ' in clean and 'T' not in clean:
+                clean = clean.replace(' ', 'T', 1)
             dt = datetime.fromisoformat(clean)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
