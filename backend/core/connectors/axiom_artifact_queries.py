@@ -56,6 +56,7 @@ class ArtifactQueries:
         cur = self._conn.cursor()
 
         # Start with hit_ids from this artifact type
+        limit_clause = f"LIMIT {limit}" if limit > 0 else ""
         if event_ids and eid_frag:
             placeholders = ",".join("?" * len(event_ids))
             cur.execute(f"""
@@ -64,13 +65,13 @@ class ArtifactQueries:
                 WHERE sah.artifact_version_id = ?
                   AND hfi.fragment_definition_id = ?
                   AND hfi.value IN ({placeholders})
-                LIMIT ?
-            """, [av_id, eid_frag] + event_ids + [limit])
+                {limit_clause}
+            """, [av_id, eid_frag] + event_ids)
         else:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT sah.hit_id FROM scan_artifact_hit sah
-                WHERE sah.artifact_version_id = ? LIMIT ?
-            """, (av_id, limit))
+                WHERE sah.artifact_version_id = ? {limit_clause}
+            """, (av_id,))
 
         hit_ids = [r[0] for r in cur.fetchall()]
         if not hit_ids:
@@ -113,29 +114,30 @@ class ArtifactQueries:
     # ── Prefetch ──
 
     def query_prefetch(self, app_name_filter: str = "", limit: int = 100) -> list[dict]:
-        """Query Prefetch files — program execution evidence."""
+        """Query Prefetch files — program execution evidence. limit=0 for all."""
         art = "Prefetch Files - Windows 8/10/11"
         av_id = self._av_id(art)
         if not av_id:
             return []
 
+        limit_clause = f"LIMIT {limit}" if limit > 0 else ""
         cur = self._conn.cursor()
         if app_name_filter:
             name_frag = self._frag_id(art, "Application Name")
             if name_frag:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT hfs.hit_id FROM hit_fragment_string hfs
                     JOIN scan_artifact_hit sah ON hfs.hit_id = sah.hit_id
                     WHERE sah.artifact_version_id = ?
                       AND hfs.fragment_definition_id = ?
                       AND hfs.value LIKE ?
-                    LIMIT ?
-                """, (av_id, name_frag, f"%{app_name_filter}%", limit))
+                    {limit_clause}
+                """, (av_id, name_frag, f"%{app_name_filter}%"))
             else:
                 return []
         else:
-            cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? LIMIT ?",
-                        (av_id, limit))
+            cur.execute(f"SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? {limit_clause}",
+                        (av_id,))
 
         hit_ids = [r[0] for r in cur.fetchall()]
         return self._hydrate_artifact_hits(art, hit_ids) if hit_ids else []
@@ -149,12 +151,13 @@ class ArtifactQueries:
     # ── System Services ──
 
     def query_services(self, service_filter: str = "", limit: int = 100) -> list[dict]:
-        """Query System Services."""
+        """Query System Services. limit=0 for all."""
         art = "System Services"
         av_id = self._av_id(art)
         if not av_id:
             return []
 
+        limit_clause = f"LIMIT {limit}" if limit > 0 else ""
         cur = self._conn.cursor()
         if service_filter:
             name_frag = self._frag_id(art, "Service Name")
@@ -171,13 +174,13 @@ class ArtifactQueries:
                     SELECT DISTINCT hfs.hit_id FROM hit_fragment_string hfs
                     JOIN scan_artifact_hit sah ON hfs.hit_id = sah.hit_id
                     WHERE sah.artifact_version_id = ? AND ({conditions})
-                    LIMIT ?
-                """, [av_id] + params + [limit])
+                    {limit_clause}
+                """, [av_id] + params)
             else:
                 return []
         else:
-            cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? LIMIT ?",
-                        (av_id, limit))
+            cur.execute(f"SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? {limit_clause}",
+                        (av_id,))
 
         hit_ids = [r[0] for r in cur.fetchall()]
         return self._hydrate_artifact_hits(art, hit_ids) if hit_ids else []
@@ -185,12 +188,13 @@ class ArtifactQueries:
     # ── AmCache ──
 
     def query_amcache(self, name_filter: str = "", limit: int = 100) -> list[dict]:
-        """Query AmCache File Entries — program execution + SHA1 hashes."""
+        """Query AmCache File Entries. limit=0 for all."""
         art = "AmCache File Entries"
         av_id = self._av_id(art)
         if not av_id:
             return []
 
+        limit_clause = f"LIMIT {limit}" if limit > 0 else ""
         cur = self._conn.cursor()
         if name_filter:
             name_frag = self._frag_id(art, "Name")
@@ -207,13 +211,13 @@ class ArtifactQueries:
                     SELECT DISTINCT hfs.hit_id FROM hit_fragment_string hfs
                     JOIN scan_artifact_hit sah ON hfs.hit_id = sah.hit_id
                     WHERE sah.artifact_version_id = ? AND ({conditions})
-                    LIMIT ?
-                """, [av_id] + params + [limit])
+                    {limit_clause}
+                """, [av_id] + params)
             else:
                 return []
         else:
-            cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? LIMIT ?",
-                        (av_id, limit))
+            cur.execute(f"SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? {limit_clause}",
+                        (av_id,))
 
         hit_ids = [r[0] for r in cur.fetchall()]
         return self._hydrate_artifact_hits(art, hit_ids) if hit_ids else []
@@ -250,13 +254,21 @@ class ArtifactQueries:
     # ── Generic helpers ──
 
     def _query_artifact(self, artifact_name: str, limit: int = 100) -> list[dict]:
-        """Generic: get all hits for an artifact type."""
+        """Generic: get all hits for an artifact type.
+
+        Args:
+            limit: Max hits to return. 0 = return ALL hits (no limit).
+        """
         av_id = self._av_id(artifact_name)
         if not av_id:
             return []
         cur = self._conn.cursor()
-        cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? LIMIT ?",
-                    (av_id, limit))
+        if limit > 0:
+            cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ? LIMIT ?",
+                        (av_id, limit))
+        else:
+            cur.execute("SELECT hit_id FROM scan_artifact_hit WHERE artifact_version_id = ?",
+                        (av_id,))
         hit_ids = [r[0] for r in cur.fetchall()]
         return self._hydrate_artifact_hits(artifact_name, hit_ids) if hit_ids else []
 

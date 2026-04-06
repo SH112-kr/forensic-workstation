@@ -60,19 +60,19 @@ CONFIDENCE_MAP = {
 
 # Query limits used by each rule — documented for transparency
 RULE_QUERY_LIMITS: dict[str, dict[str, int]] = {
-    "lsass_access": {"process_access_events": 200, "details": 20},
-    "suspicious_process_creation": {"process_creation_events": 500, "details": 20},
-    "service_installation": {"service_installs": 100},
-    "scheduled_task_creation": {"scheduled_task_events": 100, "details": 20},
-    "log_clearing": {"log_cleared": 50, "details": 20},
-    "rdp_lateral_movement": {"logon_events": 500},
-    "explicit_credential_use": {"event_logs_4648": 100},
-    "suspicious_prefetch": {"prefetch_per_tool": 50, "details": 20},
-    "suspicious_service_paths": {"services": 500},
-    "powershell_scriptblock": {"scriptblock": 100, "details": 20},
-    "watering_hole_indicators": {"werfault_prefetch": 200, "security_sw_prefetch": 50, "startup_items": 200, "details": 20},
-    "suspicious_msi_install": {"amcache_programs": 500},
-    "ssh_activity": {"openssh_events": 100, "services": 20, "prefetch": 20},
+    "lsass_access": {"process_access_events": 500, "details": 20},
+    "suspicious_process_creation": {"process_creation_events": 1000, "details": 20},
+    "service_installation": {"service_installs": 500},
+    "scheduled_task_creation": {"scheduled_task_events": 2000, "details": 20},
+    "log_clearing": {"log_cleared": 200, "details": 20},
+    "rdp_lateral_movement": {"logon_events": 1000},
+    "explicit_credential_use": {"event_logs_4648": 500},
+    "suspicious_prefetch": {"prefetch_per_tool": 200, "details": 20},
+    "suspicious_service_paths": {"services": 10000},
+    "powershell_scriptblock": {"scriptblock": 500, "details": 20},
+    "watering_hole_indicators": {"werfault_prefetch": 500, "security_sw_prefetch": 200, "startup_items": 2000, "details": 20},
+    "suspicious_msi_install": {"amcache_programs": 5000},
+    "ssh_activity": {"openssh_events": 500, "services": 100, "prefetch": 500},
 }
 
 
@@ -131,7 +131,7 @@ def rule_lsass_access(aq: ArtifactQueries) -> dict | None:
     Real credential dumping detection: another process opening lsass.exe
     with suspicious access rights, not just "lsass" appearing in any string.
     """
-    hits = aq.query_process_access_events(limit=200)
+    hits = aq.query_process_access_events(limit=0)
     # Filter to LSASS targets
     lsass_hits = [h for h in hits if "lsass" in str(h.get("Event Data", "")).lower()]
     if not lsass_hits:
@@ -171,7 +171,7 @@ def rule_suspicious_process_creation(aq: ArtifactQueries) -> dict | None:
     Looks for: encoded PowerShell, cmd spawning from unusual parents,
     LOLBins with suspicious arguments.
     """
-    hits = aq.query_process_creation_events(limit=500)
+    hits = aq.query_process_creation_events(limit=0)
     suspicious = []
 
     suspicious_indicators = [
@@ -231,7 +231,7 @@ def rule_suspicious_process_creation(aq: ArtifactQueries) -> dict | None:
 
 def rule_service_installation(aq: ArtifactQueries) -> dict | None:
     """Event ID 7045 — New service installed. Common persistence mechanism."""
-    hits = aq.query_service_installs(limit=100)
+    hits = aq.query_service_installs(limit=0)
     if not hits:
         return None
 
@@ -263,10 +263,10 @@ def rule_service_installation(aq: ArtifactQueries) -> dict | None:
 
 def rule_scheduled_task_creation(aq: ArtifactQueries) -> dict | None:
     """Event ID 4698/4702 — Scheduled task created/modified."""
-    hits = aq.query_scheduled_task_events(limit=100)
+    hits = aq.query_scheduled_task_events(limit=0)
     if not hits:
         # Fallback: check Scheduled Tasks artifact
-        tasks = aq.query_scheduled_tasks(limit=100)
+        tasks = aq.query_scheduled_tasks(limit=0)
         if not tasks:
             return None
         details = []
@@ -314,7 +314,7 @@ def rule_scheduled_task_creation(aq: ArtifactQueries) -> dict | None:
 
 def rule_log_clearing(aq: ArtifactQueries) -> dict | None:
     """Event ID 1102 — Security audit log was cleared."""
-    hits = aq.query_log_cleared(limit=50)
+    hits = aq.query_log_cleared(limit=0)
     if not hits:
         return None
 
@@ -342,7 +342,7 @@ def rule_log_clearing(aq: ArtifactQueries) -> dict | None:
 
 def rule_rdp_lateral_movement(aq: ArtifactQueries) -> dict | None:
     """Event ID 4624 Type 10 — RDP logon (lateral movement indicator)."""
-    logons = aq.query_logon_events(limit=500)
+    logons = aq.query_logon_events(limit=0)
     rdp_logons = []
     for h in logons:
         event_data = str(h.get("Event Data", ""))
@@ -382,7 +382,7 @@ def rule_rdp_lateral_movement(aq: ArtifactQueries) -> dict | None:
 
 def rule_explicit_credential_use(aq: ArtifactQueries) -> dict | None:
     """Event ID 4648 — Explicit credential use (runas, pass-the-hash indicator)."""
-    hits = aq.query_event_logs(event_ids=[4648], limit=100)
+    hits = aq.query_event_logs(event_ids=[4648], limit=0)
     if not hits:
         return None
 
@@ -422,7 +422,7 @@ def rule_suspicious_prefetch(aq: ArtifactQueries) -> dict | None:
     ]
     found = []
     for tool in suspicious_tools:
-        hits = aq.query_prefetch(app_name_filter=tool, limit=50)
+        hits = aq.query_prefetch(app_name_filter=tool, limit=0)
         for h in hits:
             app_name = h.get("Application Name", "")
             # Exact match check (not substring)
@@ -459,11 +459,18 @@ def rule_suspicious_prefetch(aq: ArtifactQueries) -> dict | None:
 
 def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
     """Services with executables in suspicious locations."""
-    services = aq.query_services(limit=500)
+    services = aq.query_services(limit=0)
     suspicious = []
     suspicious_paths = [
         "\\temp\\", "\\tmp\\", "\\public\\", "\\perflogs\\",
         "\\appdata\\", "\\programdata\\",
+    ]
+    # Known-good ProgramData paths — exclude from suspicion
+    known_good = [
+        "windows defender", "microsoft\\windows defender",
+        "microsoft\\edge", "google\\chrome", "google\\update",
+        "adobe", "mozilla", "dell", "intel", "nvidia",
+        "package cache",
     ]
 
     for svc in services:
@@ -472,6 +479,9 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
             continue
         for p in suspicious_paths:
             if p in location:
+                # Skip known-good software in ProgramData
+                if p == "\\programdata\\" and any(kg in location for kg in known_good):
+                    continue
                 suspicious.append({
                     "hit_id": svc["hit_id"],
                     "artifact_type": "System Services",
@@ -500,7 +510,7 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
 
 def rule_powershell_scriptblock(aq: ArtifactQueries) -> dict | None:
     """Event ID 4104 — PowerShell Script Block Logging."""
-    hits = aq.query_powershell_scriptblock(limit=100)
+    hits = aq.query_powershell_scriptblock(limit=0)
     if not hits:
         return None
 
@@ -570,7 +580,7 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
     3. Exploit artifacts exist (shellcode in memory, anomalous child processes)
     """
     # Search for WerFault Prefetch entries (covers both 32-bit and 64-bit)
-    werfault_hits = aq.query_prefetch(app_name_filter="WERFAULT", limit=200)
+    werfault_hits = aq.query_prefetch(app_name_filter="WERFAULT", limit=0)
     if not werfault_hits:
         return None
 
@@ -583,14 +593,14 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
     # Gather Prefetch data for security software
     sec_sw_hits: list[dict] = []
     for sw_name in security_sw_names:
-        hits = aq.query_prefetch(app_name_filter=sw_name, limit=50)
+        hits = aq.query_prefetch(app_name_filter=sw_name, limit=0)
         sec_sw_hits.extend(hits)
 
     if not sec_sw_hits:
         return None
 
     # Check if security SW is in startup items (reduces confidence significantly)
-    startup_hits = aq._query_artifact("Startup Items", limit=200)
+    startup_hits = aq._query_artifact("Startup Items", limit=0)
     startup_sw_names = set()
     for s in startup_hits:
         path = str(s.get("Path", "")).upper()
@@ -705,10 +715,10 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
     """
     # Query AmCache Program Entries for MSI installs
     # Try "AmCache Program Entries" first, then fall back to generic search
-    program_hits = aq._query_artifact("AmCache Program Entries", limit=500)
+    program_hits = aq._query_artifact("AmCache Program Entries", limit=0)
     if not program_hits:
         # Fall back to AmCache File Entries
-        program_hits = aq.query_amcache(limit=500)
+        program_hits = aq.query_amcache(limit=0)
 
     if not program_hits:
         return None
@@ -796,7 +806,7 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
     findings: list[dict] = []
 
     # 1. OpenSSH event log entries (Provider="OpenSSH")
-    ssh_events = aq.query_event_logs(provider="OpenSSH", limit=100)
+    ssh_events = aq.query_event_logs(provider="OpenSSH", limit=0)
     for h in ssh_events:
         event_data = str(h.get("Event Data", ""))
         detail = {
@@ -821,7 +831,7 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
 
     # 2. SSH-related services (sshd, ssh-agent)
     for svc_name in ["sshd", "ssh-agent", "OpenSSH"]:
-        svc_hits = aq.query_services(service_filter=svc_name, limit=20)
+        svc_hits = aq.query_services(service_filter=svc_name, limit=0)
         for s in svc_hits:
             findings.append({
                 "hit_id": s["hit_id"],
@@ -835,7 +845,7 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
 
     # 3. SSH key artifacts
     for art_name in ["SSH Keys", "SSH Known Hosts"]:
-        key_hits = aq._query_artifact(art_name, limit=50)
+        key_hits = aq._query_artifact(art_name, limit=0)
         for k in key_hits:
             findings.append({
                 "hit_id": k["hit_id"],
@@ -852,7 +862,7 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
     # 4. SSH-related Prefetch
     ssh_prefetch_names = ["SSHD", "SSH-KEYGEN", "SSH-AGENT", "SSH.EXE"]
     for pf_name in ssh_prefetch_names:
-        pf_hits = aq.query_prefetch(app_name_filter=pf_name, limit=20)
+        pf_hits = aq.query_prefetch(app_name_filter=pf_name, limit=0)
         for p in pf_hits:
             app_name = p.get("Application Name", "")
             # Verify it is actually an SSH binary, not a substring match
