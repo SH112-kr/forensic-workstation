@@ -1,316 +1,515 @@
-import { useState } from 'react';
-import { post } from '../hooks/useApi';
+import { useEffect, useState } from 'react';
+import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
-interface FileItem {
-  name: string;
+interface EvidenceItem {
+  type: string;
   path: string;
-  type: 'drive' | 'directory' | 'file';
-  file_type?: string;
-  size_display?: string;
-  extension?: string;
+  label: string;
+  size?: string;
+  loaded?: boolean;
+  status?: string;
 }
 
+interface SavedProject {
+  name: string;
+  description: string;
+  hostname: string;
+  incident_date: string;
+  evidence_count: number;
+  updated: string;
+  path: string;
+}
+
+const TYPE_ICONS: Record<string, string> = {
+  axiom: 'DB', kape: 'CSV', memory: 'MEM',
+  disk_image: 'IMG', evtx: 'EVT', pcap: 'NET',
+  logs: 'LOG', yara_rules: 'YAR', other: 'FILE',
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  axiom: 'AXIOM Case', kape: 'KAPE Output', memory: 'Memory Dump',
+  disk_image: 'Disk Image', evtx: 'Event Logs', pcap: 'Network Capture',
+  logs: 'Server Logs', yara_rules: 'YARA Rules', other: 'Other',
+};
+
 export default function CaseManager() {
-  const { setCaseInfo, setCaseLoading, setActiveView } = useStore();
-  const [path, setPath] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState('');
+  const { setCaseInfo, setActiveView, setEvidenceDir } = useStore();
 
-  // Recent cases
-  const [recentCases, setRecentCases] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('recentCases') || '[]'); } catch { return []; }
-  });
+  // Tab: 'quick' (single file) or 'project'
+  const [tab, setTab] = useState<'project' | 'quick'>('project');
 
-  const addRecentCase = (casePath: string) => {
-    const updated = [casePath, ...recentCases.filter(p => p !== casePath)].slice(0, 5);
-    setRecentCases(updated);
-    localStorage.setItem('recentCases', JSON.stringify(updated));
-  };
+  // Quick open
+  const [quickPath, setQuickPath] = useState('');
+  const [quickLoading, setQuickLoading] = useState(false);
+  const [quickError, setQuickError] = useState('');
 
-  // File browser state
+  // Project
+  const [projectName, setProjectName] = useState('');
+  const [projectDesc, setProjectDesc] = useState('');
+  const [incidentDate, setIncidentDate] = useState('');
+  const [timezone, setTimezone] = useState('Asia/Seoul');
+  const [hostname, setHostname] = useState('');
+  const [ipAddresses, setIpAddresses] = useState('');
+  const [userAccounts, setUserAccounts] = useState('');
+  const [knownIocs, setKnownIocs] = useState('');
+  const [notes] = useState('');
+
+  // Evidence scan
+  const [scanDir, setScanDir] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [selectedEvidence, setSelectedEvidence] = useState<Set<number>>(new Set());
+
+  // Saved projects
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+
+  // Folder browser
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserPath, setBrowserPath] = useState('');
-  const [browserItems, setBrowserItems] = useState<FileItem[]>([]);
+  const [browserItems, setBrowserItems] = useState<any[]>([]);
   const [browserLoading, setBrowserLoading] = useState(false);
-  const [showAll, setShowAll] = useState(false);
 
-  const openCase = async (filePath?: string) => {
-    const target = filePath || path.trim();
-    if (!target) return;
-    setLoading(true);
-    setCaseLoading(true);
-    setError('');
-    setLoadingMsg('Connecting to database...');
+  // Loading
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
 
-    try {
-      // Simulate progress stages
-      const progressTimer = setTimeout(() => setLoadingMsg('Loading artifact metadata...'), 1500);
-      const progressTimer2 = setTimeout(() => setLoadingMsg('Building fragment cache...'), 3000);
+  useEffect(() => {
+    get('/api/project/list').then(d => setSavedProjects(d.projects || [])).catch(() => {});
+  }, []);
 
-      const data = await post('/api/cases/open', { path: target });
-      clearTimeout(progressTimer);
-      clearTimeout(progressTimer2);
-
-      setCaseInfo(data);
-      addRecentCase(target);
-      setActiveView('dashboard');
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-      setCaseLoading(false);
-      setLoadingMsg('');
-    }
-  };
-
-  const browse = async (targetPath: string = '', forceShowAll?: boolean) => {
+  // Folder browser
+  const browse = async (targetPath: string = '') => {
     setBrowserLoading(true);
     try {
-      const data = await post('/api/files/browse', {
-        path: targetPath,
-        show_all: forceShowAll !== undefined ? forceShowAll : showAll,
-      });
+      const data = await post('/api/files/browse', { path: targetPath, show_all: true });
       setBrowserPath(data.current || '');
-      setBrowserItems(data.items || []);
-      if (data.error) {
-        console.warn('Browse error:', data.error);
-      }
-    } catch (e) {
-      console.error('Browse API error:', e);
-      setBrowserItems([]);
-    } finally {
-      setBrowserLoading(false);
-    }
+      setBrowserItems((data.items || []).filter((i: any) => i.type === 'drive' || i.type === 'directory'));
+    } catch { setBrowserItems([]); }
+    finally { setBrowserLoading(false); }
   };
 
-  const openBrowser = () => {
+  const openFolderBrowser = () => {
     setBrowserOpen(true);
     browse('');
   };
 
-  const selectFile = (item: FileItem) => {
-    if (item.type === 'drive' || item.type === 'directory') {
-      browse(item.path);
-    } else {
-      setPath(item.path);
-      setBrowserOpen(false);
+  const selectFolder = (path: string) => {
+    setScanDir(path);
+    setEvidenceDir(path);
+    setBrowserOpen(false);
+    // Auto-scan after selecting
+    setTimeout(async () => {
+      setScanning(true);
+      try {
+        const data = await post('/api/project/scan-evidence', { directory: path });
+        const found: EvidenceItem[] = data.found || [];
+        setEvidence(found);
+        setSelectedEvidence(new Set(found.map((_: any, i: number) => i)));
+        if (!projectName) {
+          const parts = path.replace(/\\/g, '/').split('/');
+          setProjectName(parts[parts.length - 1] || parts[parts.length - 2] || '');
+        }
+      } catch (e: any) { setError('Scan failed: ' + e.message); }
+      finally { setScanning(false); }
+    }, 0);
+  };
+
+  // Evidence scan
+  const handleScan = async () => {
+    if (!scanDir.trim()) return;
+    setScanning(true);
+    try {
+      const data = await post('/api/project/scan-evidence', { directory: scanDir.trim() });
+      const found: EvidenceItem[] = data.found || [];
+      setEvidence(found);
+      setSelectedEvidence(new Set(found.map((_: any, i: number) => i)));
+      if (!projectName && scanDir) {
+        const parts = scanDir.replace(/\\/g, '/').split('/');
+        setProjectName(parts[parts.length - 1] || parts[parts.length - 2] || '');
+      }
+    } catch (e: any) {
+      setError('Scan failed: ' + e.message);
+    } finally {
+      setScanning(false);
     }
   };
 
-  const icons: Record<string, string> = {
-    drive: '💾',
-    directory: '📁',
-    'AXIOM Case': '🔬',
-    'Memory Dump': '🧠',
-    'Binary': '⚙️',
-    'Event Log': '📋',
-    'PCAP': '🌐',
-    'YARA Rules': '🎯',
-    'Registry Hive': '🗂️',
-    'Other': '📄',
+  const toggleEvidence = (idx: number) => {
+    setSelectedEvidence(prev => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
+  };
+
+  // Create project & load
+  const handleCreate = async () => {
+    setCreating(true);
+    setError('');
+    try {
+      const selected = evidence.filter((_, i) => selectedEvidence.has(i));
+      const data = await post('/api/project/create', {
+        name: projectName || 'Untitled',
+        description: projectDesc,
+        incident_date: incidentDate,
+        timezone,
+        hostname,
+        ip_addresses: ipAddresses,
+        user_accounts: userAccounts,
+        known_iocs: knownIocs,
+        notes,
+        evidence: selected,
+      });
+
+      // Check if any case data was loaded
+      const loadResults = data.load_results || [];
+      const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+      if (loaded) {
+        // Fetch case info
+        try {
+          const caseData = await get('/api/cases/summary');
+          setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
+          setActiveView('dashboard');
+        } catch {
+          // Case loaded but summary failed — go to dashboard anyway
+          setCaseInfo({
+            case_name: projectName,
+            total_hits: loaded.total_hits || 0,
+            artifact_type_count: 0,
+            date_range_start: '',
+            date_range_end: '',
+            evidence_sources: [],
+            artifact_types: {},
+          });
+          setActiveView('dashboard');
+        }
+      } else {
+        // No case data — just save project and stay (can use KAPE/Settings)
+        setError('Project saved. No case data (AXIOM/KAPE) was loaded. Use KAPE to collect data first.');
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // Open saved project
+  const handleOpenProject = async (proj: SavedProject) => {
+    setCreating(true);
+    setError('');
+    try {
+      const data = await post('/api/project/open', { path: proj.path });
+      const loadResults = data.load_results || [];
+      const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+      if (loaded) {
+        const caseData = await get('/api/cases/summary');
+        setCaseInfo({ ...caseData, case_name: proj.name || caseData.case_name });
+        setActiveView('dashboard');
+      } else {
+        setError('Project opened but no case data loaded.');
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // Quick open
+  const handleQuickOpen = async () => {
+    if (!quickPath.trim()) return;
+    setQuickLoading(true);
+    setQuickError('');
+    try {
+      const data = await post('/api/cases/open', { path: quickPath.trim() });
+      setCaseInfo(data);
+      setActiveView('dashboard');
+    } catch (e: any) {
+      setQuickError(e.message);
+    } finally {
+      setQuickLoading(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '8px 12px', borderRadius: 6,
+    border: '1px solid var(--border)', background: 'var(--bg)',
+    color: 'var(--text)', fontSize: 13, fontFamily: 'monospace',
+  };
+
+  const sectionStyle: React.CSSProperties = {
+    background: 'var(--surface)', border: '1px solid var(--border)',
+    borderRadius: 12, padding: 20, marginBottom: 16,
   };
 
   return (
-    <div style={{ maxWidth: 700, margin: '60px auto', padding: '0 24px' }}>
+    <div style={{ maxWidth: 800, margin: '40px auto', padding: '0 24px' }}>
       {/* Title */}
-      <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 300, marginBottom: 4 }}>
+      <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 300, marginBottom: 4 }}>
           <strong>Forensic</strong> Workstation
         </h1>
-        <p style={{ color: 'var(--text-dim)', fontSize: 14 }}>
-          Digital Forensics & Incident Response Investigation Platform
+        <p style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+          Digital Forensics &amp; Incident Response Platform
         </p>
       </div>
 
-      {/* File input */}
-      <div style={{
-        background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
-        padding: 24, marginBottom: 16,
-      }}>
-        <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', display: 'block', marginBottom: 8 }}>
-          Case File Path
-        </label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && openCase()}
-            placeholder="Select a file or enter path..."
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
+        {([['project', 'New Project'], ['quick', 'Quick Open']] as const).map(([id, label]) => (
+          <div key={id} onClick={() => setTab(id)}
             style={{
-              flex: 1, padding: '10px 14px', borderRadius: 8,
-              border: '1px solid var(--border)', background: 'var(--bg)',
-              color: 'var(--text)', fontSize: 13, fontFamily: 'var(--mono)',
-            }}
-          />
-          <button className="btn" onClick={openBrowser} style={{ padding: '10px 16px' }}>
-            Browse...
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => openCase()}
-            disabled={loading || !path.trim()}
-            style={{ padding: '10px 24px', minWidth: 100 }}
-          >
-            {loading ? 'Opening...' : 'Open'}
-          </button>
-        </div>
-
-        {/* Loading indicator */}
-        {loading && (
-          <div style={{
-            marginTop: 16, padding: 16, borderRadius: 8,
-            background: 'var(--accent-light)', border: '1px solid var(--accent)',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{
-                width: 20, height: 20, border: '3px solid var(--border)',
-                borderTopColor: 'var(--accent)', borderRadius: '50%',
-                animation: 'spin 0.8s linear infinite',
-              }} />
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{loadingMsg || 'Loading...'}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
-                  This may take a few seconds for large case files
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Error */}
-        {error && (
-          <div style={{
-            marginTop: 12, padding: '10px 14px', borderRadius: 8,
-            background: 'var(--critical-bg)', color: 'var(--critical)', fontSize: 12,
-          }}>
-            {error}
-          </div>
-        )}
-      </div>
-
-      {/* Supported files info */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-        gap: 8, marginBottom: 24,
-      }}>
-        {[
-          { ext: '.mfdb', label: 'AXIOM Case', desc: 'Disk forensics' },
-          { ext: '.raw/.vmem', label: 'Memory Dump', desc: 'Volatility analysis' },
-          { ext: '.exe/.dll', label: 'Binary', desc: 'Ghidra analysis' },
-          { ext: '.evtx', label: 'Event Log', desc: 'Hayabusa scan' },
-          { ext: '.pcap', label: 'PCAP', desc: 'Network analysis' },
-        ].map((f) => (
-          <div key={f.ext} style={{
-            padding: '10px 12px', borderRadius: 8,
-            border: '1px solid var(--border-light)', fontSize: 11,
-          }}>
-            <div style={{ fontWeight: 600, marginBottom: 2 }}>{f.label}</div>
-            <div style={{ color: 'var(--text-dim)' }}>{f.ext}</div>
-            <div style={{ color: 'var(--text-light)', fontSize: 10 }}>{f.desc}</div>
+              padding: '10px 24px', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent',
+              color: tab === id ? 'var(--accent)' : 'var(--text-dim)',
+            }}>
+            {label}
           </div>
         ))}
+        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <span onClick={() => setActiveView('kape')}
+            style={{ fontSize: 12, color: 'var(--text-dim)', cursor: 'pointer' }}
+          >{'\u25B6'} KAPE</span>
+          <span onClick={() => setActiveView('settings')}
+            style={{ fontSize: 12, color: 'var(--text-dim)', cursor: 'pointer' }}
+          >{'\u2699'} Settings</span>
+        </div>
       </div>
 
-      {/* Recent Cases */}
-      {recentCases.length > 0 && (
+      {error && (
         <div style={{
-          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
-          padding: 16, marginBottom: 24,
-        }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', display: 'block', marginBottom: 8 }}>
-            Recent Cases
-          </label>
-          {recentCases.map((p, i) => (
-            <div key={i}
-              onClick={() => { setPath(p); openCase(p); }}
-              style={{
-                padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
-                fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--text)',
-                marginBottom: 2,
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent-light)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-            >
-              {p}
+          padding: '10px 16px', borderRadius: 6, marginBottom: 16, fontSize: 12,
+          background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)',
+        }}>{error}</div>
+      )}
+
+      {/* ── PROJECT TAB ── */}
+      {tab === 'project' && (
+        <>
+          {/* Saved Projects */}
+          {savedProjects.length > 0 && (
+            <div style={{ ...sectionStyle, padding: 16 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+                Saved Projects
+              </label>
+              {savedProjects.map((p, i) => (
+                <div key={i} onClick={() => handleOpenProject(p)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '8px 12px', borderRadius: 6, cursor: 'pointer', marginTop: 6,
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-light)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</span>
+                  {p.hostname && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.hostname}</span>}
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{p.evidence_count} evidence</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{p.updated?.slice(0, 10)}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+
+          {/* Evidence Scan */}
+          <div style={sectionStyle}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', display: 'block', marginBottom: 8 }}>
+              Evidence Folder
+            </label>
+            <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 8px' }}>
+              Select the case folder — evidence files will be auto-detected
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{
+                ...inputStyle, flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center',
+                color: scanDir ? 'var(--text)' : 'var(--text-dim)',
+              }} onClick={openFolderBrowser}>
+                {scanDir || 'Click to browse...'}
+              </div>
+              <button className="btn" onClick={openFolderBrowser} style={{ padding: '8px 16px' }}>
+                Browse
+              </button>
+              {scanDir && (
+                <button className="btn btn-primary" onClick={handleScan} disabled={scanning}
+                  style={{ padding: '8px 16px' }}>
+                  {scanning ? '...' : 'Rescan'}
+                </button>
+              )}
+            </div>
+
+            {/* Detected Evidence */}
+            {evidence.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                {evidence.map((ev, i) => (
+                  <label key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px',
+                    borderRadius: 6, cursor: 'pointer',
+                    background: selectedEvidence.has(i) ? 'rgba(74,222,128,0.06)' : 'transparent',
+                  }}>
+                    <input type="checkbox" checked={selectedEvidence.has(i)} onChange={() => toggleEvidence(i)} />
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                      background: 'rgba(96,165,250,0.15)', color: '#60a5fa', fontFamily: 'monospace',
+                      minWidth: 28, textAlign: 'center',
+                    }}>{TYPE_ICONS[ev.type] || 'FILE'}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span>{TYPE_LABELS[ev.type] || ev.type}</span>
+                        <span style={{ fontWeight: 400, color: 'var(--text-dim)', fontSize: 11 }}>{ev.size}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {ev.path}
+                      </div>
+                    </div>
+                    <span style={{ color: '#4ade80', fontSize: 12, fontWeight: 700 }}>{'\u2713'}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Project Info */}
+          <div style={sectionStyle}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', display: 'block', marginBottom: 12 }}>
+              Project Info
+            </label>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Project Name <span style={{ color: '#ef4444' }}>*</span></label>
+                <input style={inputStyle} placeholder="e.g. Case_001" value={projectName} onChange={e => setProjectName(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Incident Date <span style={{ color: '#ef4444' }}>*</span></label>
+                <input style={inputStyle} type="date" value={incidentDate} onChange={e => setIncidentDate(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Hostname <span style={{ color: '#ef4444' }}>*</span></label>
+                <input style={inputStyle} placeholder="e.g. WORKSTATION-01" value={hostname} onChange={e => setHostname(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Timezone <span style={{ color: '#ef4444' }}>*</span></label>
+                <input style={inputStyle} placeholder="Asia/Seoul" value={timezone} onChange={e => setTimezone(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>IP Addresses</label>
+                <input style={inputStyle} placeholder="192.168.1.10, 10.0.0.5" value={ipAddresses} onChange={e => setIpAddresses(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>User Accounts</label>
+                <input style={inputStyle} placeholder="admin, user01" value={userAccounts} onChange={e => setUserAccounts(e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Known IOCs (IPs, hashes, domains)</label>
+              <input style={inputStyle} placeholder="1.2.3.4, evil.exe, malware.com" value={knownIocs} onChange={e => setKnownIocs(e.target.value)} />
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Description / Notes</label>
+              <textarea style={{ ...inputStyle, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+                placeholder="Incident background, scope, anything relevant..."
+                value={projectDesc} onChange={e => setProjectDesc(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Create */}
+          <button className="btn btn-primary"
+            onClick={handleCreate}
+            disabled={creating || (evidence.length === 0 && !projectName)}
+            style={{ width: '100%', padding: '12px', fontSize: 14, fontWeight: 600, marginBottom: 24 }}>
+            {creating ? 'Creating...' : 'Create Project & Load Evidence'}
+          </button>
+        </>
+      )}
+
+      {/* ── QUICK OPEN TAB ── */}
+      {tab === 'quick' && (
+        <div style={sectionStyle}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', display: 'block', marginBottom: 8 }}>
+            Open a single case file (.mfdb or KAPE parsed directory)
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input style={{ ...inputStyle, flex: 1 }}
+              placeholder="Path to .mfdb file or KAPE parsed directory..."
+              value={quickPath} onChange={e => setQuickPath(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleQuickOpen()}
+            />
+            <button className="btn btn-primary" onClick={handleQuickOpen}
+              disabled={quickLoading || !quickPath.trim()}
+              style={{ padding: '8px 24px' }}>
+              {quickLoading ? 'Opening...' : 'Open'}
+            </button>
+          </div>
+          {quickError && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{quickError}</div>
+          )}
         </div>
       )}
 
-      {/* File Browser Modal */}
+      {/* Folder Browser Modal */}
       {browserOpen && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
         }} onClick={() => setBrowserOpen(false)}>
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: 600, maxHeight: '70vh', background: 'var(--bg)',
-              border: '1px solid var(--border)', borderRadius: 12,
-              display: 'flex', flexDirection: 'column', overflow: 'hidden',
-            }}
-          >
-            {/* Browser header */}
+          <div onClick={e => e.stopPropagation()} style={{
+            width: 550, maxHeight: '65vh', background: 'var(--bg)',
+            border: '1px solid var(--border)', borderRadius: 12,
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}>
             <div style={{
               padding: '12px 16px', borderBottom: '1px solid var(--border)',
               display: 'flex', alignItems: 'center', gap: 8,
             }}>
-              <span style={{ fontWeight: 600, fontSize: 14 }}>Select File</span>
+              <span style={{ fontWeight: 600, fontSize: 14 }}>Select Evidence Folder</span>
               <div style={{ flex: 1 }} />
-              <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-dim)' }}>
-                <input type="checkbox" checked={showAll} onChange={(e) => { setShowAll(e.target.checked); browse(browserPath, e.target.checked); }} />
-                Show all files
-              </label>
               <button className="btn btn-sm" onClick={() => setBrowserOpen(false)}>Close</button>
             </div>
-
-            {/* Path bar */}
             <div style={{
               padding: '8px 16px', background: 'var(--surface)', borderBottom: '1px solid var(--border)',
-              fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--text-dim)',
+              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-dim)',
               display: 'flex', alignItems: 'center', gap: 8,
             }}>
               <button className="btn btn-sm" onClick={() => browse('')}>Drives</button>
-              <span>{browserPath || 'Select a drive'}</span>
-              {browserLoading && <span style={{ color: 'var(--accent)' }}>Loading...</span>}
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {browserPath || 'Select a drive'}
+              </span>
+              {browserPath && (
+                <button className="btn btn-sm btn-primary" onClick={() => selectFolder(browserPath)}
+                  style={{ fontSize: 11, padding: '4px 12px' }}>
+                  Select This Folder
+                </button>
+              )}
+              {browserLoading && <span style={{ color: 'var(--accent)', fontSize: 11 }}>Loading...</span>}
             </div>
-
-            {/* File list */}
             <div style={{ flex: 1, overflowY: 'auto' }}>
-              {browserItems.map((item, i) => (
-                <div
-                  key={i}
-                  onClick={() => selectFile(item)}
-                  onDoubleClick={() => item.type === 'file' && openCase(item.path)}
+              {browserItems.map((item: any, i: number) => (
+                <div key={i}
+                  onClick={() => browse(item.path)}
+                  onDoubleClick={() => selectFolder(item.path)}
                   style={{
                     padding: '8px 16px', cursor: 'pointer', display: 'flex',
                     alignItems: 'center', gap: 10, borderBottom: '1px solid var(--border-light)',
                     fontSize: 13,
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-light)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-light)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
-                  <span>{icons[item.type === 'file' ? (item.file_type || 'Other') : item.type] || '📄'}</span>
-                  <span style={{ flex: 1, fontWeight: item.type !== 'file' ? 600 : 400 }}>
-                    {item.name}
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                    {item.type === 'drive' ? '[D]' : '[F]'}
                   </span>
-                  {item.file_type && (
-                    <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>{item.file_type}</span>
-                  )}
-                  {item.size_display && (
-                    <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>
-                      {item.size_display}
-                    </span>
-                  )}
+                  <span style={{ fontWeight: 600 }}>{item.name}</span>
                 </div>
               ))}
               {browserItems.length === 0 && !browserLoading && (
-                <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
-                  No forensic files found. Enable "Show all files" to see everything.
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>
+                  Empty directory
                 </div>
               )}
             </div>
@@ -318,7 +517,6 @@ export default function CaseManager() {
         </div>
       )}
 
-      {/* Spinner animation */}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );

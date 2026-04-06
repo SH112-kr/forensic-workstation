@@ -83,6 +83,9 @@ from api.yara_api import router as yara_router
 from api.registry import router as registry_router
 from api.logs import router as logs_router
 from api.network import router as network_router
+from api.settings import router as settings_router
+from api.triage import router as triage_router
+from api.project import router as project_router
 
 app.include_router(cases_router)
 app.include_router(artifacts_router)
@@ -98,6 +101,9 @@ app.include_router(yara_router)
 app.include_router(registry_router)
 app.include_router(logs_router)
 app.include_router(network_router)
+app.include_router(settings_router)
+app.include_router(triage_router)
+app.include_router(project_router)
 
 
 @app.get("/api/health")

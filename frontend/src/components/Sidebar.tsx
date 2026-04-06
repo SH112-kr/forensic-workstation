@@ -42,6 +42,13 @@ const SECTIONS: NavSection[] = [
       { id: 'report', label: 'Report', icon: '📄' },
     ],
   },
+  {
+    title: 'System',
+    items: [
+      { id: 'kape', label: 'KAPE', icon: '\u25B6' },
+      { id: 'settings', label: 'Settings', icon: '\u2699' },
+    ],
+  },
 ];
 
 export default function Sidebar() {

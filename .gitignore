@@ -15,6 +15,9 @@ frontend/dist/
 .env
 backend/.env
 
+# ── KAPE Output (evidence data, NEVER commit) ──
+export/
+
 # ── Forensic Data (case-specific, NEVER commit) ──
 backend/.active_case.json
 backend/.mcp_events.jsonl
@@ -27,6 +30,9 @@ audit_log.jsonl
 *.E01
 *.pcap
 *.pcapng
+
+# ── Projects (contain evidence paths) ──
+projects/
 
 # ── Analysis Results (local only) ──
 i30_results.txt

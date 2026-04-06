@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pydantic_settings import BaseSettings
 
 
@@ -16,6 +18,9 @@ class Config(BaseSettings):
 
     # Ghidra (Phase 2)
     ghidra_install_dir: str = ""
+
+    # KAPE
+    kape_path: str = ""
 
     # YARA (Phase 3)
     yara_rules_path: str = ""
@@ -32,3 +37,27 @@ class Config(BaseSettings):
 
 
 config = Config()
+
+
+def find_kape() -> str | None:
+    """Find kape.exe from config, env, or common paths."""
+    import shutil
+    if config.kape_path and os.path.isfile(config.kape_path):
+        return config.kape_path
+    # Check PATH
+    found = shutil.which("kape") or shutil.which("kape.exe")
+    if found:
+        return found
+    # Common locations
+    import glob as _glob
+    for pattern in [
+        os.path.expanduser("~/Desktop/*/Tools/KAPE/kape.exe"),
+        os.path.expanduser("~/Desktop/*/KAPE/kape.exe"),
+        "C:/Tools/KAPE/kape.exe",
+        "C:/KAPE/kape.exe",
+        "D:/Tools/KAPE/kape.exe",
+    ]:
+        matches = _glob.glob(pattern)
+        if matches:
+            return matches[0]
+    return None

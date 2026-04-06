@@ -31,6 +31,7 @@ import core
 
 from mcp.server.fastmcp import FastMCP
 from core.connectors.axiom_mfdb import AxiomMfdbConnector
+from core.connectors.kape_csv import KapeCsvConnector
 from core.connectors.e01_image import E01ImageConnector
 from core.connectors.ghidra import GhidraConnector
 from core.connectors.volatility_connector import VolatilityConnector
@@ -44,7 +45,7 @@ mcp = FastMCP(
         "Forensic Workstation — DFIR 침해사고조사 플랫폼입니다. "
         "웹 UI(http://localhost:8001)와 연동됩니다. "
         "도구 호출 시 결과가 웹 UI에도 실시간으로 표시됩니다.\n\n"
-        "먼저 open_case로 .mfdb 파일을 열고, 분석 도구를 사용하세요."
+        "먼저 open_case로 .mfdb 파일 또는 KAPE 결과 디렉토리를 열고, 분석 도구를 사용하세요."
     ),
 )
 
@@ -274,14 +275,19 @@ def _traced(tool_name: str, params: dict, fn):
 
 @mcp.tool()
 async def open_case(path: str, case_name: str = "") -> dict:
-    """Open an AXIOM case (.mfdb) file."""
+    """Open an AXIOM case (.mfdb) file or KAPE output directory."""
     def fn():
         _connectors.pop("axiom", None)
-        c = AxiomMfdbConnector()
+        if os.path.isdir(path):
+            c = KapeCsvConnector()
+        elif path.lower().endswith(".mfdb"):
+            c = AxiomMfdbConnector()
+        else:
+            return {"error": f"Unsupported format. Provide .mfdb file or KAPE output directory: {path}"}
         meta = c.connect(path)
         if case_name:
             meta["case_name"] = case_name
-        _connectors["axiom"] = c
+        _connectors["axiom"] = c  # same key for backward compatibility
         return _mask({"status": "success", **meta})
     return _traced("open_case", {"path": path, "case_name": case_name}, fn)
 
@@ -1393,6 +1399,217 @@ def _find_items(data: Any) -> list | None:
         if best_key:
             return data[best_key]
     return None
+
+
+# ── Auto Triage Pipeline ──
+
+@mcp.tool()
+async def auto_triage(
+    source_drive: str,
+    case_name: str = "",
+    output_dir: str = "",
+    kape_path: str = "",
+    skip_kape: bool = False,
+    vss: bool = True,
+) -> dict:
+    """Automated triage pipeline: KAPE collection + parsing + analysis in one step.
+
+    Runs the full pipeline: KAPE collect/parse → open_case → find_suspicious →
+    extract_iocs → build_timeline → generate_report.
+
+    Args:
+        source_drive: Mounted drive letter (e.g. "G:" or "G")
+        case_name: Case identifier (default: auto-generated from date)
+        output_dir: Output directory (default: ./export/YYYYMMDD_casename/)
+        kape_path: Path to kape.exe (auto-detected if empty)
+        skip_kape: Skip KAPE collection (use existing parsed data in output_dir)
+        vss: Include Volume Shadow Copies (default: True, requires admin)
+    """
+    import subprocess
+    import time as _t
+    from datetime import datetime as _dt
+    from core.config import find_kape
+
+    params = {"source_drive": source_drive, "case_name": case_name,
+              "output_dir": output_dir, "skip_kape": skip_kape, "vss": vss}
+
+    def fn():
+        steps: list[dict] = []
+        t_start = _t.time()
+
+        # ── Step 0: Resolve paths ──
+        drive = source_drive.rstrip(":\\/ ") + ":\\"
+        datestamp = _dt.now().strftime("%Y%m%d")
+        cname = case_name or "case"
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.dirname(backend_dir)
+
+        if output_dir:
+            out_dir = output_dir
+        else:
+            out_dir = os.path.join(project_dir, "export", f"{datestamp}_{cname}")
+
+        collected_dir = os.path.join(out_dir, "collected")
+        parsed_dir = os.path.join(out_dir, "parsed")
+
+        # ── Step 1: KAPE Collection + Parsing ──
+        if not skip_kape:
+            kape = kape_path or find_kape()
+            if not kape or not os.path.isfile(kape):
+                return {"error": f"kape.exe not found. Set FORENSIC_KAPE_PATH or pass kape_path. Searched: {kape}"}
+
+            cmd = [
+                kape,
+                "--tsource", drive,
+                "--tdest", collected_dir,
+                "--target", "ForensicWorkstation",
+                "--mdest", parsed_dir,
+                "--module", "ForensicWorkstation",
+                "--msource", collected_dir,
+            ]
+            if vss:
+                cmd += ["--vss", "--vd"]
+
+            steps.append({"step": "kape_start", "command": " ".join(cmd)})
+
+            t1 = _t.time()
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=7200,  # 2h max
+                )
+                kape_duration = round(_t.time() - t1, 1)
+                steps.append({
+                    "step": "kape_complete",
+                    "duration_s": kape_duration,
+                    "return_code": result.returncode,
+                    "stdout_tail": result.stdout[-500:] if result.stdout else "",
+                    "stderr_tail": result.stderr[-500:] if result.stderr else "",
+                })
+                if result.returncode != 0:
+                    steps.append({"step": "kape_warning", "message": "KAPE returned non-zero exit code"})
+            except subprocess.TimeoutExpired:
+                return {"error": "KAPE timed out after 2 hours", "steps": steps}
+            except FileNotFoundError:
+                return {"error": f"Cannot execute kape.exe at: {kape}", "steps": steps}
+        else:
+            steps.append({"step": "kape_skipped", "using_existing": parsed_dir})
+
+        # ── Step 2: Open Case ──
+        if not os.path.isdir(parsed_dir):
+            return {"error": f"Parsed directory not found: {parsed_dir}", "steps": steps}
+
+        t2 = _t.time()
+        _connectors.pop("axiom", None)
+        from core.connectors.kape_csv import KapeCsvConnector
+        c = KapeCsvConnector()
+        case_meta = c.connect(parsed_dir)
+        if case_name:
+            case_meta["case_name"] = case_name
+        _connectors["axiom"] = c
+        steps.append({
+            "step": "open_case",
+            "duration_s": round(_t.time() - t2, 1),
+            "total_hits": case_meta.get("total_hits", 0),
+            "artifact_types": case_meta.get("artifact_type_count", 0),
+        })
+
+        # ── Step 3: Find Suspicious ──
+        t3 = _t.time()
+        try:
+            from core.analysis.suspicious import find_suspicious as _find
+            suspicious = _find(c.artifact_queries)
+            findings = suspicious.get("findings", [])
+            steps.append({
+                "step": "find_suspicious",
+                "duration_s": round(_t.time() - t3, 1),
+                "total_findings": len(findings),
+                "critical": len([f for f in findings if f.get("severity") == "critical"]),
+                "high": len([f for f in findings if f.get("severity") == "high"]),
+            })
+        except Exception as e:
+            findings = []
+            steps.append({"step": "find_suspicious", "error": str(e)})
+
+        # ── Step 4: Extract IOCs ──
+        t4 = _t.time()
+        try:
+            from core.analysis.ioc_extractor import extract_iocs as _extract
+            iocs = _extract(c)
+            ioc_list = iocs.get("iocs", [])
+            steps.append({
+                "step": "extract_iocs",
+                "duration_s": round(_t.time() - t4, 1),
+                "total_iocs": len(ioc_list),
+                "by_type": iocs.get("by_type", {}),
+            })
+        except Exception as e:
+            ioc_list = []
+            steps.append({"step": "extract_iocs", "error": str(e)})
+
+        # ── Step 5: Build Timeline ──
+        t5 = _t.time()
+        try:
+            timeline = c.get_timeline(limit=500)
+            steps.append({
+                "step": "build_timeline",
+                "duration_s": round(_t.time() - t5, 1),
+                "total_events": timeline.get("total_events", 0),
+            })
+        except Exception as e:
+            timeline = {}
+            steps.append({"step": "build_timeline", "error": str(e)})
+
+        # ── Step 6: MITRE Mapping ──
+        t6 = _t.time()
+        try:
+            from core.analysis.mitre_mapper import get_attack_narrative
+            mitre = get_attack_narrative(findings)
+            steps.append({
+                "step": "mitre_mapping",
+                "duration_s": round(_t.time() - t6, 1),
+                "techniques_found": len(mitre.get("techniques", [])),
+            })
+        except Exception as e:
+            mitre = {}
+            steps.append({"step": "mitre_mapping", "error": str(e)})
+
+        # ── Step 7: Generate Report ──
+        t7 = _t.time()
+        try:
+            from core.analysis.report_generator import generate_report as _gen
+            report_result = _gen({"axiom": c}, _masker, "")
+            steps.append({
+                "step": "generate_report",
+                "duration_s": round(_t.time() - t7, 1),
+                "report_path": report_result.get("output_path", ""),
+            })
+        except Exception as e:
+            steps.append({"step": "generate_report", "error": str(e)})
+
+        total_duration = round(_t.time() - t_start, 1)
+
+        return _mask({
+            "status": "complete",
+            "case_name": case_meta.get("case_name", cname),
+            "total_duration_s": total_duration,
+            "output_dir": out_dir,
+            "parsed_dir": parsed_dir,
+            "total_hits": case_meta.get("total_hits", 0),
+            "artifact_types": case_meta.get("artifact_types", {}),
+            "summary": {
+                "suspicious_findings": len(findings),
+                "iocs_extracted": len(ioc_list),
+                "timeline_events": timeline.get("total_events", 0),
+                "mitre_techniques": len(mitre.get("techniques", [])),
+            },
+            "top_findings": [
+                {"rule": f["rule_name"], "severity": f["severity"], "count": f["matching_count"]}
+                for f in sorted(findings, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.get("severity", "low"), 4))[:10]
+            ],
+            "steps": steps,
+        })
+
+    return _traced("auto_triage", params, fn)
 
 
 def main():

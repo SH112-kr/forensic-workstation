@@ -36,6 +36,10 @@ interface AppState {
   lastAction: string;
   setLastAction: (v: string) => void;
 
+  // Project
+  evidenceDir: string;
+  setEvidenceDir: (v: string) => void;
+
   // Copilot
   copilotOpen: boolean;
   toggleCopilot: () => void;
@@ -72,6 +76,9 @@ export const useStore = create<AppState>((set) => ({
 
   lastAction: '',
   setLastAction: (v) => set({ lastAction: v }),
+
+  evidenceDir: '',
+  setEvidenceDir: (v) => set({ evidenceDir: v }),
 
   copilotOpen: false,
   toggleCopilot: () => set((s) => ({ copilotOpen: !s.copilotOpen })),

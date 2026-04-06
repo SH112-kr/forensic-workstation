@@ -47,11 +47,15 @@ class AppState:
         return c
 
     def open_axiom(self, path: str, label: str = "") -> dict:
-        """Open an AXIOM case. Supports multiple simultaneous cases."""
-        from core.connectors.axiom_mfdb import AxiomMfdbConnector
-        c = AxiomMfdbConnector()
+        """Open an AXIOM case or KAPE output directory. Supports multiple simultaneous cases."""
+        if os.path.isdir(path):
+            from core.connectors.kape_csv import KapeCsvConnector
+            c = KapeCsvConnector()
+        else:
+            from core.connectors.axiom_mfdb import AxiomMfdbConnector
+            c = AxiomMfdbConnector()
         meta = c.connect(path)
-        case_id = label or os.path.basename(os.path.dirname(path))
+        case_id = label or os.path.basename(os.path.dirname(path) if not os.path.isdir(path) else path)
         self._connectors[f"axiom:{case_id}"] = c
         # Keep backward compat: also set as primary
         self._connectors["axiom"] = c

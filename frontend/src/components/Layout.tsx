@@ -16,6 +16,8 @@ import NetworkAnalysis from './NetworkAnalysis';
 import YaraScan from './YaraScan';
 import RegistryAnalysis from './RegistryAnalysis';
 import CopilotPanel from './CopilotPanel';
+import Settings from './Settings';
+import KapeBuilder from './KapeBuilder';
 
 const VIEWS: Record<string, React.FC> = {
   dashboard: Dashboard,
@@ -30,6 +32,8 @@ const VIEWS: Record<string, React.FC> = {
   yara: YaraScan,
   registry: RegistryAnalysis,
   report: ReportExport,
+  settings: Settings,
+  kape: KapeBuilder,
 };
 
 export default function Layout() {
@@ -65,11 +69,52 @@ export default function Layout() {
     return () => window.removeEventListener('keydown', handler);
   }, [copilotOpen]);
 
-  if (!caseInfo) {
+  // Views that work without a case loaded
+  const NO_CASE_VIEWS: Record<string, React.FC> = { settings: Settings, kape: KapeBuilder };
+
+  if (!caseInfo && !NO_CASE_VIEWS[activeView]) {
     return <CaseManager />;
   }
 
-  const ViewComponent = VIEWS[activeView] || Dashboard;
+  const ViewComponent = NO_CASE_VIEWS[activeView] || VIEWS[activeView] || Dashboard;
+
+  // Minimal layout when no case loaded (Settings/KAPE only)
+  if (!caseInfo) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        <div style={{
+          height: 44, background: 'var(--surface)', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', padding: '0 16px', gap: 16,
+        }}>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Forensic Workstation</span>
+          <div style={{ flex: 1 }} />
+          <span
+            onClick={() => setActiveView('kape')}
+            style={{ fontSize: 12, cursor: 'pointer', padding: '4px 12px', borderRadius: 4,
+              background: activeView === 'kape' ? 'var(--accent-light)' : 'transparent',
+              color: activeView === 'kape' ? 'var(--accent)' : 'var(--text-dim)',
+            }}
+          >{'\u25B6'} KAPE</span>
+          <span
+            onClick={() => setActiveView('settings')}
+            style={{ fontSize: 12, cursor: 'pointer', padding: '4px 12px', borderRadius: 4,
+              background: activeView === 'settings' ? 'var(--accent-light)' : 'transparent',
+              color: activeView === 'settings' ? 'var(--accent)' : 'var(--text-dim)',
+            }}
+          >{'\u2699'} Settings</span>
+          <span
+            onClick={() => setActiveView('dashboard')}
+            style={{ fontSize: 12, cursor: 'pointer', padding: '4px 12px', borderRadius: 4,
+              color: 'var(--text-dim)',
+            }}
+          >{'\u2190'} Open Case</span>
+        </div>
+        <main style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <ViewComponent />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <>
