@@ -11,6 +11,33 @@ Each tool mapping defines:
 
 from __future__ import annotations
 
+# Korean schtasks headers → English
+SCHTASKS_KR_TO_EN = {
+    "호스트 이름": "HostName", "작업 이름": "TaskName", "다음 실행 시간": "Next Run Time",
+    "상태": "Status", "로그온 모드": "Logon Mode", "마지막 실행 시간": "Last Run Time",
+    "마지막 결과": "Last Result", "만든 이": "Author", "실행할 작업": "Task To Run",
+    "시작 위치": "Start In", "설명": "Comment", "예약된 작업 상태": "Scheduled Task State",
+    "유휴 시간": "Idle Time", "전원 관리": "Power Management",
+    "다음 사용자로 실행": "Run As User", "일정": "Schedule", "일정 유형": "Schedule Type",
+    "시작 시간": "Start Time", "시작 날짜": "Start Date", "종료 날짜": "End Date",
+}
+
+# Header-based fallback detection signatures
+HEADER_SIGNATURES = {
+    "SBECmd": {"AbsolutePath", "ShellType", "MFTEntry"},
+    "JLECmd": {"AppIdDescription", "TargetIDAbsolutePath"},
+    "WxTCmd": {"ActivityType", "DisplayText", "ContentInfo", "Executable"},
+}
+
+
+def detect_tool_by_headers(headers: list[str]) -> str | None:
+    header_set = set(headers)
+    for tool, sig in HEADER_SIGNATURES.items():
+        if sig.issubset(header_set):
+            return tool
+    return None
+
+
 # EZ tool timestamp formats (tried in order)
 TIMESTAMP_FORMATS = [
     "%Y-%m-%d %H:%M:%S.%f",       # 2026-03-03 10:14:44.1234567
@@ -407,6 +434,121 @@ TOOL_MAPPINGS: dict[str, dict] = {
     },
 
     # ══════════════════════════════════════════
+    # RECmd Kroll — System Services (filtered)
+    # ══════════════════════════════════════════
+
+    "RECmd_Kroll_Services": {
+        "artifact_name": "System Services",
+        "file_pattern": "*RECmd*Kroll*.csv",
+        "field_mapping": {
+            "ValueName":           ("String", "Service Name"),
+            "ValueData":           ("String", "Service Location"),
+            "ValueData2":          ("String", "Start Type"),
+            "ValueData3":          ("String", "User Account"),
+            "KeyPath":             ("String", "Registry Key Path"),
+            "LastWriteTimestamp":   ("Date",   "Registry Modified"),
+            "HivePath":            ("String", "Hive Path"),
+            "Description":         ("String", "Description"),
+        },
+        "hash_columns": [],
+        "location_column": "ValueData",
+        "category_filter": "Services",
+    },
+
+    # ══════════════════════════════════════════
+    # Scheduled Tasks
+    # ══════════════════════════════════════════
+
+    "ScheduledTasks": {
+        "artifact_name": "Scheduled Tasks",
+        "file_pattern": "Scheduled Tasks*.csv",
+        "field_mapping": {
+            "TaskName":              ("String", "Name"),
+            "Task To Run":           ("String", "Command"),
+            "Author":                ("String", "Author"),
+            "Run As User":           ("String", "Run As"),
+            "Last Run Time":         ("Date",   "Last Run Time"),
+            "Next Run Time":         ("Date",   "Next Run Time"),
+            "Status":                ("String", "Status"),
+            "Schedule Type":         ("String", "Schedule Type"),
+            "Start Time":            ("String", "Start Time"),
+            "Start Date":            ("String", "Start Date"),
+            "Comment":               ("String", "Comment"),
+            "Scheduled Task State":  ("String", "State"),
+            "HostName":              ("String", "Computer"),
+        },
+        "hash_columns": [],
+        "location_column": "Task To Run",
+    },
+
+    # ══════════════════════════════════════════
+    # AmCache Driver Binaries
+    # ══════════════════════════════════════════
+
+    "AmcacheParser_DriveBinaries": {
+        "artifact_name": "AmCache Driver Binaries",
+        "file_pattern": "*Amcache*DriverBinaries*.csv",
+        "field_mapping": {
+            "DriverName":               ("String", "Driver Name"),
+            "DriverCompany":            ("String", "Company"),
+            "DriverVersion":            ("String", "Version"),
+            "Product":                  ("String", "Product"),
+            "ProductVersion":           ("String", "Product Version"),
+            "KeyLastWriteTimestamp":     ("Date",   "Key Last Write Time"),
+            "Service":                  ("String", "Service"),
+            "DriverCheckSum":           ("String", "Checksum"),
+            "DriverSigned":             ("String", "Signed"),
+            "DriverIsKernelMode":       ("String", "Is Kernel Mode"),
+            "DriverInBox":              ("String", "In Box"),
+            "ImageSize":                ("String", "Image Size"),
+        },
+        "hash_columns": ["DriverCheckSum"],
+        "location_column": "DriverName",
+    },
+
+    # ══════════════════════════════════════════
+    # SRUM Network Connections
+    # ══════════════════════════════════════════
+
+    "SrumECmd_NetworkConnections": {
+        "artifact_name": "SRUM Network Connections",
+        "file_pattern": "*SrumECmd*NetworkConnection*Output*.csv",
+        "field_mapping": {
+            "Timestamp":             ("Date",   "Timestamp"),
+            "ExeInfo":               ("String", "Application Name"),
+            "ExeInfoDescription":    ("String", "Application Description"),
+            "ConnectedTime":         ("Int",    "Connected Time"),
+            "ConnectStartTime":      ("Date",   "Connect Start Time"),
+            "InterfaceLuid":         ("String", "Interface LUID"),
+            "InterfaceType":         ("String", "Interface Type"),
+            "ProfileName":           ("String", "Profile Name"),
+            "SidType":               ("String", "SID Type"),
+            "Sid":                   ("String", "SID"),
+        },
+        "hash_columns": [],
+        "location_column": "",
+    },
+
+    # ══════════════════════════════════════════
+    # SRUM Energy Usage
+    # ══════════════════════════════════════════
+
+    "SrumECmd_EnergyUsage": {
+        "artifact_name": "SRUM Energy Usage",
+        "file_pattern": "*SrumECmd*EnergyUsage*Output*.csv",
+        "field_mapping": {
+            "Timestamp":             ("Date",   "Timestamp"),
+            "ExeInfo":               ("String", "Application Name"),
+            "ExeInfoDescription":    ("String", "Application Description"),
+            "ChargeLevel":           ("Int",    "Charge Level"),
+            "DesignedCapacity":      ("Int",    "Designed Capacity"),
+            "FullChargedCapacity":   ("Int",    "Full Charged Capacity"),
+        },
+        "hash_columns": [],
+        "location_column": "",
+    },
+
+    # ══════════════════════════════════════════
     # Hayabusa — Sigma-based threat detection
     # ══════════════════════════════════════════
 
@@ -425,6 +567,7 @@ TOOL_MAPPINGS: dict[str, dict] = {
             "Details":      ("String", "Details"),
             "ExtraFieldInfo": ("String", "Extra Field Info"),
             "RuleFile":     ("String", "Rule File"),
+            "RuleID":       ("String", "Rule ID"),
             "EvtxFile":     ("String", "EVTX File"),
             "MitreTactics": ("String", "MITRE Tactics"),
             "MitreTags":    ("String", "MITRE Tags"),
@@ -666,7 +809,7 @@ TOOL_MAPPINGS: dict[str, dict] = {
 }
 
 
-def detect_tool(filename: str) -> str | None:
+def detect_tool(filename: str) -> str | list[str] | None:
     """Detect EZ tool name from CSV filename.
 
     KAPE output filenames follow the pattern:
@@ -681,7 +824,12 @@ def detect_tool(filename: str) -> str | None:
             return "SrumECmd_Network"
         if "appresourceuseinfo" in fn_lower:
             return "SrumECmd_App"
-        return "SrumECmd_Network"  # default
+        if "networkconnection" in fn_lower:
+            return "SrumECmd_NetworkConnections"
+        if "energyusage" in fn_lower:
+            return "SrumECmd_EnergyUsage"
+        # Unknown SRUM sub-type (AppTimelineProvider, vfuprov, etc.) — skip
+        return None
 
     # Hayabusa outputs
     if "hayabusa" in fn_lower:
@@ -714,8 +862,29 @@ def detect_tool(filename: str) -> str | None:
         if prefix in fn_lower and suffix in fn_lower:
             return tool_id
 
+    # JLECmd: AutomaticDestinations / CustomDestinations (no "JLECmd" in name)
+    if "automaticdestinations" in fn_lower or "customdestinations" in fn_lower:
+        return "JLECmd"
+
+    # SBECmd: username_UsrClass.csv (no "SBECmd" in name)
+    # Pattern: alphanumeric_UsrClass.csv — specific enough to avoid false matches
+    if "_usrclass." in fn_lower and fn_lower.endswith(".csv"):
+        return "SBECmd"
+
+    # WxTCmd: timestamp_Activity.csv or Activity_PackageIDs.csv
+    # Only match when prefixed with timestamp (14+ digits) to avoid false matches
+    import re as _re
+    if _re.match(r'^\d{14,}_activity\.csv$', fn_lower):
+        return "WxTCmd"
+
+    # Scheduled Tasks
+    if fn_lower.startswith("scheduled tasks"):
+        return "ScheduledTasks"
+
     # Amcache outputs: <timestamp>_Amcache_<SubType>.csv (no "Parser" in filename)
     if "amcache" in fn_lower:
+        if "drivebinaries" in fn_lower:
+            return "AmcacheParser_DriveBinaries"
         if "programentries" in fn_lower:
             return "AmcacheParser_Programs"
         if "associatedfileentries" in fn_lower or "unassociatedfileentries" in fn_lower:
@@ -732,7 +901,7 @@ def detect_tool(filename: str) -> str | None:
 
     # RECmd Kroll batch output
     if "recmd" in fn_lower and "kroll" in fn_lower:
-        return "RECmd_Kroll"
+        return ["RECmd_Kroll", "RECmd_Kroll_Services"]
 
     # Match by tool name in filename (check longer names first to avoid false matches)
     tool_names = [

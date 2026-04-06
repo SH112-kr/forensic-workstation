@@ -21,7 +21,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from connectors.axiom_mfdb import AxiomMfdbConnector
-from connectors.kape_csv_mapping import TOOL_MAPPINGS, TIMESTAMP_FORMATS, detect_tool
+from connectors.kape_csv_mapping import (
+    TOOL_MAPPINGS, TIMESTAMP_FORMATS, detect_tool, detect_tool_by_headers,
+    SCHTASKS_KR_TO_EN,
+)
 
 
 class KapeCsvConnector(AxiomMfdbConnector):
@@ -180,13 +183,24 @@ class KapeCsvConnector(AxiomMfdbConnector):
         tool_files: dict[str, list[str]] = {}
         for csv_path in csv_files:
             filename = os.path.basename(csv_path)
-            tool_name = detect_tool(filename)
-            if not tool_name:
-                continue
-            mapping = TOOL_MAPPINGS.get(tool_name)
-            if not mapping:
-                continue
-            tool_files.setdefault(tool_name, []).append(csv_path)
+            tool_result = detect_tool(filename)
+            if not tool_result:
+                # Try header-based fallback
+                try:
+                    with open(csv_path, "rb") as fb:
+                        first_line = fb.readline().replace(b"\x00", b"").decode("utf-8-sig", errors="replace").strip()
+                    if first_line:
+                        headers = [h.strip().strip('"') for h in first_line.split(",")]
+                        tool_result = detect_tool_by_headers(headers)
+                except Exception:
+                    pass
+                if not tool_result:
+                    continue
+            tool_names_list = [tool_result] if isinstance(tool_result, str) else tool_result
+            for tn in tool_names_list:
+                mapping = TOOL_MAPPINGS.get(tn)
+                if mapping:
+                    tool_files.setdefault(tn, []).append(csv_path)
 
         # Dedup key sets per tool (for VSS deduplication)
         self._dedup_seen: dict[str, set] = {}
@@ -204,6 +218,11 @@ class KapeCsvConnector(AxiomMfdbConnector):
                 for csv_path in paths:
                     self._ingest_single_csv(cur, csv_path, tool_name, mapping)
 
+        # Parse raw artifacts from collected directory (SSH keys, known_hosts)
+        collected_dir = self._find_collected_dir(dir_path)
+        if collected_dir:
+            self._ingest_ssh_artifacts(cur, collected_dir)
+
         self._conn.commit()
         # Cleanup temp registries
         del self._av_registry
@@ -220,6 +239,8 @@ class KapeCsvConnector(AxiomMfdbConnector):
         location_column = mapping.get("location_column", "")
         dedup_cols = mapping.get("dedup_columns")
         dedup_set = self._dedup_seen.get(tool_name) if dedup_cols else None
+        category_filter = mapping.get("category_filter")
+        category_col = "Category" if category_filter else None
 
         # Register artifact version if not yet done
         av_id = self._ensure_artifact_version(cur, artifact_name)
@@ -233,21 +254,35 @@ class KapeCsvConnector(AxiomMfdbConnector):
         # Read CSV
         rows_ingested = 0
         try:
-            # Try UTF-8 first, fall back to cp949 (Korean), then latin-1
-            for encoding in ("utf-8-sig", "utf-8", "cp949", "latin-1"):
+            # Detect UTF-16 BOM first
+            utf16_enc = self._detect_utf16(csv_path)
+            if utf16_enc:
+                encodings_to_try = [utf16_enc]
+            else:
+                encodings_to_try = ("utf-8-sig", "utf-8", "cp949", "latin-1")
+
+            for encoding in encodings_to_try:
                 try:
                     # Stream lines, stripping NUL bytes on the fly (VSS artifacts)
                     def _lines(path, enc):
-                        with open(path, "rb") as fb:
-                            for raw_line in fb:
-                                if b"\x00" in raw_line:
-                                    raw_line = raw_line.replace(b"\x00", b"")
-                                yield raw_line.decode(enc, errors="strict")
+                        if enc.startswith("utf-16"):
+                            with open(path, "r", encoding=enc) as f:
+                                for line in f:
+                                    yield line
+                        else:
+                            with open(path, "rb") as fb:
+                                for raw_line in fb:
+                                    if b"\x00" in raw_line:
+                                        raw_line = raw_line.replace(b"\x00", b"")
+                                    yield raw_line.decode(enc, errors="strict")
 
-                    import io
                     reader = csv.DictReader(_lines(csv_path, encoding))
                     if reader.fieldnames is None:
                         break
+
+                    # Korean header translation for ScheduledTasks
+                    if tool_name == "ScheduledTasks" and reader.fieldnames:
+                        reader.fieldnames = [SCHTASKS_KR_TO_EN.get(f.strip(), f.strip()) for f in reader.fieldnames]
 
                     # Batch buffers
                     hit_batch: list[tuple] = []
@@ -265,6 +300,10 @@ class KapeCsvConnector(AxiomMfdbConnector):
                             if key in dedup_set:
                                 continue
                             dedup_set.add(key)
+
+                        # Category filter (e.g., Services from RECmd Kroll)
+                        if category_filter and row.get(category_col, "") != category_filter:
+                            continue
 
                         hit_id = self._next_hit_id
                         self._next_hit_id += 1
@@ -533,6 +572,137 @@ class KapeCsvConnector(AxiomMfdbConnector):
             "tags": [],
             "ingest_stats": dict(self._ingest_stats),
         }
+
+    # ── UTF-16 Detection ──
+
+    @staticmethod
+    def _detect_utf16(csv_path: str) -> str | None:
+        with open(csv_path, "rb") as f:
+            bom = f.read(4)
+        if bom[:2] == b'\xff\xfe':
+            return "utf-16-le"
+        if bom[:2] == b'\xfe\xff':
+            return "utf-16-be"
+        return None
+
+    # ── SSH Artifact Ingestion ──
+
+    def _find_collected_dir(self, parsed_dir: str) -> str | None:
+        """Find the KAPE collected directory relative to parsed directory."""
+        parent = os.path.dirname(parsed_dir.rstrip("/\\"))
+        collected = os.path.join(parent, "collected")
+        return collected if os.path.isdir(collected) else None
+
+    def _ingest_ssh_artifacts(self, cur: sqlite3.Cursor, collected_dir: str) -> None:
+        """Parse SSH known_hosts and key files from collected directory."""
+        import glob as _glob
+
+        # SSH Known Hosts
+        known_hosts_files = _glob.glob(os.path.join(collected_dir, "**", ".ssh", "known_hosts"), recursive=True)
+        # Also check OpenSSH server config location
+        known_hosts_files += _glob.glob(os.path.join(collected_dir, "**", "ssh", "known_hosts"), recursive=True)
+        known_hosts_files += _glob.glob(os.path.join(collected_dir, "**", "ProgramData", "ssh", "ssh_known_hosts"), recursive=True)
+
+        if known_hosts_files:
+            av_id = self._ensure_artifact_version(cur, "SSH Known Hosts")
+            frag_host = self._ensure_fragment_def(cur, av_id, "Host Names", "String")
+            frag_enc = self._ensure_fragment_def(cur, av_id, "Encryption", "String")
+            frag_key = self._ensure_fragment_def(cur, av_id, "Public Key", "String")
+            frag_src = self._ensure_fragment_def(cur, av_id, "Source File", "String")
+
+            seen = set()
+            for kh_path in known_hosts_files:
+                try:
+                    with open(kh_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = line.split()
+                            if len(parts) < 3:
+                                continue
+                            host_part, key_type, key_data = parts[0], parts[1], parts[2]
+                            if host_part in seen:
+                                continue
+                            seen.add(host_part)
+
+                            hit_id = self._next_hit_id
+                            self._next_hit_id += 1
+                            cur.execute("INSERT INTO scan_artifact_hit VALUES (?,?)", (hit_id, av_id))
+                            cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_host, host_part))
+                            cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_enc, key_type))
+                            cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_key, key_data))
+                            cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_src, kh_path))
+                            cur.execute("INSERT INTO hit_location VALUES (?,?,1,0)", (hit_id, host_part))
+                except Exception:
+                    pass
+
+            if seen:
+                self._ingest_stats["SSH_KnownHosts"] = len(seen)
+
+        # SSH Keys
+        key_patterns = [
+            os.path.join(collected_dir, "**", "ssh_host_*_key"),
+            os.path.join(collected_dir, "**", "ssh_host_*_key.pub"),
+            os.path.join(collected_dir, "**", ".ssh", "id_*"),
+            os.path.join(collected_dir, "**", ".ssh", "authorized_keys"),
+        ]
+        key_files = []
+        for pat in key_patterns:
+            key_files.extend(_glob.glob(pat, recursive=True))
+
+        if key_files:
+            av_id = self._ensure_artifact_version(cur, "SSH Keys")
+            frag_name = self._ensure_fragment_def(cur, av_id, "File Name", "String")
+            frag_type = self._ensure_fragment_def(cur, av_id, "Type", "String")
+            frag_enc = self._ensure_fragment_def(cur, av_id, "Encryption", "String")
+            frag_src = self._ensure_fragment_def(cur, av_id, "Source File", "String")
+            frag_created = self._ensure_fragment_def(cur, av_id, "File System Created Date/Time - UTC", "Date")
+
+            seen_keys = set()
+            for kf in key_files:
+                fname = os.path.basename(kf)
+                if fname in seen_keys:
+                    continue
+                seen_keys.add(fname)
+
+                # Determine key type from filename
+                key_type = "Unknown"
+                if ".pub" in fname:
+                    key_type = "Public"
+                elif "authorized_keys" in fname:
+                    key_type = "Authorized"
+                else:
+                    key_type = "Private"
+
+                encryption = "Unknown"
+                for enc in ["ed25519", "ecdsa", "rsa", "dsa"]:
+                    if enc in fname.lower():
+                        encryption = enc.upper()
+                        break
+
+                hit_id = self._next_hit_id
+                self._next_hit_id += 1
+                cur.execute("INSERT INTO scan_artifact_hit VALUES (?,?)", (hit_id, av_id))
+                cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_name, fname))
+                cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_type, key_type))
+                cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_enc, encryption))
+                cur.execute("INSERT INTO hit_fragment_string VALUES (?,?,?)", (hit_id, frag_src, kf))
+
+                # File creation time
+                try:
+                    mtime = os.path.getmtime(kf)
+                    ms = int(mtime * 1000)
+                    from datetime import datetime, timezone
+                    iso = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+                    cur.execute("INSERT INTO hit_fragment_date VALUES (?,?,?,?)", (hit_id, frag_created, ms, iso))
+                except Exception:
+                    pass
+
+                cur.execute("INSERT INTO hit_location VALUES (?,?,1,0)", (hit_id, fname))
+
+            if seen_keys:
+                self._ingest_stats["SSH_Keys"] = len(seen_keys)
 
     def get_capabilities(self) -> list[str]:
         return [
