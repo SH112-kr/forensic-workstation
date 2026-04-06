@@ -723,10 +723,8 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
         or h.get("MSI Package Code", "")
     ]
 
-    # If no MSI filter matches, only check against suspicious tool patterns
-    # (skip time-based check to avoid false positives on non-MSI installs)
-    check_all = msi_installs
-    check_all_tools_only = not msi_installs  # only match tool patterns, not install time
+    # Note: MSI filter results are not used for gating — all programs are checked
+    # against suspicious tool patterns regardless of install source.
 
     # Known suspicious tool patterns
     suspicious_tool_patterns = [
@@ -735,12 +733,9 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
         "radmin", "vnc", "vpn", "wireguard", "openvpn",
     ]
 
-    # If no MSI matches, fall back to checking ALL programs but only for tool patterns
-    if check_all_tools_only:
-        check_all = program_hits
-
+    # Check all programs (MSI and non-MSI) against suspicious tool patterns
     flagged = []
-    for h in check_all:
+    for h in program_hits:
         # Handle both AXIOM ("Name") and KAPE ("Program Name") field names
         name = str(h.get("Name", "") or h.get("Program Name", "")).lower()
         install_date = (h.get("Install Date/Time - UTC (yyyy-mm-dd)", "")
@@ -752,25 +747,8 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
         install_path = h.get("Full Path", "") or h.get("Install Path", "")
         reasons = []
 
-        # Check install time — only for confirmed MSI installs (not fallback)
-        # Apply local timezone offset (default KST=UTC+9) for work hours check
-        if not check_all_tools_only and install_date and len(install_date) >= 16:
-            try:
-                utc_hour = int(install_date[11:13])
-                tz_offset = 9  # KST default
-                try:
-                    import mcp_bridge
-                    if hasattr(mcp_bridge, '_tz_config'):
-                        tz_offset = int(mcp_bridge._tz_config.get("local_tz_offset_hours", 9))
-                except Exception:
-                    pass
-                local_hour = (utc_hour + tz_offset) % 24
-                if local_hour < 7 or local_hour >= 22:
-                    reasons.append(f"Installed outside work hours (local {local_hour:02d}:xx)")
-            except (ValueError, IndexError):
-                pass
-
-        # Check for suspicious tool names
+        # Check for suspicious tool names only — no time-based filtering
+        # (attackers operate during business hours too)
         for pattern in suspicious_tool_patterns:
             if pattern in name or pattern in str(install_path).lower():
                 reasons.append(f"Matches suspicious tool pattern: {pattern}")
