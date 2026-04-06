@@ -61,3 +61,4 @@ Desktop.ini
 
 # ── Build artifacts ──
 skills-lock.json
+*.Interop.dll
