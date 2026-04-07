@@ -108,9 +108,16 @@ async def create_project(info: ProjectInfo):
     }
 
 
+class OpenProjectRequest(BaseModel):
+    path: str = ""
+    name: str = ""
+
+
 @router.post("/open")
-async def open_project(path: str = "", name: str = ""):
+async def open_project(req: OpenProjectRequest):
     """Open an existing project by path or name."""
+    path = req.path
+    name = req.name
     if not path and name:
         path = _project_path(name)
     if not path or not os.path.exists(path):
