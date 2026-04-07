@@ -24,26 +24,24 @@ export default function Header() {
         total_hits: c.metadata?.total_hits || 0,
       }));
       setCases(list);
-      // Find active case
-      const active = list.find(c =>
-        caseInfo.case_name === c.case_id ||
-        caseInfo.case_name?.includes(c.case_id)
-      );
-      if (active) setActiveCase(active.case_id);
-      else if (list.length > 0) setActiveCase(list[list.length - 1].case_id);
+      // Match active case by total_hits (most reliable — case_name may differ from case_id)
+      if (!activeCase && caseInfo) {
+        const match = list.find(c => c.total_hits === caseInfo.total_hits);
+        if (match) setActiveCase(match.case_id);
+        else if (list.length > 0) setActiveCase(list[list.length - 1].case_id);
+      }
     }).catch(() => {});
   }, [caseInfo]);
 
   const switchCase = async (caseId: string) => {
     if (caseId === activeCase) return;
     try {
+      setActiveCase(caseId); // Update UI immediately
       await post(`/api/cases/switch?case_id=${encodeURIComponent(caseId)}`, {});
-      // Refresh case info
       const summary = await get('/api/cases/summary');
       setCaseInfo(summary);
-      setDetection(null, null); // Clear detection cache to re-run
+      setDetection(null, null);
       setKapeDiagnostics(summary.kape_diagnostics || null);
-      setActiveCase(caseId);
     } catch (e) {
       console.error('Switch failed:', e);
     }
