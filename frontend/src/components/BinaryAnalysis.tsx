@@ -31,6 +31,13 @@ export default function BinaryAnalysis() {
 
   const loadTab = async (tab: string) => {
     setActiveTab(tab);
+    // Skip loading indicator if data already cached
+    const needsFetch =
+      (tab === 'functions' && !functions.length) ||
+      (tab === 'imports' && !imports) ||
+      (tab === 'suspicious' && !suspicious) ||
+      (tab === 'strings' && !strings.length);
+    if (!needsFetch) return;
     setLoading(`Loading ${tab}...`);
     try {
       if (tab === 'functions' && !functions.length) {

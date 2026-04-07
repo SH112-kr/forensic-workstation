@@ -29,6 +29,12 @@ export default function NetworkAnalysis() {
 
   const loadTab = async (tab: string) => {
     setActiveTab(tab);
+    const needsFetch =
+      (tab === 'conversations' && !conversations.length) ||
+      (tab === 'dns' && !dns.length) ||
+      (tab === 'http' && !http.length) ||
+      (tab === 'iocs' && !iocs);
+    if (!needsFetch) return;
     setLoading(`Loading ${tab}...`);
     try {
       if (tab === 'conversations' && !conversations.length) {
