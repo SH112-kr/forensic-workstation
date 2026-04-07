@@ -1,0 +1,11 @@
+Description: 'SumECmd: Process Microsoft User Access Logs'
+Category: SUM
+Author: JaeheonKim
+Version: 1.0
+Id: 9b5cc51f-1e3b-473e-8575-77f2dbb815d9
+ExportFormat: csv
+Processors:
+    -
+        Executable: SumECmd\SumECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,184 @@
+Description: Windows Incident Response
+Author: JaeheonKim
+Version: 1.0
+Id: a2d9f4b7-8cc3-4b7a-a77c-abe3cb4a5936
+RecreateDirectories: true
+Targets:
+# FileSystem
+    -
+        Name: $MFT
+        Category: FileSystem
+        Path: $MFT.tkape
+
+    -
+        Name: $J
+        Category: FileSystem
+        Path: $J.tkape
+
+    -
+        Name: $LogFile
+        Category: FileSystem
+        Path: $LogFile.tkape
+
+    -
+        Name: $SDS
+        Category: FileSystem
+        Path: $SDS.tkape
+
+# Prefetch
+    -
+        Name: Prefetch
+        Category: Prefetch
+        Path: Prefetch.tkape
+
+# SRUM
+    -
+        Name: SRUM
+        Category: SRUM
+        Path: SRUM.tkape
+
+# BITS
+    -
+        Name: BITS
+        Category: BITS
+        Path: BITS.tkape
+
+# WBEM
+    -
+        Name: WBEM
+        Category: WBEM
+        Path: WBEM.tkape
+
+# Registry
+    -
+        Name: RegistryHives
+        Category: Registry
+        Path: RegistryHives.tkape
+
+    -
+        Name: Amcache
+        Category: Registry
+        Path: Amcache.tkape
+
+# LNK and JumpList
+    -
+        Name: LNKFilesAndJumpLists
+        Category: LNKFilesAndJumpLists
+        Path: LNKFilesAndJumpLists.tkape
+
+# RecycleBin
+    -
+        Name: RecycleBin
+        Category: RecycleBin
+        Path: RecycleBin.tkape
+
+# RecentFileCache
+    -
+        Name: RecentFileCache
+        Category: RecentFileCache
+        Path: RecentFileCache.tkape
+
+# WindowsTimeline
+    -
+        Name: WindowsTimeline
+        Category: WindowsTimeline
+        Path: WindowsTimeline.tkape
+
+# SUM
+    -
+        Name: SUM
+        Category: SUM
+        Path: SUM.tkape
+
+# AppCompatPCA
+    -
+        Name: AppCompatPCA
+        Category: AppCompatPCA
+        Path: AppCompatPCA.tkape
+
+# Certutil
+    -
+        Name: Certutil
+        Category: Certutil
+        Path: Certutil.tkape
+
+# ScheduledTasks
+    -
+        Name: ScheduledTasks
+        Category: ScheduledTasks
+        Path: ScheduledTasks.tkape
+
+# EventLogs
+    -
+        Name: EventLogs
+        Category: EventLogs
+        Path: EventLogs.tkape
+
+# Antivirus
+    -
+        Name: WindowsDefender
+        Category: Antivirus
+        Path: WindowsDefender.tkape
+
+# Browsers
+    # Chrome
+    -
+        Name: ChromeCompound
+        Category: Browsers
+        Path: ChromeCompound.tkape
+
+    # EdgeChromium
+    -
+        Name: EdgeChromiumCompound
+        Category: Browsers
+        Path: EdgeChromiumCompound.tkape
+
+    # Whale
+    -
+        Name: WhaleCompound
+        Category: Browsers
+        Path: WhaleCompound.tkape
+
+    # Brave
+    -
+        Name: BraveCompound
+        Category: Browsers
+        Path: BraveCompound.tkape
+
+# RDPCache
+    -
+        Name: RDPCache
+        Category: RDPCache
+        Path: RDPCache.tkape
+
+
+# PowerShell
+    -
+        Name: PowerShellCompound
+        Category: PowerShell
+        Path: PowerShellCompound.tkape
+
+
+# StartupInfo
+    -
+        Name: StartupInfo
+        Category: StartupInfo
+        Path: StartupInfo.tkape
+
+# StartupFolders
+    -
+        Name: StartupFolders
+        Category: StartupFolders
+        Path: StartupFolders.tkape
+
+# HostsFile
+    -
+        Name: HostsFile
+        Category: HostsFile
+        Path: HostsFile.tkape
+
+# SDB
+    -
+        Name: SDB
+        Category: SDB
+        Path: SDB.tkape        

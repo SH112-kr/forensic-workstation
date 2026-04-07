@@ -1,0 +1,11 @@
+Description: finding high entropy value
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: be9bbc5c-bce5-4f51-8b9d-3667c04352cf
+ExportFormat: csv
+Processors:
+    -
+        Executable: regentropy\regentropy_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

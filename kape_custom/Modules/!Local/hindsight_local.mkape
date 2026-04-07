@@ -1,0 +1,11 @@
+Description: "hindsight: Web Browser Forensics for Chromium"
+Category: Browsers
+Author: JaeheonKim
+Version: 1.0
+Id: e76edb66-44e5-4fbe-9b51-f2f0b17c691f
+ExportFormat: xlsx
+Processors:
+    -
+        Executable: hindsight\hindsight_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: xlsx

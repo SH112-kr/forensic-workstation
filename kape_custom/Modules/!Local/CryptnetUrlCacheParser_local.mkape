@@ -1,0 +1,11 @@
+Description: parse Certutil activity
+Category: Certutil
+Author: JaeheonKim
+Version: 1.0
+Id: 8bda481b-711e-4aef-86e7-b0adea7f2071
+ExportFormat: csv
+Processors:
+    -
+        Executable: CryptnetUrlCacheParser\CryptnetUrlCacheParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

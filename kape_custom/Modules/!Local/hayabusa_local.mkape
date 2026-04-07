@@ -1,0 +1,11 @@
+Description: Hayabusa a timeline generator for Windows event logs - Update Rules
+Category: EventLogs
+Author: JaeheonKim
+Version: 1.0
+Id: b74e515c-3fa0-46f4-a339-458d0e1b116d
+ExportFormat: csv
+Processors:
+    -
+        Executable: hayabusa\hayabusa_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

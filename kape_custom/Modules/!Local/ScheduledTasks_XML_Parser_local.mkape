@@ -1,0 +1,11 @@
+Description: Displays all scheduled tasks
+Category: ScheduledTasks
+Author: JaeheonKim
+Version: 1.0
+Id: 2586cad6-220f-4906-84d9-ef97c6006043
+ExportFormat: csv
+Processors:
+    -
+        Executable: ScheduledTasks_XML_Parser\ScheduledTasks_XML_Parser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

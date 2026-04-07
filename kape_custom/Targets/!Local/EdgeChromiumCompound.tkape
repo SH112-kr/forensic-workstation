@@ -1,0 +1,189 @@
+Description: Edge Chromium Compound
+Author: JaeheonKim
+Version: 1.0
+Id: 2be8d922-ec8c-4fed-b64b-0f0b58e987f0
+RecreateDirectories: true
+Targets:
+    # ============================================================
+    # Edge Chromium Browser Artifacts
+    # ============================================================
+    -
+        Name: Edge Bookmarks
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Bookmarks*
+    -
+        Name: Edge Collections
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Collections
+        FileMask: collectionsSQLite*
+        Comment: "Edge-specific Collections feature."
+    -
+        Name: Edge Cookies
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Network
+        FileMask: Cookies*
+    -
+        Name: Edge Current Session
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Current Session
+    -
+        Name: Edge Current Tabs
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Current Tabs
+    -
+        Name: Edge Extension Cookies
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Extension Cookies*
+    -
+        Name: Edge Favicons
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Favicons*
+    -
+        Name: Edge History
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: History*
+    -
+        Name: Edge Last Session
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Last Session
+    -
+        Name: Edge Last Tabs
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Last Tabs
+    -
+        Name: Edge Sessions Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Sessions\
+        Recursive: false
+    -
+        Name: Edge Login Data
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Login Data*
+    -
+        Name: Edge Media History
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Media History*
+    -
+        Name: Edge Network Action Predictor
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Network Action Predictor*
+    -
+        Name: Edge Network Persistent State
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Network Persistent State
+    -
+        Name: Edge Network Persistent State (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Network
+        FileMask: Network Persistent State
+    -
+        Name: Edge Preferences
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Preferences
+    -
+        Name: Edge Quota Manager
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: QuotaManager*
+    -
+        Name: Edge Quota Manager (WebStorage subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\WebStorage
+        FileMask: QuotaManager*
+    -
+        Name: Edge Reporting and NEL
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Reporting and NEL*
+    -
+        Name: Edge Reporting and NEL (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Network
+        FileMask: Reporting and NEL*
+    -
+        Name: Edge Shortcuts
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Shortcuts*
+    -
+        Name: Edge Top Sites
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Top Sites*
+    -
+        Name: Edge Trust Tokens
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Trust Tokens*
+    -
+        Name: Edge Trust Tokens (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Network
+        FileMask: Trust Tokens*
+    -
+        Name: Edge SyncData Database
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Sync Data
+        FileMask: SyncData.sqlite3
+    -
+        Name: Edge Visited Links
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Visited Links
+    -
+        Name: Edge Web Data
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: Web Data*
+    -
+        Name: Edge WebAssistDatabase
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\
+        FileMask: WebAssistDatabase*
+        Comment: "Edge-specific Web Assist feature database."
+    -
+        Name: Edge IndexedDB
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\IndexedDB\
+        Recursive: true
+    -
+        Name: Edge Local Storage
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Local Storage\leveldb\
+        Recursive: true
+    -
+        Name: Edge Snapshots Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\Snapshots\*\
+        Recursive: true
+
+    # ============================================================
+    # Edge Chromium Extensions
+    # ============================================================
+    -
+        Name: Edge Chromium Extension Files
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Extensions\
+        Recursive: true
+
+    # ============================================================
+    # Edge Chromium Cache
+    # ============================================================
+    -
+        Name: Edge Chromium Cache Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\Microsoft\Edge\User Data\*\Cache\
+        Recursive: true

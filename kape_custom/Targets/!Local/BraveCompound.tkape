@@ -1,0 +1,184 @@
+Description: Brave Compound
+Author: JaeheonKim
+Version: 1.0
+Id: d74f473c-d1fe-4d80-a903-5ccc7946b72f
+RecreateDirectories: true
+Targets:
+    # ============================================================
+    # Brave Browser Artifacts
+    # ============================================================
+    -
+        Name: Brave Bookmarks
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Bookmarks*
+    -
+        Name: Brave Cookies
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Network
+        FileMask: Cookies*
+    -
+        Name: Brave Current Session
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Current Session
+    -
+        Name: Brave Current Tabs
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Current Tabs
+    -
+        Name: Brave Download Metadata
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: DownloadMetadata
+    -
+        Name: Brave Favicons
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Favicons*
+    -
+        Name: Brave History
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: History*
+    -
+        Name: Brave Last Session
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Last Session
+    -
+        Name: Brave Last Tabs
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Last Tabs
+    -
+        Name: Brave Sessions Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Sessions\
+        Recursive: false
+    -
+        Name: Brave Login Data
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Login Data*
+    -
+        Name: Brave Network Action Predictor
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Network Action Predictor*
+    -
+        Name: Brave Network Persistent State
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Network Persistent State
+    -
+        Name: Brave Network Persistent State (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Network
+        FileMask: Network Persistent State
+    -
+        Name: Brave Preferences
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Preferences
+    -
+        Name: Brave Secure Preferences
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Secure Preferences*
+        Comment: "Brave-specific. Contains additional preferences data."
+    -
+        Name: Brave Publisher Info DB (Brave Rewards)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: publisher_info_db*
+        Comment: "Brave-specific. SQLite Database related to Brave Rewards containing an event_log table."
+    -
+        Name: Brave Quota Manager
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: QuotaManager*
+    -
+        Name: Brave Quota Manager (WebStorage subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\WebStorage
+        FileMask: QuotaManager*
+    -
+        Name: Brave Reporting and NEL
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Reporting and NEL*
+    -
+        Name: Brave Reporting and NEL (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Network
+        FileMask: Reporting and NEL*
+    -
+        Name: Brave Shortcuts
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Shortcuts*
+    -
+        Name: Brave Top Sites
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Top Sites*
+    -
+        Name: Brave Trust Tokens
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Trust Tokens*
+    -
+        Name: Brave Trust Tokens (Network subfolder)
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Network
+        FileMask: Trust Tokens*
+    -
+        Name: Brave SyncData Database
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Sync Data
+        FileMask: SyncData.sqlite3
+    -
+        Name: Brave Visited Links
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Visited Links
+    -
+        Name: Brave Web Data
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\
+        FileMask: Web Data*
+    -
+        Name: Brave IndexedDB
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\IndexedDB\
+        Recursive: true
+    -
+        Name: Brave Local Storage
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Local Storage\leveldb\
+        Recursive: true
+    -
+        Name: Brave Snapshots Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\Snapshots\*\
+        Recursive: true
+
+    # ============================================================
+    # Brave Extensions
+    # ============================================================
+    -
+        Name: Brave Extension Files
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Extensions\
+        Recursive: true
+
+    # ============================================================
+    # Brave Cache
+    # ============================================================
+    -
+        Name: Brave Cache Folder
+        Category: Communications
+        Path: C:\Users\%user%\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Cache\
+        Recursive: true

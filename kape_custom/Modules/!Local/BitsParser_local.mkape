@@ -1,0 +1,11 @@
+Description: Tool to parse Windows Background Intelligent Transfer Service database files
+Category: BITS
+Author: JaeheonKim
+Version: 1.0
+Id: 0522b491-eeaa-4358-9a1a-b47f0aa59df4
+ExportFormat: csv
+Processors:
+    -
+        Executable: BitsParser\BitsParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

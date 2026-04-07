@@ -1,0 +1,11 @@
+Description: 'RecentFileCacheParser: extract file names from RecentFilecache.bcf'
+Category: RecentFileCache
+Author: JaeheonKim
+Version: 1.0
+Id: c4946850-24bd-4ac0-aece-434a160295c0
+ExportFormat: csv
+Processors:
+    -
+        Executable: RecentFileCacheParser\RecentFileCacheParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

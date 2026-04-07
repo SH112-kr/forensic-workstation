@@ -1,0 +1,11 @@
+Description: Chainsaw - Hunt through Windows MFT
+Category: FileSystem
+Author: JaeheonKim
+Version: 1.0
+Id: 6965d070-3b0e-4652-9bac-ba4161b01938
+ExportFormat: csv
+Processors:
+    -
+        Executable: chainsaw\chainsaw_hunt_mft_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

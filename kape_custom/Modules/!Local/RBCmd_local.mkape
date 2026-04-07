@@ -1,0 +1,11 @@
+Description: 'RBCmd: process recycle bin artifacts'
+Category: RecycleBin
+Author: JaeheonKim
+Version: 1.0
+Id: d95ad276-dc21-4f60-92e1-5b4d6b08558b
+ExportFormat: csv
+Processors:
+    -
+        Executable: RBCmd\RBCmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,11 @@
+Description: Processing HostsFile Artifacts
+Category: HostsFile
+Author: JaeheonKim
+Version: 1.0
+Id: abe179de-3219-4de1-a68b-dc66199109d4
+ExportFormat: csv
+Processors:
+    -
+        Executable: HostsFileHarvester\HostsFileHarvester.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

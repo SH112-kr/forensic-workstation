@@ -1,0 +1,11 @@
+Description: 'WxTCmd.exe: process Windows Timeline/Activities Cache files'
+Category: WindowsTimeline
+Author: JaeheonKim
+Version: 1.0
+Id: bec88193-a0b7-490c-a0a9-2a4c32bca95d
+ExportFormat: csv
+Processors:
+    -
+        Executable: WxTCmd\WxTCmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

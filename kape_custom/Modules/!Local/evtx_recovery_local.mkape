@@ -1,0 +1,11 @@
+Description: 'evtx_recovery: collect and reconstruct valid records from corrupted EVTX files'
+Category: EventLogs
+Author: JaeheonKim
+Version: 1.0
+Id: 8c26f457-5c93-4e63-a496-34699e5338d4
+ExportFormat: csv
+Processors:
+    -
+        Executable: evtx_recovery\evtx_recovery_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

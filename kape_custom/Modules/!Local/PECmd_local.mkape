@@ -1,0 +1,11 @@
+Description: 'PECmd: process prefetch files'
+Category: Prefetch
+Author: JaeheonKim
+Version: 1.0
+Id: 15a524c4-4df1-4403-afc1-16a0124f68eb
+ExportFormat: csv
+Processors:
+    -
+        Executable: PECmd\PECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

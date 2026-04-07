@@ -1,0 +1,11 @@
+Description: evil hunting in hives
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: eade7c02-8e5b-4ea1-991a-fad6c83ece86
+ExportFormat: csv
+Processors:
+    -
+        Executable: reg_hunter\reg_hunter_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

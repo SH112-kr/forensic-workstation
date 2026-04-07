@@ -1,0 +1,11 @@
+Description: 'NTFS Log Tracker: process all files'
+Category: FileSystem
+Author: JaeheonKim
+Version: 1.0
+Id: 8e4439f7-565b-4631-995f-344c331f0419
+ExportFormat: csv
+Processors:
+    -
+        Executable: NTFS Log Tracker CMD v1.9\NTFS_Log_Tracker_CMD_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

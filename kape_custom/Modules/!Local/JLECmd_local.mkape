@@ -1,0 +1,11 @@
+Description: 'JLECmd: process jumplist files'
+Category: Jumplist
+Author: JaeheonKim
+Version: 1.0
+Id: 1171c224-6c0b-4ed1-94ed-d0645ada79a2
+ExportFormat: csv
+Processors:
+    -
+        Executable: JLECmd\JLECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

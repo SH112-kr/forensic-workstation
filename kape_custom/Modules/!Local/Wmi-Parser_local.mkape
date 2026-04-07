@@ -1,0 +1,11 @@
+Description: WMI-Parser - parses the WMI object database looking for persistence
+Category: WBEMRepository
+Author: JaeheonKim
+Version: 1.0
+Id: fc84b75a-0dfb-4c99-aaa1-dcda39ef5888
+ExportFormat: csv
+Processors:
+    -
+        Executable: Wmi-Parser\Wmi-Parser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

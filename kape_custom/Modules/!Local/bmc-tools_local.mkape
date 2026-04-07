@@ -1,0 +1,11 @@
+Description: 'BMC-Tools: RDP Bitmap Cache parser'
+Category: RDPCache
+Author: JaeheonKim
+Version: 1.0
+Id: 46dde32f-6b0a-4a22-be7e-f6d8a24d4ee7
+ExportFormat: csv
+Processors:
+    -
+        Executable: bmc-tools\bmc-tools_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

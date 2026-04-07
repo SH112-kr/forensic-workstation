@@ -1,0 +1,11 @@
+Description: 'srum_dump: SRUM Parser'
+Category: SRUM
+Author: JaeheonKim
+Version: 1.0
+Id: cacf1dfd-3bf5-4d50-aa30-b0cb345b07b1
+ExportFormat: csv
+Processors:
+    -
+        Executable: srum_dump\srum_dump_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

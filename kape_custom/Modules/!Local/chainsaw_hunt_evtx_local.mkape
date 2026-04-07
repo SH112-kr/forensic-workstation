@@ -1,0 +1,11 @@
+Description: Chainsaw - Hunt through Windows EventLogs
+Category: EventLogs
+Author: JaeheonKim
+Version: 1.0
+Id: 417accc7-3215-4b01-a263-9d19b8bf792d
+ExportFormat: csv
+Processors:
+    -
+        Executable: chainsaw\chainsaw_hunt_evtx_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

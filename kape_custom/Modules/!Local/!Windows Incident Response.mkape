@@ -1,0 +1,246 @@
+Description: Windows Incident Response
+Category: Modules
+Author: JaeheonKim
+Version: 1.0
+Id: d3539767-4975-4bd3-ada6-b2bf7d56a53c
+ExportFormat: csv
+Processors:
+# FileSystem
+    # NTFSLogTracker
+    -
+        Executable: NTFSLogTracker_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+        
+    # MFTECmd
+    -
+        Executable: MFTECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # chainsaw hunt mft
+    -
+        Executable: chainsaw_hunt_mft_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Prefetch
+    # PECmd
+    -
+        Executable: PECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# SRUM
+    # srum_dump
+    -
+        Executable: srum_dump_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# BITS
+    # BitsParser
+    -
+        Executable: BitsParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# WBEMRepository
+    # Wmi-Parser
+    -
+        Executable: Wmi-Parser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # flare-wmi: Only the following scripts are executed automatically: show_filtertoconsumerbindings, auto_carve_class_definitions, auto_carve_class_names, timeline, dump_unallocated_pages, dump_page_slack, show_CCM_RecentlyUsedApps, and compute_rainbow_table. For deeper analysis, use the additional Python scripts located in flare-wmi/python-cim/samples within the Analysis folder
+    -
+        Executable: flare-wmi_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Registry
+    # SBECmd
+    -
+        Executable: SBECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # AmcacheParser
+    -
+        Executable: AmcacheParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # amcache-evilhunter
+    -
+        Executable: amcache-evilhunter_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # AppCompatCacheParser
+    -
+        Executable: AppCompatCacheParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # reg_hunter
+    -
+        Executable: reg_hunter_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # regentropy
+    -
+        Executable: regentropy_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # RECmd
+    -
+        Executable: RECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# LNK
+    # LECmd
+    -
+        Executable: LECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Jumplist
+    # JLECmd
+    -
+        Executable: JLECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# RecycleBin
+    # RBCmd
+    -
+        Executable: RBCmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# RecentFileCache
+    # RecentFileCacheParser
+    -
+        Executable: RecentFileCacheParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# WindowsTimeline
+    # WxTCmd
+    -
+        Executable: WxTCmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# SUM
+    # SumECmd
+    -
+        Executable: SumECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# AppCompatPCA
+    # PCAParser
+    -
+        Executable: PCAParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Certutil
+    # CryptnetUrlCacheParser
+    -
+        Executable: CryptnetUrlCacheParser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# ScheduledTasks
+    # ScheduledTasks_XML_Parser
+    -
+        Executable: ScheduledTasks_XML_Parser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# EventLogs
+    # hayabusa
+    -
+        Executable: hayabusa_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # chainsaw hunt evtx
+    -
+        Executable: chainsaw_hunt_evtx_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # EvtxECmd
+    -
+        Executable: EvtxECmd_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+    # evtx_recovery
+    -
+        Executable: evtx_recovery_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Antivirus
+    # WinDefHarvester
+    -
+        Executable: WinDefHarvester_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# Browsers
+    # hindsight
+    -
+        Executable: hindsight_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# RDPCache
+    # bmc-tools
+    -
+        Executable: bmc-tools_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# PowerShell
+    # PowerShellHarvester
+    -
+        Executable: PowerShellHarvester_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# StartupInfo
+    # StartupInfo_XML_Parser
+    -
+        Executable: StartupInfo_XML_Parser_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# StartupFolders
+    # StartupFoldersHarvester
+    -
+        Executable: StartupFoldersHarvester_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# HostsFile
+    # HostsFileHarvester
+    -
+        Executable: HostsFileHarvester_local.mkape
+        CommandLine: ""
+        ExportFormat: ""
+
+# SDB
+    # sdb2xml
+    -
+        Executable: sdb2xml_local.mkape
+        CommandLine: ""
+        ExportFormat: ""

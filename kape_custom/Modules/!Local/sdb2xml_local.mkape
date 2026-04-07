@@ -1,0 +1,11 @@
+Description: Parse SDB to XML
+Category: SDB
+Author: JaeheonKim
+Version: 1.0
+Id: ba124437-47de-4291-90f8-79e39404e4f1
+ExportFormat: csv
+Processors:
+    -
+        Executable: sdb2xml\sdb2xml_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

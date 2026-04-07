@@ -1,0 +1,40 @@
+Description: PowerShell Compound
+Author: JaeheonKim
+Version: 1.0
+Id: 231f8b8b-e664-42bf-b10d-588dbbc3eb52
+RecreateDirectories: true
+Targets:
+# PSReadLine - ConsoleHost_history.txt
+    -
+        Name: PSReadLine - ConsoleHost_history
+        Category: PowerShell
+        Path: C:\Users\%user%\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\
+        FileMask: 'ConsoleHost_history.txt'
+
+# PowerShell Transcripts
+# Generated when GPO Transcription is enabled or Start-Transcript is manually called
+    -
+        Name: PowerShell Transcripts - Default Location
+        Category: PowerShell
+        Path: C:\Users\%user%\Documents\
+        FileMask: 'PowerShell_transcript.*.txt'
+    -
+        Name: PowerShell Transcripts - Observed Location
+        Category: PowerShell
+        Path: C:\Users\%user%\Documents\20*\
+        FileMask: 'PowerShell_transcript.*.txt'
+    -
+        Name: PowerShell Transcripts - Observed Location
+        Category: PowerShell
+        Path: C:\Windows\SysWOW64\*\
+        FileMask: 'PowerShell_transcript.*.txt'
+    -
+        Name: PowerShell Transcripts - Observed Location
+        Category: PowerShell
+        Path: C:\Windows\System32\*\
+        FileMask: 'PowerShell_transcript.*.txt'
+    -
+        Name: PowerShell Transcripts - Observed Location
+        Category: PowerShell
+        Path: C:\PSTranscript\20*\
+        FileMask: 'PowerShell_transcript.*.txt'

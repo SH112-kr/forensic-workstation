@@ -1,0 +1,11 @@
+Description: flare-wmi - examining the WMI object database
+Category: WBEMRepository
+Author: JaeheonKim
+Version: 1.0
+Id: 917bf63a-05c0-44fb-942e-836c2184bb40
+ExportFormat: csv
+Processors:
+    -
+        Executable: flare-wmi\flare-wmi_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

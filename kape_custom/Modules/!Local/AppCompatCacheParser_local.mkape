@@ -1,0 +1,11 @@
+Description: 'AppCompatCacheParser: extract AppCompatCache (shimcache) information'
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: 7a708248-25aa-4d08-a756-eb0e51e930e7
+ExportFormat: csv
+Processors:
+    -
+        Executable: AppCompatCacheParser\AppCompatCacheParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,11 @@
+Description: 'SBECmd: process shellbags'
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: f0e527bf-fb34-4313-be5e-58cf1e456fec
+ExportFormat: csv
+Processors:
+    -
+        Executable: SBECmd\SBECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,11 @@
+Description: 'AmcacheParser: extract program execution information'
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: fd85fe94-0907-4e9d-bf23-f354d03c45ab
+ExportFormat: csv
+Processors:
+    -
+        Executable: AmcacheParser\AmcacheParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

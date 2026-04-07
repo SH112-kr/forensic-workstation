@@ -1,0 +1,11 @@
+Description: 'LECmd: process .lnk files'
+Category: LNK
+Author: JaeheonKim
+Version: 1.0
+Id: a1f099a7-fb66-4756-9f38-bb9e4931edd1
+ExportFormat: csv
+Processors:
+    -
+        Executable: LECmd\LECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

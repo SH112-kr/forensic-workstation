@@ -1,0 +1,11 @@
+Description: 'EvtxECmd: process event log files'
+Category: EventLogs
+Author: JaeheonKim
+Version: 1.0
+Id: 62543267-2ec2-4a99-85fc-0c6152951dcc
+ExportFormat: csv
+Processors:
+    -
+        Executable: EvtxECmd\EvtxECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,28 +1,33 @@
-# KAPE Custom Targets & Modules
+# KAPE Targets & Modules
 
-이 디렉토리의 파일들은 `install.ps1` 실행 시 KAPE 설치 디렉토리로 자동 복사됩니다.
+이 디렉토리에는 KAPE의 전체 Target(379개)과 Module(493개) 설정 파일이 포함되어 있습니다.
+바이너리(exe/dll)는 포함되지 않으며, `install.ps1`이 자동 다운로드합니다.
 
-## Targets
+## 설치
 
-### ForensicWorkstation.tkape
-AXIOM 동등 이상 커버리지의 통합 수집 Target. 40+ 아티팩트 카테고리 포함:
-- 파일시스템 ($MFT, $J, $LogFile)
-- 실행 증거 (Prefetch, AmCache, ShimCache)
-- 레지스트리 (System, User, Other)
-- 이벤트 로그 + RDP + ETL
-- SRUM / SUM
-- 브라우저 (Chrome, Edge, Firefox, IE)
-- **SSH (OpenSSH Client + Server + SYSTEM 프로필)**
-- 원격 접속 (RDP, TeamViewer, AnyDesk 등 16종)
-- AV/보안 (Windows Defender + 서드파티)
-- WER, 방화벽, 스케줄러, 클라우드, 메시징
+`install.ps1` 실행 시 KAPE가 감지되면 이 파일들이 자동으로 KAPE 디렉토리에 복사됩니다.
 
-### OpenSSHServer.tkape (수정)
-기본 OpenSSH Server Target에 SYSTEM/NetworkService/LocalService 계정의 `.ssh` 디렉토리 추가.
-침해사고에서 sshd는 SYSTEM으로 실행되므로 `C:\Windows\System32\config\systemprofile\.ssh\known_hosts`에 C2 IP가 기록됨.
+수동 복사:
+```
+kape_custom/Targets/* → {KAPE}/Targets/
+kape_custom/Modules/* → {KAPE}/Modules/
+```
 
-## Modules
+## 커스텀 파일 (우리가 추가/수정한 것)
 
-### RECmd_Kroll.mkape
-RECmd의 Kroll Batch 파일을 사용한 레지스트리 종합 분석 모듈.
-90,000+ key/value 추출 (Services, User Activity, Persistence 등).
+### Targets
+- **`Compound/ForensicWorkstation.tkape`** — AXIOM 동등 이상 커버리지의 통합 수집 Target (40+ 카테고리)
+- **`Apps/OpenSSHServer.tkape`** — SYSTEM/NetworkService/LocalService .ssh 경로 추가 (C2 IP 수집)
+
+### Modules
+- **`Compound/ForensicWorkstation.mkape`** — EZ Parser + Hayabusa + Persistence 통합 Module (20개 파서)
+- **`EZTools/RECmd/RECmd_Kroll.mkape`** — Kroll Batch 레지스트리 분석 Module
+
+## 바이너리 (별도 설치 필요)
+
+`install.ps1 -Full` 실행 시 자동 다운로드:
+- EZ Tools (PECmd, MFTECmd, AmcacheParser 등) — ericzimmerman.github.io
+- Hayabusa — github.com/Yamato-Security/hayabusa
+
+수동 설치:
+- KAPE (kape.exe) — kroll.com/kape (라이선스 필요)

@@ -1,0 +1,11 @@
+Description: Displays all StartupInfo
+Category: StartupInfo
+Author: JaeheonKim
+Version: 1.0
+Id: c63bf11f-077a-4470-bf88-9a4915eff272
+ExportFormat: csv
+Processors:
+    -
+        Executable: StartupInfo_XML_Parser\StartupInfo_XML_Parser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,11 @@
+Description: evil detection in amcache
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: 006f25e0-cd46-43f4-a014-ea3e97c90ad0
+ExportFormat: csv
+Processors:
+    -
+        Executable: amcache-evilhunter\amcache-evilhunter_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

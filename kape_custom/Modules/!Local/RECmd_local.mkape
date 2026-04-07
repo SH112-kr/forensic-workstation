@@ -1,0 +1,11 @@
+Description: 'RECmd: All RECmd Batch Output'
+Category: Registry
+Author: JaeheonKim
+Version: 1.0
+Id: 513e3750-746d-4e7e-a251-197b7b351710
+ExportFormat: csv
+Processors:
+    -
+        Executable: RECmd\RECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

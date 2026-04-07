@@ -1,0 +1,11 @@
+Description: 'MFTECmd: process all files'
+Category: FileSystem
+Author: JaeheonKim
+Version: 1.0
+Id: b10bb594-12e7-4536-ac09-ddd5cd37acf1
+ExportFormat: csv
+Processors:
+    -
+        Executable: MFTECmd\MFTECmd_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

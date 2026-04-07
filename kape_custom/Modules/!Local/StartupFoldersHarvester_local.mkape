@@ -1,0 +1,11 @@
+Description: Processing StartupFolders Artifacts
+Category: StartupFolders
+Author: JaeheonKim
+Version: 1.0
+Id: 0bd656a9-fcea-46e9-9f63-125fc11c06c7
+ExportFormat: csv
+Processors:
+    -
+        Executable: StartupFoldersHarvester\StartupFoldersHarvester.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

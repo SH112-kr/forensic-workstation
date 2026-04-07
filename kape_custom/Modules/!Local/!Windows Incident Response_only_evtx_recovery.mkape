@@ -1,0 +1,13 @@
+Description: Windows Incident Response
+Category: Modules
+Author: JaeheonKim
+Version: 1.0
+Id: d3539767-4975-4bd3-ada6-b2bf7d56a53c
+ExportFormat: csv
+Processors:
+# HostsFile
+    # HostsFileHarvester
+    -
+        Executable: HostsFileHarvester_local.mkape
+        CommandLine: ""
+        ExportFormat: ""

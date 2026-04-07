@@ -1,0 +1,11 @@
+Description: Processing Windows Defender Artifacts
+Category: Antivirus
+Author: JaeheonKim
+Version: 1.0
+Id: 7469fb38-dd72-4cae-b58a-ba5df9552470
+ExportFormat: csv
+Processors:
+    -
+        Executable: WinDefHarvester\WinDefHarvester.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

@@ -1,0 +1,11 @@
+Description: 'AppCompat PCA Folder Parser'
+Category: AppCompatPCA
+Author: JaeheonKim
+Version: 1.0
+Id: 4cb25712-02cd-48b2-a4b0-e4c45c23b9dd
+ExportFormat: csv
+Processors:
+    -
+        Executable: PCAParser\PCAParser_trigger.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv

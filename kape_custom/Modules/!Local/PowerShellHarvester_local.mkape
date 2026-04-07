@@ -1,0 +1,11 @@
+Description: Processing Powershell Artifacts
+Category: PowerShell
+Author: JaeheonKim
+Version: 1.0
+Id: da153c8a-240a-44d4-96d1-6cb29ee75d30
+ExportFormat: csv
+Processors:
+    -
+        Executable: PowerShellHarvester\PowerShellHarvester.exe
+        CommandLine: -s "%sourceDirectory%" -d "%destinationDirectory%"
+        ExportFormat: csv
