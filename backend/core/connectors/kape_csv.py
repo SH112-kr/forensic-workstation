@@ -311,12 +311,12 @@ class KapeCsvConnector(AxiomMfdbConnector):
                             vd3 = row.get("ValueData3", "")
                             import re as _re
                             # "Name: sshd Desc: OpenSSH..." → Service Name = sshd
-                            m = _re.match(r"Name:\s*(.+?)(?:\s+Desc:|$)", vd)
-                            if m:
+                            m = _re.match(r"Name:\s*(.+?)\s+Desc:", vd)
+                            if m and m.group(1).strip():
                                 row["ValueName"] = m.group(1).strip()
                             # "Image path: C:\...\sshd.exe ServiceDLL:" → Service Location
-                            m2 = _re.search(r"Image path:\s*(.+?)(?:\s+ServiceDLL:|$)", vd3)
-                            if m2:
+                            m2 = _re.search(r"Image path:\s*(.+?)\s+ServiceDLL:", vd3)
+                            if m2 and m2.group(1).strip().strip('"'):
                                 row["ValueData"] = m2.group(1).strip().strip('"')
 
                         hit_id = self._next_hit_id
