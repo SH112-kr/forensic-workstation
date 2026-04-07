@@ -562,11 +562,16 @@ class KapeCsvConnector(AxiomMfdbConnector):
         """)
         type_counts = {row["artifact_name"]: row["hit_count"] for row in cur.fetchall()}
 
-        # Date range
+        # Date range — filter out anomalous timestamps
+        # Lower: 2005-01-01, Upper: now + 1 year (dynamic)
+        import time as _time
+        upper_ms = int((_time.time() + 365 * 86400) * 1000)
         cur.execute("""
             SELECT MIN(unix_timestamp_ms) AS min_ts, MAX(unix_timestamp_ms) AS max_ts
-            FROM hit_fragment_date WHERE unix_timestamp_ms > 946684800000
-        """)
+            FROM hit_fragment_date
+            WHERE unix_timestamp_ms > 1104537600000
+              AND unix_timestamp_ms < ?
+        """, (upper_ms,))
         dr = cur.fetchone()
         min_ts = dr["min_ts"] if dr else None
         max_ts = dr["max_ts"] if dr else None

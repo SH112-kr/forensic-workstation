@@ -48,7 +48,8 @@ ORDER BY hit_count DESC
 DATE_RANGE = """
 SELECT MIN(unix_timestamp_ms) AS min_ts, MAX(unix_timestamp_ms) AS max_ts
 FROM hit_fragment_date
-WHERE unix_timestamp_ms > 946684800000
+WHERE unix_timestamp_ms > 1104537600000
+  AND unix_timestamp_ms < {upper_ms}
 """
 
 # ── Hit ID Search ──

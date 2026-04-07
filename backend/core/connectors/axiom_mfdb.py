@@ -91,8 +91,10 @@ class AxiomMfdbConnector(BaseConnector):
         cur.execute(Q.ARTIFACT_TYPE_COUNTS)
         type_counts = {row["artifact_name"]: row["hit_count"] for row in cur.fetchall()}
 
-        # Date range
-        cur.execute(Q.DATE_RANGE)
+        # Date range — dynamic upper bound: now + 1 year
+        import time as _time
+        upper_ms = int((_time.time() + 365 * 86400) * 1000)
+        cur.execute(Q.DATE_RANGE.format(upper_ms=upper_ms))
         dr = cur.fetchone()
         min_ts = dr["min_ts"] if dr else None
         max_ts = dr["max_ts"] if dr else None
