@@ -305,6 +305,20 @@ class KapeCsvConnector(AxiomMfdbConnector):
                         if category_filter and row.get(category_col, "") != category_filter:
                             continue
 
+                        # RECmd Kroll Services: extract structured fields from ValueData
+                        if tool_name == "RECmd_Kroll_Services":
+                            vd = row.get("ValueData", "")
+                            vd3 = row.get("ValueData3", "")
+                            import re as _re
+                            # "Name: sshd Desc: OpenSSH..." → Service Name = sshd
+                            m = _re.match(r"Name:\s*(.+?)(?:\s+Desc:|$)", vd)
+                            if m:
+                                row["ValueName"] = m.group(1).strip()
+                            # "Image path: C:\...\sshd.exe ServiceDLL:" → Service Location
+                            m2 = _re.search(r"Image path:\s*(.+?)(?:\s+ServiceDLL:|$)", vd3)
+                            if m2:
+                                row["ValueData"] = m2.group(1).strip().strip('"')
+
                         hit_id = self._next_hit_id
                         self._next_hit_id += 1
                         hit_batch.append((hit_id, av_id))
