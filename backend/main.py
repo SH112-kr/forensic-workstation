@@ -169,14 +169,18 @@ def main():
         print(f"  WARNING: Could not find a free port in range {base_port}-{base_port+9}, using {base_port}")
         port = base_port
 
+    # Docker: bind 0.0.0.0, skip browser open
+    is_docker = os.path.exists("/.dockerenv") or os.environ.get("DOCKER", "")
+    host = "0.0.0.0" if is_docker else "127.0.0.1"
+
     print(f"\n  Forensic Workstation starting on http://localhost:{port}\n")
 
-    # Open browser with the correct port
-    webbrowser.open(f"http://localhost:{port}")
+    if not is_docker:
+        webbrowser.open(f"http://localhost:{port}")
 
     uvicorn.run(
         app,
-        host="127.0.0.1",  # localhost only — no external access
+        host=host,
         port=port,
         log_level="info",
     )

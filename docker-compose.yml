@@ -1,0 +1,13 @@
+services:
+  forensic-workstation:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      # Mount your evidence directory here
+      - ./evidence:/evidence
+      # Persist projects
+      - ./projects:/app/projects
+    environment:
+      - PORT=8001
+    restart: unless-stopped
