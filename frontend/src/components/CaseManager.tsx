@@ -103,6 +103,7 @@ export default function CaseManager() {
 
   // Loading
   const [creating, setCreating] = useState(false);
+  const [loadingPhase, setLoadingPhase] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -177,9 +178,11 @@ export default function CaseManager() {
   // Create project & load
   const handleCreate = async () => {
     setCreating(true);
+    setLoadingPhase('Creating project...');
     setError('');
     try {
       const selected = evidence.filter((_, i) => selectedEvidence.has(i));
+      setLoadingPhase('Loading evidence files...');
       const data = await post('/api/project/create', {
         name: projectName || 'Untitled',
         description: projectDesc,
@@ -199,6 +202,7 @@ export default function CaseManager() {
       if (loaded) {
         // Fetch case info
         try {
+          setLoadingPhase('Preparing dashboard...');
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
           setKapeDiagnostics(caseData.kape_diagnostics || null);
@@ -228,18 +232,22 @@ export default function CaseManager() {
       setError(e.message);
     } finally {
       setCreating(false);
+      setLoadingPhase('');
     }
   };
 
   // Open saved project
   const handleOpenProject = async (proj: SavedProject) => {
     setCreating(true);
+    setLoadingPhase(`Opening ${proj.name}...`);
     setError('');
     try {
+      setLoadingPhase('Loading evidence files...');
       const data = await post('/api/project/open', { path: proj.path });
       const loadResults = data.load_results || [];
       const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
       if (loaded) {
+        setLoadingPhase('Preparing dashboard...');
         const caseData = await get('/api/cases/summary');
         setCaseInfo({ ...caseData, case_name: proj.name || caseData.case_name });
         setKapeDiagnostics(caseData.kape_diagnostics || null);
@@ -253,6 +261,7 @@ export default function CaseManager() {
       setError(e.message);
     } finally {
       setCreating(false);
+      setLoadingPhase('');
     }
   };
 
@@ -260,6 +269,7 @@ export default function CaseManager() {
   const handleQuickOpen = async () => {
     if (!quickPath.trim()) return;
     setQuickLoading(true);
+    setLoadingPhase('Opening case file...');
     setQuickError('');
     try {
       const data = await post('/api/cases/open', { path: quickPath.trim() });
@@ -279,6 +289,7 @@ export default function CaseManager() {
   // Reopen a recent case
   const handleOpenRecent = async (rc: RecentCase) => {
     setQuickLoading(true);
+    setLoadingPhase(`Opening ${rc.name}...`);
     setError('');
     try {
       if (rc.source === 'project') {
@@ -589,6 +600,33 @@ export default function CaseManager() {
           {quickError && (
             <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{quickError}</div>
           )}
+        </div>
+      )}
+
+      {/* Loading Overlay */}
+      {(creating || quickLoading) && loadingPhase && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000,
+        }}>
+          <div style={{
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: '32px 48px', textAlign: 'center',
+            minWidth: 300,
+          }}>
+            <div style={{
+              width: 32, height: 32, border: '3px solid var(--border)',
+              borderTopColor: 'var(--accent)', borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite',
+              margin: '0 auto 16px',
+            }} />
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>
+              {loadingPhase}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+              KAPE data may take 1-2 minutes to parse
+            </div>
+          </div>
         </div>
       )}
 
