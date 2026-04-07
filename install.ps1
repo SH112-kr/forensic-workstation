@@ -23,8 +23,16 @@ Write-Host "[1/5] Checking Python..." -ForegroundColor Yellow
 try {
     $pyVersion = python --version 2>&1
     Write-Host "  Found: $pyVersion" -ForegroundColor Green
+    # Check minimum version (3.10+)
+    $ver = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1
+    $major, $minor = $ver -split '\.'
+    if ([int]$major -lt 3 -or ([int]$major -eq 3 -and [int]$minor -lt 10)) {
+        Write-Host "  ERROR: Python 3.10+ required (found $ver)" -ForegroundColor Red
+        Write-Host "  Install: winget install Python.Python.3.12" -ForegroundColor Gray
+        exit 1
+    }
 } catch {
-    Write-Host "  ERROR: Python not found" -ForegroundColor Red
+    Write-Host "  ERROR: Python not found. Install: winget install Python.Python.3.12" -ForegroundColor Red
     exit 1
 }
 
