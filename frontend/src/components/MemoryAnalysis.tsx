@@ -42,6 +42,12 @@ export default function MemoryAnalysis() {
   };
 
   const loadPlugin = async (plugin: string) => {
+    // Use cached data if already loaded
+    if (plugin === 'pslist' && pslist.length > 0) { setActiveTab(plugin); return; }
+    if (plugin === 'netscan' && netscan.length > 0) { setActiveTab(plugin); return; }
+    if (plugin === 'malfind' && malfind.length > 0) { setActiveTab(plugin); return; }
+    if (plugin === 'cmdline' && cmdline.length > 0) { setActiveTab(plugin); return; }
+
     setLoading(`Running ${plugin}...`);
     try {
       if (plugin === 'pslist') { const r = await get('/api/memory/pslist'); setPslist(r.processes || []); }
