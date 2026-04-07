@@ -62,8 +62,108 @@ if (Test-Path $distDir) {
     Write-Host "  No pre-built frontend. Use -BuildFrontend flag or build manually." -ForegroundColor Yellow
 }
 
-# ── 4. Create start script ──
-Write-Host "[4/5] Creating start script..." -ForegroundColor Yellow
+# ── 4. External Forensic Tools (auto-download) ──
+Write-Host "[4/7] Setting up forensic tools..." -ForegroundColor Yellow
+
+$ToolsDir = Join-Path $ProjectDir "tools"
+if (-not (Test-Path $ToolsDir)) { New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null }
+
+# .env file for tool paths
+$envFile = Join-Path $ProjectDir "backend\.env"
+
+# ── KAPE ──
+$kapePath = Get-ChildItem -Path $ToolsDir -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($kapePath) {
+    Write-Host "  KAPE: Found $($kapePath.FullName)" -ForegroundColor Green
+} else {
+    Write-Host "  KAPE: Not found. Download manually from https://www.kroll.com/en/services/cyber-risk/incident-response-litigation-support/kroll-artifact-parser-extractor-kape" -ForegroundColor Yellow
+    Write-Host "         Extract to: $ToolsDir\KAPE\" -ForegroundColor Gray
+}
+
+# ── EZ Tools (Eric Zimmerman) ──
+$ezToolsUrl = "https://download.ericzimmermanstools.com/net6/All_6.zip"
+$ezDir = Join-Path $ToolsDir "EZTools"
+if (-not (Test-Path (Join-Path $ezDir "PECmd.exe")) -and -not $kapePath) {
+    Write-Host "  EZ Tools: Downloading..." -ForegroundColor Gray
+    try {
+        $ezZip = Join-Path $env:TEMP "EZTools.zip"
+        Invoke-WebRequest -Uri $ezToolsUrl -OutFile $ezZip -UseBasicParsing
+        Expand-Archive -Path $ezZip -DestinationPath $ezDir -Force
+        Remove-Item $ezZip -Force
+        Write-Host "  EZ Tools: Downloaded to $ezDir" -ForegroundColor Green
+    } catch {
+        Write-Host "  EZ Tools: Download failed. Get manually from https://ericzimmerman.github.io/" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  EZ Tools: Available" -ForegroundColor Green
+}
+
+# ── Ghidra ──
+if ($Full -or $Ghidra) {
+    $ghidraDir = Get-ChildItem -Path $ToolsDir -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ghidraDir) {
+        $ghidraDir = Get-ChildItem -Path "C:\Tools","D:\Tools","$env:USERPROFILE\Desktop" -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
+    if ($ghidraDir) {
+        Write-Host "  Ghidra: Found $($ghidraDir.FullName)" -ForegroundColor Green
+        Add-Content $envFile "FORENSIC_GHIDRA_INSTALL_DIR=$($ghidraDir.FullName)"
+    } else {
+        Write-Host "  Ghidra: Not found. Download from https://ghidra-sre.org/" -ForegroundColor Yellow
+        Write-Host "         Requires JDK 21+: winget install Microsoft.OpenJDK.21" -ForegroundColor Gray
+    }
+}
+
+# ── Hayabusa ──
+$hayabusaPath = Get-ChildItem -Path $ToolsDir -Recurse -Filter "hayabusa*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $hayabusaPath) {
+    $hayabusaPath = Get-Command hayabusa -ErrorAction SilentlyContinue
+}
+if ($hayabusaPath) {
+    Write-Host "  Hayabusa: Found" -ForegroundColor Green
+} else {
+    Write-Host "  Hayabusa: Downloading latest release..." -ForegroundColor Gray
+    try {
+        $hayaDir = Join-Path $ToolsDir "hayabusa"
+        New-Item -ItemType Directory -Path $hayaDir -Force | Out-Null
+        $hayaRelease = Invoke-RestMethod "https://api.github.com/repos/Yamato-Security/hayabusa/releases/latest"
+        $hayaAsset = $hayaRelease.assets | Where-Object { $_.name -match "win-x64.*zip$" } | Select-Object -First 1
+        if ($hayaAsset) {
+            $hayaZip = Join-Path $env:TEMP "hayabusa.zip"
+            Invoke-WebRequest -Uri $hayaAsset.browser_download_url -OutFile $hayaZip -UseBasicParsing
+            Expand-Archive -Path $hayaZip -DestinationPath $hayaDir -Force
+            Remove-Item $hayaZip -Force
+            Write-Host "  Hayabusa: Downloaded to $hayaDir" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "  Hayabusa: Download failed. Get from https://github.com/Yamato-Security/hayabusa/releases" -ForegroundColor Yellow
+    }
+}
+
+# ── Write .env with detected paths ──
+Write-Host "  Scanning for tool paths..." -ForegroundColor Gray
+$scanDirs = @($ToolsDir, "C:\Tools", "D:\Tools", "E:\kape")
+foreach ($scanDir in $scanDirs) {
+    if (-not (Test-Path $scanDir)) { continue }
+    $kape = Get-ChildItem -Path $scanDir -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($kape) {
+        $existing = Get-Content $envFile -ErrorAction SilentlyContinue
+        if ($existing -notmatch "FORENSIC_KAPE_PATH") {
+            Add-Content $envFile "FORENSIC_KAPE_PATH=$($kape.FullName)"
+            Write-Host "  .env: KAPE=$($kape.FullName)" -ForegroundColor Gray
+        }
+    }
+    $hayabusa = Get-ChildItem -Path $scanDir -Recurse -Filter "hayabusa.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($hayabusa) {
+        $existing = Get-Content $envFile -ErrorAction SilentlyContinue
+        if ($existing -notmatch "FORENSIC_HAYABUSA_PATH") {
+            Add-Content $envFile "FORENSIC_HAYABUSA_PATH=$($hayabusa.FullName)"
+            Write-Host "  .env: Hayabusa=$($hayabusa.FullName)" -ForegroundColor Gray
+        }
+    }
+}
+
+# ── 5. Create start script ──
+Write-Host "[5/7] Creating start script..." -ForegroundColor Yellow
 $startScript = @"
 @echo off
 title Forensic Workstation
@@ -77,8 +177,8 @@ pause
 Set-Content (Join-Path $ProjectDir "start.bat") -Value $startScript -Encoding ASCII
 Write-Host "  Created start.bat" -ForegroundColor Green
 
-# ── 5. Register MCP for Claude Code ──
-Write-Host "[5/6] Registering MCP server for Claude Code..." -ForegroundColor Yellow
+# ── 6. Register MCP for Claude Code ──
+Write-Host "[6/7] Registering MCP server for Claude Code..." -ForegroundColor Yellow
 $claudeSettingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
 $mcpBridgePath = (Join-Path $ProjectDir "backend\mcp_bridge.py") -replace '\\', '\\\\'
 
@@ -121,8 +221,8 @@ if (Test-Path $claudeSettingsPath) {
 Write-Host "  Path: $claudeSettingsPath" -ForegroundColor Gray
 Write-Host "  Restart Claude Code to activate MCP" -ForegroundColor Gray
 
-# ── 6. Verify ──
-Write-Host "[6/6] Verifying..." -ForegroundColor Yellow
+# ── 7. Verify ──
+Write-Host "[7/7] Verifying..." -ForegroundColor Yellow
 $testResult = python -c "
 import sys
 sys.path.insert(0, '$($ProjectDir -replace '\\', '/')/backend')
