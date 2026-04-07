@@ -48,11 +48,15 @@ if ($Full -or $Memory) {
 }
 if ($Full -or $Ghidra) {
     pip install pyhidra 2>&1 | Out-Null
-    Write-Host "  Ghidra: pyhidra (JDK 21+ and Ghidra required separately)" -ForegroundColor Green
+    Write-Host "  Ghidra: pyhidra" -ForegroundColor Green
 }
 if ($Full -or $Network) {
     pip install pyshark 2>&1 | Out-Null
-    Write-Host "  Network: pyshark (Wireshark required separately)" -ForegroundColor Green
+    Write-Host "  Network: pyshark" -ForegroundColor Green
+}
+if ($Full) {
+    pip install volatility3 yara-python regipy pyhidra pyshark 2>&1 | Out-Null
+    Write-Host "  Full: All optional packages installed" -ForegroundColor Green
 }
 
 # ── 3. Frontend ──
@@ -114,6 +118,22 @@ if (-not (Test-Path (Join-Path $ezDir "PECmd.exe")) -and -not $kapePath) {
     Write-Host "  EZ Tools: Available" -ForegroundColor Green
 }
 
+# ── JDK (required for Ghidra) ──
+if ($Full -or $Ghidra) {
+    $javaVer = java -version 2>&1 | Select-String "version" | Select-Object -First 1
+    if ($javaVer) {
+        Write-Host "  JDK: $javaVer" -ForegroundColor Green
+    } else {
+        Write-Host "  JDK: Not found. Installing OpenJDK 21..." -ForegroundColor Gray
+        try {
+            winget install Microsoft.OpenJDK.21 --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+            Write-Host "  JDK 21: Installed via winget" -ForegroundColor Green
+        } catch {
+            Write-Host "  JDK: winget install failed. Download from https://adoptium.net/" -ForegroundColor Yellow
+        }
+    }
+}
+
 # ── Ghidra ──
 if ($Full -or $Ghidra) {
     $ghidraDir = Get-ChildItem -Path $ToolsDir -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -122,10 +142,45 @@ if ($Full -or $Ghidra) {
     }
     if ($ghidraDir) {
         Write-Host "  Ghidra: Found $($ghidraDir.FullName)" -ForegroundColor Green
-        Add-Content $envFile "FORENSIC_GHIDRA_INSTALL_DIR=$($ghidraDir.FullName)"
     } else {
-        Write-Host "  Ghidra: Not found. Download from https://ghidra-sre.org/" -ForegroundColor Yellow
-        Write-Host "         Requires JDK 21+: winget install Microsoft.OpenJDK.21" -ForegroundColor Gray
+        Write-Host "  Ghidra: Downloading latest release..." -ForegroundColor Gray
+        try {
+            $ghidraRelease = Invoke-RestMethod "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest"
+            $ghidraAsset = $ghidraRelease.assets | Where-Object { $_.name -match "ghidra.*\.zip$" -and $_.name -notmatch "src" } | Select-Object -First 1
+            if ($ghidraAsset) {
+                $ghidraZip = Join-Path $env:TEMP "ghidra.zip"
+                Write-Host "  Ghidra: Downloading $($ghidraAsset.name) ..." -ForegroundColor Gray
+                Invoke-WebRequest -Uri $ghidraAsset.browser_download_url -OutFile $ghidraZip -UseBasicParsing
+                Expand-Archive -Path $ghidraZip -DestinationPath $ToolsDir -Force
+                Remove-Item $ghidraZip -Force
+                $ghidraDir = Get-ChildItem -Path $ToolsDir -Directory -Filter "ghidra_*" | Select-Object -First 1
+                Write-Host "  Ghidra: Downloaded to $($ghidraDir.FullName)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "  Ghidra: Download failed. Get from https://github.com/NationalSecurityAgency/ghidra/releases" -ForegroundColor Yellow
+        }
+    }
+    if ($ghidraDir) {
+        $existing = Get-Content $envFile -ErrorAction SilentlyContinue
+        if ($existing -notmatch "FORENSIC_GHIDRA_INSTALL_DIR") {
+            Add-Content $envFile "FORENSIC_GHIDRA_INSTALL_DIR=$($ghidraDir.FullName)"
+        }
+    }
+}
+
+# ── Wireshark (required for pyshark/Network analysis) ──
+if ($Full -or $Network) {
+    $wsPath = Get-Command tshark -ErrorAction SilentlyContinue
+    if ($wsPath) {
+        Write-Host "  Wireshark: Found (tshark)" -ForegroundColor Green
+    } else {
+        Write-Host "  Wireshark: Installing..." -ForegroundColor Gray
+        try {
+            winget install WiresharkFoundation.Wireshark --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+            Write-Host "  Wireshark: Installed via winget" -ForegroundColor Green
+        } catch {
+            Write-Host "  Wireshark: winget failed. Download from https://www.wireshark.org/" -ForegroundColor Yellow
+        }
     }
 }
 
