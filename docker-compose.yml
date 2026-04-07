@@ -4,10 +4,22 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      # Mount your evidence directory here
+      # Mount evidence directories (adjust paths to your system)
+      # Example: MFDB, KAPE output, memory dumps, disk images
       - ./evidence:/evidence
-      # Persist projects
+      # Persist projects across container restarts
       - ./projects:/app/projects
     environment:
       - PORT=8001
     restart: unless-stopped
+
+  # Lightweight version (no Ghidra — faster build, smaller image)
+  # forensic-workstation-lite:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.lite
+  #   ports:
+  #     - "8001:8001"
+  #   volumes:
+  #     - ./evidence:/evidence
+  #     - ./projects:/app/projects
