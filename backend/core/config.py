@@ -48,15 +48,22 @@ def find_kape() -> str | None:
     found = shutil.which("kape") or shutil.which("kape.exe")
     if found:
         return found
-    # Common locations
+    # Scan all drives + common paths dynamically
     import glob as _glob
-    for pattern in [
-        os.path.expanduser("~/Desktop/*/Tools/KAPE/kape.exe"),
+    import string
+    patterns = [
         os.path.expanduser("~/Desktop/*/KAPE/kape.exe"),
-        "C:/Tools/KAPE/kape.exe",
-        "C:/KAPE/kape.exe",
-        "D:/Tools/KAPE/kape.exe",
-    ]:
+        os.path.expanduser("~/Desktop/*/Tools/KAPE/kape.exe"),
+        os.path.expanduser("~/Downloads/*/KAPE/kape.exe"),
+    ]
+    # Add {drive}:/Tools/KAPE and {drive}:/KAPE for all existing drives
+    for letter in string.ascii_uppercase:
+        drive = f"{letter}:/"
+        if os.path.isdir(drive):
+            patterns.append(f"{drive}Tools/KAPE/kape.exe")
+            patterns.append(f"{drive}KAPE/kape.exe")
+            patterns.append(f"{drive}kape/KAPE/kape.exe")
+    for pattern in patterns:
         matches = _glob.glob(pattern)
         if matches:
             return matches[0]

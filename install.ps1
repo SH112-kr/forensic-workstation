@@ -95,7 +95,15 @@ $envFile = Join-Path $ProjectDir "backend\.env"
 $kapePath = Get-ChildItem -Path $ToolsDir -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $kapePath) {
     # Also scan common locations
-    foreach ($scanPath in @("C:\Tools", "D:\Tools", "E:\kape", "$env:USERPROFILE\Desktop")) {
+    # Scan all fixed drives + common tool paths
+    $scanPaths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads")
+    # Add root of each fixed drive (C:\, D:\, E:\ etc.)
+    Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | ForEach-Object {
+        $scanPaths += Join-Path $_.Root "Tools"
+        $scanPaths += Join-Path $_.Root "KAPE"
+        $scanPaths += Join-Path $_.Root "kape"
+    }
+    foreach ($scanPath in ($scanPaths | Select-Object -Unique)) {
         $kapePath = Get-ChildItem -Path $scanPath -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($kapePath) { break }
     }
@@ -166,7 +174,15 @@ if ($Full -or $Ghidra) {
 if ($Full -or $Ghidra) {
     $ghidraDir = Get-ChildItem -Path $ToolsDir -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $ghidraDir) {
-        $ghidraDir = Get-ChildItem -Path "C:\Tools","D:\Tools","$env:USERPROFILE\Desktop" -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        # Scan all drives for Ghidra
+        $ghidraScanPaths = @("$env:USERPROFILE\Desktop")
+        Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | ForEach-Object {
+            $ghidraScanPaths += Join-Path $_.Root "Tools"
+        }
+        foreach ($gPath in $ghidraScanPaths) {
+            $ghidraDir = Get-ChildItem -Path $gPath -Directory -Filter "ghidra_*" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($ghidraDir) { break }
+        }
     }
     if ($ghidraDir) {
         Write-Host "  Ghidra: Found $($ghidraDir.FullName)" -ForegroundColor Green
@@ -282,7 +298,12 @@ if ($kapePath) {
 
 # ── Write .env with detected paths ──
 Write-Host "  Scanning for tool paths..." -ForegroundColor Gray
-$scanDirs = @($ToolsDir, "C:\Tools", "D:\Tools", "E:\kape")
+$scanDirs = @($ToolsDir)
+Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | ForEach-Object {
+    $scanDirs += Join-Path $_.Root "Tools"
+    $scanDirs += Join-Path $_.Root "KAPE"
+    $scanDirs += Join-Path $_.Root "kape"
+}
 foreach ($scanDir in $scanDirs) {
     if (-not (Test-Path $scanDir)) { continue }
     $kape = Get-ChildItem -Path $scanDir -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
