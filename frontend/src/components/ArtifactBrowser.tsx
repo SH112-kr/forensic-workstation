@@ -179,7 +179,6 @@ export default function ArtifactBrowser() {
               rowData={rows}
               onRowClicked={onRowClicked}
               rowSelection="single"
-              theme="legacy"
             />
           </div>
 
