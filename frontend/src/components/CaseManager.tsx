@@ -624,7 +624,7 @@ export default function CaseManager() {
               {loadingPhase}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-              KAPE data may take 1-2 minutes to parse
+              Large datasets may take a moment to load
             </div>
           </div>
         </div>
