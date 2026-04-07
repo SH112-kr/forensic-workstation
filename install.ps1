@@ -37,8 +37,9 @@ try {
 }
 
 # ── 2. Backend Dependencies ──
-Write-Host "[2/5] Installing backend dependencies..." -ForegroundColor Yellow
-pip install fastapi uvicorn "mcp[cli]>=1.2.0" "pydantic>=2.0" "pydantic-settings>=2.0" websockets 2>&1 | Out-Null
+Write-Host "[2/7] Installing backend dependencies..." -ForegroundColor Yellow
+$reqFile = Join-Path $ProjectDir "backend\requirements.txt"
+pip install -r $reqFile 2>&1 | Out-Null
 Write-Host "  Core: FastAPI, uvicorn, mcp, pydantic" -ForegroundColor Green
 
 if ($Full -or $Memory) {
@@ -55,19 +56,26 @@ if ($Full -or $Network) {
 }
 
 # ── 3. Frontend ──
-Write-Host "[3/5] Checking frontend..." -ForegroundColor Yellow
+Write-Host "[3/7] Building frontend..." -ForegroundColor Yellow
 $distDir = Join-Path $ProjectDir "frontend\dist"
 if (Test-Path $distDir) {
     Write-Host "  Pre-built frontend found" -ForegroundColor Green
-} elseif ($BuildFrontend) {
-    Write-Host "  Building frontend (requires Node.js)..." -ForegroundColor Gray
-    Push-Location (Join-Path $ProjectDir "frontend")
-    npm install 2>&1 | Out-Null
-    npm run build 2>&1 | Out-Null
-    Pop-Location
-    Write-Host "  Frontend built" -ForegroundColor Green
 } else {
-    Write-Host "  No pre-built frontend. Use -BuildFrontend flag or build manually." -ForegroundColor Yellow
+    # Check Node.js
+    try {
+        $nodeVer = node --version 2>&1
+        Write-Host "  Node.js: $nodeVer" -ForegroundColor Gray
+        Push-Location (Join-Path $ProjectDir "frontend")
+        Write-Host "  Installing npm packages..." -ForegroundColor Gray
+        npm install 2>&1 | Out-Null
+        Write-Host "  Building..." -ForegroundColor Gray
+        npm run build 2>&1 | Out-Null
+        Pop-Location
+        Write-Host "  Frontend built" -ForegroundColor Green
+    } catch {
+        Write-Host "  WARNING: Node.js not found. Install from https://nodejs.org/" -ForegroundColor Yellow
+        Write-Host "  Web UI will not be available until frontend is built." -ForegroundColor Gray
+    }
 }
 
 # ── 4. External Forensic Tools (auto-download) ──
