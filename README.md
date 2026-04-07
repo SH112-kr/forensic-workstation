@@ -10,15 +10,15 @@
 git clone https://github.com/SH112-kr/forensic-workstation.git
 cd forensic-workstation
 
-# Full 버전 (Ghidra + Volatility + 모든 분석 도구)
-docker compose up --build
+# 자동 설치 (Docker 빌드 + MCP 등록 + KAPE 설정)
+powershell -ExecutionPolicy Bypass -File setup-docker.ps1
 
-# 또는 Lite 버전 (Ghidra 제외, 빠른 빌드)
-docker build -f Dockerfile.lite -t forensic-workstation-lite .
-docker run -p 8001:8001 -v ./evidence:/evidence forensic-workstation-lite
+# 또는 수동
+docker compose up --build -d
 ```
 
 브라우저에서 `http://localhost:8001` 접속
+Claude Code 재시작하면 MCP 도구 자동 연결
 
 > **KAPE 관련 참고사항**
 >

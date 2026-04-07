@@ -1,6 +1,7 @@
 services:
   forensic-workstation:
     build: .
+    container_name: forensic-workstation
     ports:
       - "8001:8001"
     volumes:
