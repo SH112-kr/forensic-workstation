@@ -36,19 +36,40 @@ echo.
 
 if defined FORENSIC_KAPE_PATH (
     set KAPE_EXE=%FORENSIC_KAPE_PATH%
-) else (
-    where kape.exe >nul 2>&1
-    if %errorlevel%==0 (
-        for /f "delims=" %%i in ('where kape.exe') do set KAPE_EXE=%%i
-    ) else (
-        echo.
-        echo   ERROR: kape.exe not found.
-        echo   Set FORENSIC_KAPE_PATH or add KAPE to PATH.
-        echo.
-        pause
-        exit /b 1
+    goto kape_found
+)
+
+where kape.exe >nul 2>&1
+if %errorlevel%==0 (
+    for /f "delims=" %%i in ('where kape.exe') do set KAPE_EXE=%%i
+    goto kape_found
+)
+
+REM Scan all drives for kape.exe
+for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist "%%d:\KAPE\kape.exe" (
+        set KAPE_EXE=%%d:\KAPE\kape.exe
+        goto kape_found
+    )
+    if exist "%%d:\kape\KAPE\kape.exe" (
+        set KAPE_EXE=%%d:\kape\KAPE\kape.exe
+        goto kape_found
+    )
+    if exist "%%d:\Tools\KAPE\kape.exe" (
+        set KAPE_EXE=%%d:\Tools\KAPE\kape.exe
+        goto kape_found
     )
 )
+
+echo.
+echo   ERROR: kape.exe not found.
+echo   Set FORENSIC_KAPE_PATH or place KAPE in {drive}:\KAPE\ or {drive}:\Tools\KAPE\
+echo.
+pause
+exit /b 1
+
+:kape_found
+echo   KAPE:    %KAPE_EXE%
 
 "%KAPE_EXE%" --tsource %SOURCE%\ --tdest "%OUT_DIR%\collected" --target ForensicWorkstation --mdest "%OUT_DIR%\parsed" --module ForensicWorkstation --msource "%OUT_DIR%\collected" --vss --vd
 
