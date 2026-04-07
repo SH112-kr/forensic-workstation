@@ -15,6 +15,17 @@ export default function MemoryAnalysis() {
   const [cmdline, setCmdline] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState('pslist');
 
+  // Check if already connected (e.g. from project load)
+  useState(() => {
+    get('/api/cases/status').then(data => {
+      const connectors = data.connectors || {};
+      if (connectors['volatility']) {
+        setConnected(true);
+        get('/api/memory/pslist').then(ps => setPslist(ps.processes || [])).catch(() => {});
+      }
+    }).catch(() => {});
+  });
+
   const openDump = async () => {
     if (!path.trim()) return;
     setLoading('Opening memory dump...');
