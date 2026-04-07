@@ -326,7 +326,7 @@ export default function CaseManager() {
   };
 
   return (
-    <div style={{ maxWidth: 800, margin: '40px auto', padding: '0 24px' }}>
+    <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px', height: '100vh', overflowY: 'auto' }}>
       {/* Title */}
       <div style={{ textAlign: 'center', marginBottom: 32 }}>
         <h1 style={{ fontSize: 28, fontWeight: 300, marginBottom: 4 }}>
