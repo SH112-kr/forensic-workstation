@@ -1,0 +1,17 @@
+Description: 'RECmd: Kroll Batch'
+Category: Registry
+Author: Kroll
+Version: 1.0
+Id: a7c3d2e1-9f84-4b6a-8c12-3e5f7a9d1b4c
+BinaryUrl: https://download.ericzimmermanstools.com/RECmd.zip
+ExportFormat: csv
+Processors:
+    -
+        Executable: RECmd\RECmd.exe
+        CommandLine: -d %sourceDirectory% --bn BatchExamples\Kroll_Batch.reb --nl false --csv %destinationDirectory%
+        ExportFormat: csv
+        ExportFile: KrollBatch_RECmdConsoleLog.txt
+
+# Uses the Kroll batch command file for comprehensive registry analysis.
+# File resides in KAPE\Modules\bin\RECmd\BatchExamples\Kroll_Batch.reb
+# --nl false replays transaction logs.

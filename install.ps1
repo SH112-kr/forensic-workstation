@@ -93,11 +93,39 @@ $envFile = Join-Path $ProjectDir "backend\.env"
 
 # ── KAPE ──
 $kapePath = Get-ChildItem -Path $ToolsDir -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $kapePath) {
+    # Also scan common locations
+    foreach ($scanPath in @("C:\Tools", "D:\Tools", "E:\kape", "$env:USERPROFILE\Desktop")) {
+        $kapePath = Get-ChildItem -Path $scanPath -Recurse -Filter "kape.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($kapePath) { break }
+    }
+}
 if ($kapePath) {
+    $kapeDir = Split-Path (Split-Path $kapePath.FullName -Parent) -Parent
+    if ($kapePath.Directory.Name -eq "KAPE") { $kapeDir = $kapePath.Directory.FullName }
+    else { $kapeDir = $kapePath.Directory.FullName }
     Write-Host "  KAPE: Found $($kapePath.FullName)" -ForegroundColor Green
+
+    # Deploy custom Targets & Modules
+    $customDir = Join-Path $ProjectDir "kape_custom"
+    if (Test-Path $customDir) {
+        Write-Host "  KAPE: Deploying custom Targets & Modules..." -ForegroundColor Gray
+        # Copy custom targets
+        $customTargets = Join-Path $customDir "Targets"
+        if (Test-Path $customTargets) {
+            Copy-Item -Path "$customTargets\*" -Destination (Join-Path $kapeDir "Targets") -Recurse -Force
+            Write-Host "    Targets: ForensicWorkstation.tkape, OpenSSHServer.tkape" -ForegroundColor Green
+        }
+        # Copy custom modules
+        $customModules = Join-Path $customDir "Modules"
+        if (Test-Path $customModules) {
+            Copy-Item -Path "$customModules\*" -Destination (Join-Path $kapeDir "Modules") -Recurse -Force
+            Write-Host "    Modules: RECmd_Kroll.mkape" -ForegroundColor Green
+        }
+    }
 } else {
-    Write-Host "  KAPE: Not found. Download manually from https://www.kroll.com/en/services/cyber-risk/incident-response-litigation-support/kroll-artifact-parser-extractor-kape" -ForegroundColor Yellow
-    Write-Host "         Extract to: $ToolsDir\KAPE\" -ForegroundColor Gray
+    Write-Host "  KAPE: Not found. Download from https://www.kroll.com/kape" -ForegroundColor Yellow
+    Write-Host "         Extract to: $ToolsDir\KAPE\ then re-run install.ps1" -ForegroundColor Gray
 }
 
 # ── EZ Tools (Eric Zimmerman) ──

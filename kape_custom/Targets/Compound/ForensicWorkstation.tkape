@@ -1,0 +1,272 @@
+Description: Forensic Workstation 전용 수집 — AXIOM 동등 이상 커버리지. 침해사고 핵심 아티팩트 + 브라우저 + 원격접속 + AV + WER + 방화벽 + RDP 캐시 + 이벤트 추적 로그
+Author: fsec
+Version: 1.0
+Id: f0c3a1b2-9d4e-4f5a-8c6b-7e8d9f0a1b2c
+RecreateDirectories: true
+Targets:
+    #
+    # ── 파일시스템 ──
+    #
+    -
+        Name: $MFT
+        Category: FileSystem
+        Path: $MFT.tkape
+    -
+        Name: $J
+        Category: FileSystem
+        Path: $J.tkape
+    -
+        Name: $LogFile
+        Category: FileSystem
+        Path: $LogFile.tkape
+    -
+        Name: $Boot
+        Category: FileSystem
+        Path: $Boot.tkape
+    -
+        Name: $SDS
+        Category: FileSystem
+        Path: $SDS.tkape
+    -
+        Name: $T
+        Category: FileSystem
+        Path: $T.tkape
+    #
+    # ── 실행 증거 ──
+    #
+    -
+        Name: Prefetch
+        Category: EvidenceOfExecution
+        Path: Prefetch.tkape
+    -
+        Name: Amcache
+        Category: EvidenceOfExecution
+        Path: Amcache.tkape
+    -
+        Name: RecentFileCache
+        Category: EvidenceOfExecution
+        Path: RecentFileCache.tkape
+    -
+        Name: Syscache
+        Category: EvidenceOfExecution
+        Path: Syscache.tkape
+    #
+    # ── 레지스트리 ──
+    #
+    -
+        Name: RegistryHivesSystem
+        Category: Registry
+        Path: RegistryHivesSystem.tkape
+    -
+        Name: RegistryHivesUser
+        Category: Registry
+        Path: RegistryHivesUser.tkape
+    -
+        Name: RegistryHivesOther
+        Category: Registry
+        Path: RegistryHivesOther.tkape
+    #
+    # ── 이벤트 로그 ──
+    #
+    -
+        Name: EventLogs
+        Category: EventLogs
+        Path: EventLogs.tkape
+    -
+        Name: EventLogs-RDP
+        Category: EventLogs
+        Path: EventLogs-RDP.tkape
+    -
+        Name: EventTraceLogs
+        Category: EventLogs
+        Path: EventTraceLogs.tkape
+    #
+    # ── SRUM / SUM ──
+    #
+    -
+        Name: SRUM
+        Category: Execution
+        Path: SRUM.tkape
+    -
+        Name: SUM
+        Category: Logs
+        Path: SUM.tkape
+    #
+    # ── 파일 접근 / 삭제 증거 ──
+    #
+    -
+        Name: LNKFilesAndJumpLists
+        Category: FileKnowledge
+        Path: LNKFilesAndJumpLists.tkape
+    -
+        Name: RecycleBin_InfoFiles
+        Category: FileDeletion
+        Path: RecycleBin_InfoFiles.tkape
+    -
+        Name: RecycleBin_DataFiles
+        Category: FileDeletion
+        Path: RecycleBin_DataFiles.tkape
+    -
+        Name: ThumbCache
+        Category: FileKnowledge
+        Path: Thumbcache.tkape
+    -
+        Name: WindowsIndexSearch
+        Category: FileKnowledge
+        Path: WindowsIndexSearch.tkape
+    #
+    # ── 브라우저 (AXIOM 대비 추가) ──
+    #
+    -
+        Name: WebBrowsers
+        Category: Communications
+        Path: WebBrowsers.tkape
+    #
+    # ── 원격 접속 (AXIOM 대비 추가) ──
+    #
+    -
+        Name: RemoteAdmin
+        Category: ApplicationLogs
+        Path: RemoteAdmin.tkape
+    -
+        Name: RDPCache
+        Category: ApplicationData
+        Path: RDPCache.tkape
+    #
+    # ── 예약 작업 ──
+    #
+    -
+        Name: ScheduledTasks
+        Category: ScheduledTasks
+        Path: ScheduledTasks.tkape
+    -
+        Name: StartupFolders
+        Category: Persistence
+        Path: StartupFolders.tkape
+    -
+        Name: StartupInfo
+        Category: Persistence
+        Path: StartupInfo.tkape
+    #
+    # ── 안티바이러스 / 보안 ──
+    #
+    -
+        Name: Antivirus
+        Category: Antivirus
+        Path: Antivirus.tkape
+    -
+        Name: WindowsDefender
+        Category: Antivirus
+        Path: WindowsDefender.tkape
+    #
+    # ── 오류 보고 / 진단 ──
+    #
+    -
+        Name: WER
+        Category: Diagnostics
+        Path: WER.tkape
+    -
+        Name: WindowsFirewall
+        Category: Network
+        Path: WindowsFirewall.tkape
+    #
+    # ── 클라우드 / 메시징 ──
+    #
+    -
+        Name: CloudStorage_Metadata
+        Category: Apps
+        Path: CloudStorage_Metadata.tkape
+    -
+        Name: MessagingClients
+        Category: Communications
+        Path: MessagingClients.tkape
+    #
+    # ── SSH (C2 IP 확보 — known_hosts, 호스트 키, 인증 키) ──
+    #
+    -
+        Name: OpenSSHClient
+        Category: Apps
+        Path: OpenSSHClient.tkape
+    -
+        Name: OpenSSHServer
+        Category: Apps
+        Path: OpenSSHServer.tkape
+    #
+    # ── 기타 ──
+    #
+    -
+        Name: WindowsTimeline
+        Category: EvidenceOfExecution
+        Path: WindowsTimeline.tkape
+    -
+        Name: WindowsNotificationsDB
+        Category: Notifications
+        Path: WindowsNotificationsDB.tkape
+    -
+        Name: EventTranscriptDB
+        Category: Telemetry
+        Path: EventTranscriptDB.tkape
+    -
+        Name: GroupPolicy
+        Category: Configuration
+        Path: GroupPolicy.tkape
+    -
+        Name: MemoryFiles
+        Category: Memory
+        Path: MemoryFiles.tkape
+    -
+        Name: BCD
+        Category: Boot
+        Path: BCD.tkape
+    -
+        Name: WBEM
+        Category: WBEM
+        Path: WBEM.tkape
+    -
+        Name: LogFiles
+        Category: Logs
+        Path: LogFiles.tkape
+    -
+        Name: OfficeAutosave
+        Category: Office
+        Path: OfficeAutosave.tkape
+    -
+        Name: OfficeDocumentCache
+        Category: Office
+        Path: OfficeDocumentCache.tkape
+    -
+        Name: BITS
+        Category: Persistence
+        Path: BITS.tkape
+    -
+        Name: SDB
+        Category: ApplicationCompatibility
+        Path: SDB.tkape
+    -
+        Name: CertUtil
+        Category: Persistence
+        Path: CertUtil.tkape
+    -
+        Name: USBDevicesLogs
+        Category: USB
+        Path: USBDevicesLogs.tkape
+    -
+        Name: PowerShellConsole
+        Category: Logs
+        Path: PowerShellConsole.tkape
+    -
+        Name: VPNClients
+        Category: Apps
+        Path: VPNClients.tkape
+    -
+        Name: ProgramExecution
+        Category: EvidenceOfExecution
+        Path: ProgramExecution.tkape
+
+# AXIOM 대비 커버리지:
+# - 시스템 아티팩트: MFT, $J(USN), $LogFile, Prefetch, AmCache, ShimCache, SRUM, 레지스트리, 이벤트로그 → 동등
+# - 브라우저: Chrome, Edge, Firefox, IE → 동등
+# - 원격접속: RDP, TeamViewer, AnyDesk, ScreenConnect 등 16개 도구 → AXIOM 이상
+# - AV/보안: Windows Defender + 서드파티 AV 로그 → AXIOM 이상
+# - 추가: WER, 방화벽, ETL, 알림DB, BITS, SDB, CertUtil, USB, PowerShell → AXIOM에 없는 것들
+# - 미포함: 파일 카빙(사진/동영상), AXIOM AI 분류 — 이는 AXIOM 고유 기능
