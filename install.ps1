@@ -238,6 +238,48 @@ if ($hayabusaPath) {
     }
 }
 
+# ── KAPE Health Check: runtimeconfig.json + broken smaps ──
+if ($kapePath) {
+    $binDir = Join-Path $kapeDir "Modules\bin"
+    if (Test-Path $binDir) {
+        # Fix missing runtimeconfig.json (EZ tools fail without it)
+        $ezTools = @("PECmd","LECmd","JLECmd","SBECmd","RBCmd","WxTCmd","SrumECmd","SumECmd","AmcacheParser","AppCompatCacheParser","MFTECmd","RECmd")
+        $fixed = 0
+        foreach ($tool in $ezTools) {
+            $rootRc = Join-Path $binDir "$tool.runtimeconfig.json"
+            $subRc = Join-Path $binDir "$tool\$tool.runtimeconfig.json"
+            if ((Test-Path (Join-Path $binDir "$tool.dll")) -and -not (Test-Path $rootRc) -and (Test-Path $subRc)) {
+                Copy-Item $subRc $rootRc
+                $fixed++
+            }
+        }
+        if ($fixed -gt 0) {
+            Write-Host "  KAPE Health: Fixed $fixed missing runtimeconfig.json files" -ForegroundColor Green
+        } else {
+            Write-Host "  KAPE Health: All EZ tools OK" -ForegroundColor Green
+        }
+
+        # Fix broken SQLECmd smap files (BlobColumns property error)
+        $smapDir = Join-Path $binDir "SQLECmd\Maps"
+        if (Test-Path $smapDir) {
+            $brokenSmaps = @("TestFiles_BlobTest.smap","TestFiles_BlobTest_Three.smap","TestFiles_BlobTest_Two.smap","Windows_EdgeBrowser_HistoryScreenshots.smap")
+            $disabledDir = Join-Path $smapDir "_disabled"
+            $smapFixed = 0
+            foreach ($smap in $brokenSmaps) {
+                $smapPath = Join-Path $smapDir $smap
+                if (Test-Path $smapPath) {
+                    if (-not (Test-Path $disabledDir)) { New-Item -ItemType Directory -Path $disabledDir -Force | Out-Null }
+                    Move-Item $smapPath (Join-Path $disabledDir $smap) -Force
+                    $smapFixed++
+                }
+            }
+            if ($smapFixed -gt 0) {
+                Write-Host "  KAPE Health: Disabled $smapFixed broken SQLECmd smap files" -ForegroundColor Green
+            }
+        }
+    }
+}
+
 # ── Write .env with detected paths ──
 Write-Host "  Scanning for tool paths..." -ForegroundColor Gray
 $scanDirs = @($ToolsDir, "C:\Tools", "D:\Tools", "E:\kape")
