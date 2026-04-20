@@ -661,6 +661,95 @@ async def build_timeline(
     return await _traced("build_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
+@mcp.tool()
+async def slice_timeline(
+    start_date: str = "",
+    end_date: str = "",
+    artifact_types: str = "",
+    user: str = "",
+    process: str = "",
+    host: str = "",
+    path: str = "",
+    keywords: str = "",
+    limit: int = 200,
+    offset: int = 0,
+    all_cases: bool = False,
+) -> dict:
+    """Build a timeline and then filter it by user / process / host / path.
+
+    Runs ``build_timeline`` under the hood (same date/type/keyword contract),
+    then post-filters the resulting events with case-insensitive substring
+    matches across every visible field. Use this when you need a targeted
+    narrative — e.g. "what did user Administrator do between X and Y?" or
+    "show events involving powershell.exe" — without loading the full
+    timeline and filtering mentally.
+
+    Args:
+        start_date / end_date / artifact_types / keywords / limit / offset /
+            all_cases: identical to build_timeline.
+        user: substring to require in each event (e.g. "Administrator").
+        process: substring for the process/executable (e.g. "powershell").
+        host: substring for the computer/host name.
+        path: substring matched against file paths and descriptions.
+
+    Returns the usual timeline payload plus a ``slice`` block describing which
+    filters ran and how much each one removed.
+    """
+    params = {
+        "start_date": start_date, "end_date": end_date,
+        "artifact_types": artifact_types, "keywords": keywords,
+        "limit": limit, "offset": offset, "all_cases": all_cases,
+        "user": user, "process": process, "host": host, "path": path,
+    }
+
+    def fn():
+        from core.analysis.timeline_slice import slice_entries
+        cap = min(limit, config.timeline_max_limit)
+        type_list = [t.strip() for t in artifact_types.split(",") if t.strip()] if artifact_types else None
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
+
+        # Pull enough events to survive slicing — we deliberately over-fetch per
+        # case so the post-filter has substrate, then trim back to `cap` after.
+        overfetch_cap = min(cap * 4, config.timeline_max_limit)
+
+        if all_cases:
+            from state import app_state
+            from core.analysis.case_aggregator import timeline_across_cases
+            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+            base = timeline_across_cases(
+                axiom_conns, start_date=start_date, end_date=end_date,
+                artifact_types=type_list,
+                limit_per_case=overfetch_cap, global_limit=overfetch_cap, global_offset=0,
+            )
+            raw_entries = base.get("entries", []) or []
+        else:
+            axiom = _get_axiom()
+            if kw_list:
+                base = _timeline_with_keywords(axiom, start_date, end_date, kw_list, overfetch_cap, 0)
+            else:
+                base = axiom.get_timeline(start_date, end_date, type_list, overfetch_cap, 0)
+            raw_entries = base.get("entries", []) or []
+
+        filtered, slice_meta = slice_entries(
+            raw_entries, user=user, process=process, host=host, path=path,
+        )
+        sliced = filtered[offset : offset + cap]
+
+        return _mask({
+            **({"per_case": base.get("per_case")} if isinstance(base, dict) and "per_case" in base else {}),
+            "entries": sliced,
+            "total_events": len(filtered),
+            "returned": len(sliced),
+            "truncated": len(filtered) > offset + len(sliced),
+            "slice": slice_meta,
+            "keywords_used": kw_list,
+            "all_cases": all_cases,
+            "warnings": base.get("warnings", []) if isinstance(base, dict) else [],
+        })
+
+    return await _traced("slice_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
+
+
 def _timeline_with_keywords(axiom, start_date, end_date, kw_list, limit, offset=0):
     """Build timeline filtered by keywords — finds events associated with matching hits."""
     from core.sql import axiom_queries as Q
