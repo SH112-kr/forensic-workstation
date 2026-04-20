@@ -19,6 +19,7 @@ import CopilotPanel from './CopilotPanel';
 import Settings from './Settings';
 import KapeBuilder from './KapeBuilder';
 import CoveragePanel from './CoveragePanel';
+import CaseComparePanel from './CaseComparePanel';
 
 const VIEWS: Record<string, React.FC> = {
   dashboard: Dashboard,
@@ -27,6 +28,7 @@ const VIEWS: Record<string, React.FC> = {
   timeline: TimelineView,
   ioc: IOCTable,
   coverage: CoveragePanel,
+  compare: CaseComparePanel,
   memory: MemoryAnalysis,
   binary: BinaryAnalysis,
   logs: LogAnalysis,

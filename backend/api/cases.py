@@ -155,6 +155,19 @@ async def get_artifact_types():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/compare")
+async def get_compare():
+    """Return metadata + artifact-count matrix across every loaded case.
+
+    Offline and partial-failure tolerant: a disconnected case shows up as
+    ``ok: false`` in its envelope, the rest of the response is unaffected.
+    """
+    from state import app_state
+    from core.analysis.case_aggregator import compare_cases as _compare
+    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+    return _compare(axiom_conns)
+
+
 @router.get("/coverage")
 async def get_coverage(artifact_types: str = ""):
     """Report searchable vs structurally unavailable artifact families.

@@ -382,6 +382,23 @@ async def get_artifact_types() -> dict:
 
 
 @mcp.tool()
+async def compare_cases() -> dict:
+    """Compare every loaded case side by side — metadata plus artifact-count matrix.
+
+    Produces a family × case table showing how many records each loaded case
+    contributes per artifact family. Partial failures are reported per case;
+    one disconnected case never fails the whole call. Fully offline — reads
+    only from already-loaded connectors.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.case_aggregator import compare_cases as _compare
+        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+        return _mask(_compare(axiom_conns))
+    return await _traced("compare_cases", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
 async def coverage_explainer(artifact_types: str = "") -> dict:
     """Report which artifact families are searchable vs structurally unavailable.
 

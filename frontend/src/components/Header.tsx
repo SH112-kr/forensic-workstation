@@ -12,7 +12,7 @@ interface OpenCase {
 export default function Header() {
   const {
     theme, toggleTheme, copilotOpen, toggleCopilot, caseInfo, setCaseInfo,
-    setDetection, setKapeDiagnostics, setCaseManagerOpen,
+    setDetection, setKapeDiagnostics, setCaseManagerOpen, setActiveView,
   } = useStore();
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [cases, setCases] = useState<OpenCase[]>([]);
@@ -110,6 +110,19 @@ export default function Header() {
           >
             + Add case
           </button>
+          {cases.length >= 2 && (
+            <button
+              onClick={() => setActiveView('compare')}
+              title="Side-by-side comparison across all loaded cases"
+              style={{
+                padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border)',
+                fontSize: 11, cursor: 'pointer', background: 'transparent',
+                color: 'var(--text-dim)', fontWeight: 600,
+              }}
+            >
+              ⇄ Compare
+            </button>
+          )}
         </div>
       )}
 

@@ -23,6 +23,7 @@ const SECTIONS: NavSection[] = [
       { id: 'detection', label: 'Detection', icon: '🛡' },
       { id: 'ioc', label: 'IOC', icon: '🎯' },
       { id: 'coverage', label: 'Coverage', icon: '🧾' },
+      { id: 'compare', label: 'Compare', icon: '⇄' },
     ],
   },
   {
