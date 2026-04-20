@@ -4,31 +4,36 @@ import { get, post } from '../hooks/useApi';
 
 interface OpenCase {
   case_id: string;
+  case_name: string;
   source_type: string;
   total_hits: number;
 }
 
 export default function Header() {
-  const { theme, toggleTheme, copilotOpen, toggleCopilot, caseInfo, setCaseInfo, setDetection, setKapeDiagnostics } = useStore();
+  const {
+    theme, toggleTheme, copilotOpen, toggleCopilot, caseInfo, setCaseInfo,
+    setDetection, setKapeDiagnostics, setCaseManagerOpen,
+  } = useStore();
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [cases, setCases] = useState<OpenCase[]>([]);
   const [activeCase, setActiveCase] = useState('');
 
-  // Fetch open cases
+  // Fetch open cases. Use the backend-provided active_case_id so we don't have
+  // to guess which case is active from metadata fields.
   useEffect(() => {
     if (!caseInfo) return;
     get('/api/cases/list').then(data => {
       const list: OpenCase[] = (data.cases || []).map((c: any) => ({
         case_id: c.case_id,
-        source_type: c.metadata?.source_type || '?',
-        total_hits: c.metadata?.total_hits || 0,
+        case_name: c.case_name || c.case_id,
+        source_type: c.source_type || c.metadata?.source_type || '?',
+        total_hits: c.total_hits ?? c.metadata?.total_hits ?? 0,
       }));
       setCases(list);
-      // Match active case by total_hits (most reliable — case_name may differ from case_id)
-      if (!activeCase && caseInfo) {
-        const match = list.find(c => c.total_hits === caseInfo.total_hits);
-        if (match) setActiveCase(match.case_id);
-        else if (list.length > 0) setActiveCase(list[list.length - 1].case_id);
+      if (data.active_case_id) {
+        setActiveCase(data.active_case_id);
+      } else if (!activeCase && list.length > 0) {
+        setActiveCase(list[list.length - 1].case_id);
       }
     }).catch(() => {});
   }, [caseInfo]);
@@ -61,12 +66,14 @@ export default function Header() {
         FORENSIC WORKSTATION
       </span>
 
-      {/* Case Selector — shows when multiple cases are open */}
-      {cases.length > 1 ? (
-        <div style={{ display: 'flex', gap: 4 }}>
+      {/* Case Selector — always visible so "+ Add case" stays discoverable
+          even in single-case sessions. */}
+      {caseInfo && (
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {cases.map(c => {
             const tag = sourceTag(c.source_type);
             const isActive = c.case_id === activeCase;
+            const label = c.case_name || c.case_id;
             return (
               <button key={c.case_id} onClick={() => switchCase(c.case_id)}
                 style={{
@@ -76,22 +83,34 @@ export default function Header() {
                   color: isActive ? tag.color : 'var(--text-dim)',
                   outline: isActive ? `1px solid ${tag.color}44` : 'none',
                 }}
-                title={`${c.case_id} (${c.total_hits.toLocaleString()} hits)`}
+                title={`${c.case_id} · ${c.source_type.toUpperCase()} · ${c.total_hits.toLocaleString()} hits`}
               >
                 <span style={{
                   fontSize: 9, fontWeight: 700, marginRight: 4,
                   padding: '1px 4px', borderRadius: 3,
                   background: `${tag.color}22`, color: tag.color,
                 }}>{tag.label}</span>
-                {c.case_id.length > 20 ? c.case_id.slice(0, 20) + '...' : c.case_id}
+                {label.length > 22 ? label.slice(0, 22) + '…' : label}
               </button>
             );
           })}
+          {cases.length === 0 && (
+            <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
+              {caseInfo.case_name}
+            </span>
+          )}
+          <button
+            onClick={() => setCaseManagerOpen(true)}
+            title="Open another case alongside the current one"
+            style={{
+              padding: '3px 8px', borderRadius: 5, border: '1px dashed var(--border)',
+              fontSize: 11, cursor: 'pointer', background: 'transparent',
+              color: 'var(--accent)', fontWeight: 600,
+            }}
+          >
+            + Add case
+          </button>
         </div>
-      ) : caseInfo && (
-        <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
-          {caseInfo.case_name}
-        </span>
       )}
 
       <div style={{ flex: 1 }} />

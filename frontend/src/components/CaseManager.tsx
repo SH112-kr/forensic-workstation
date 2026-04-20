@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import FileBrowser from './FileBrowser';
 
 interface EvidenceItem {
   type: string;
@@ -67,7 +68,11 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export default function CaseManager() {
-  const { setCaseInfo, setActiveView, setEvidenceDir, setKapeDiagnostics } = useStore();
+  const { setCaseInfo, setActiveView, setEvidenceDir, setKapeDiagnostics, setCaseManagerOpen } = useStore();
+
+  // When rendered as an overlay (caseManagerOpen === true), close the overlay
+  // on successful load so the user lands back on the main layout.
+  const goToDashboard = () => { goToDashboard(); setCaseManagerOpen(false); };
 
   // Tab: 'quick' (single file) or 'project'
   const [tab, setTab] = useState<'project' | 'quick'>('project');
@@ -100,11 +105,8 @@ export default function CaseManager() {
   // Recent cases
   const [recentCases, setRecentCases] = useState<RecentCase[]>(loadRecent());
 
-  // Folder browser
+  // Folder browser — backed by the shared FileBrowser component in folder mode.
   const [browserOpen, setBrowserOpen] = useState(false);
-  const [browserPath, setBrowserPath] = useState('');
-  const [browserItems, setBrowserItems] = useState<any[]>([]);
-  const [browserLoading, setBrowserLoading] = useState(false);
 
   // Loading
   const [creating, setCreating] = useState(false);
@@ -115,21 +117,7 @@ export default function CaseManager() {
     get('/api/project/list').then(d => setSavedProjects(d.projects || [])).catch(() => {});
   }, []);
 
-  // Folder browser
-  const browse = async (targetPath: string = '') => {
-    setBrowserLoading(true);
-    try {
-      const data = await post('/api/files/browse', { path: targetPath, show_all: true });
-      setBrowserPath(data.current || '');
-      setBrowserItems((data.items || []).filter((i: any) => i.type === 'drive' || i.type === 'directory'));
-    } catch { setBrowserItems([]); }
-    finally { setBrowserLoading(false); }
-  };
-
-  const openFolderBrowser = () => {
-    setBrowserOpen(true);
-    browse('');
-  };
+  const openFolderBrowser = () => setBrowserOpen(true);
 
   // Scan one or more directories in parallel, merge & dedupe by path
   const scanDirectories = async (dirs: string[]) => {
@@ -230,7 +218,7 @@ export default function CaseManager() {
           setKapeDiagnostics(caseData.kape_diagnostics || null);
           const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
-          setActiveView('dashboard');
+          goToDashboard();
         } catch {
           // Case loaded but summary failed — go to dashboard anyway
           setCaseInfo({
@@ -244,7 +232,7 @@ export default function CaseManager() {
           });
           const rc: RecentCase = { name: projectName, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
-          setActiveView('dashboard');
+          goToDashboard();
         }
       } else {
         // No case data — just save project and stay (can use KAPE/Settings)
@@ -275,7 +263,7 @@ export default function CaseManager() {
         setKapeDiagnostics(caseData.kape_diagnostics || null);
         saveRecent({ name: proj.name, path: proj.path, source: 'project', totalHits: loaded.total_hits, openedAt: '' });
         setRecentCases(loadRecent());
-        setActiveView('dashboard');
+        goToDashboard();
       } else {
         setError('Project opened but no case data loaded.');
       }
@@ -316,7 +304,7 @@ export default function CaseManager() {
         }
       }
       setRecentCases(loadRecent());
-      setActiveView('dashboard');
+      goToDashboard();
     } catch (e: any) {
       setQuickError(e.message);
     } finally {
@@ -339,7 +327,7 @@ export default function CaseManager() {
           setCaseInfo({ ...caseData, case_name: rc.name || caseData.case_name });
           setKapeDiagnostics(caseData.kape_diagnostics || null);
           saveRecent({ ...rc, totalHits: loaded.total_hits }); setRecentCases(loadRecent());
-          setActiveView('dashboard');
+          goToDashboard();
         } else {
           setError('Project opened but no case data loaded. Evidence files may have moved.');
         }
@@ -348,7 +336,7 @@ export default function CaseManager() {
         setCaseInfo(data);
         setKapeDiagnostics(data.kape_diagnostics || null);
         saveRecent({ ...rc, totalHits: data.total_hits }); setRecentCases(loadRecent());
-        setActiveView('dashboard');
+        goToDashboard();
       }
     } catch (e: any) {
       setError(`Failed to open: ${e.message}`);
@@ -735,72 +723,13 @@ export default function CaseManager() {
         </div>
       )}
 
-      {/* Folder Browser Modal */}
-      {browserOpen && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-        }} onClick={() => setBrowserOpen(false)}>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: 550, maxHeight: '65vh', background: 'var(--bg)',
-            border: '1px solid var(--border)', borderRadius: 12,
-            display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          }}>
-            <div style={{
-              padding: '12px 16px', borderBottom: '1px solid var(--border)',
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <span style={{ fontWeight: 600, fontSize: 14 }}>
-                {scanDirs.length === 0 ? 'Select Evidence Folder' : `Add Evidence Folder (${scanDirs.length} already added)`}
-              </span>
-              <div style={{ flex: 1 }} />
-              <button className="btn btn-sm" onClick={() => setBrowserOpen(false)}>Close</button>
-            </div>
-            <div style={{
-              padding: '8px 16px', background: 'var(--surface)', borderBottom: '1px solid var(--border)',
-              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-dim)',
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
-              <button className="btn btn-sm" onClick={() => browse('')}>Drives</button>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {browserPath || 'Select a drive'}
-              </span>
-              {browserPath && (
-                <button className="btn btn-sm btn-primary" onClick={() => selectFolder(browserPath)}
-                  style={{ fontSize: 11, padding: '4px 12px' }}>
-                  Select This Folder
-                </button>
-              )}
-              {browserLoading && <span style={{ color: 'var(--accent)', fontSize: 11 }}>Loading...</span>}
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              {browserItems.map((item: any, i: number) => (
-                <div key={i}
-                  onClick={() => browse(item.path)}
-                  onDoubleClick={() => selectFolder(item.path)}
-                  style={{
-                    padding: '8px 16px', cursor: 'pointer', display: 'flex',
-                    alignItems: 'center', gap: 10, borderBottom: '1px solid var(--border-light)',
-                    fontSize: 13,
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-light)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                >
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-                    {item.type === 'drive' ? '[D]' : '[F]'}
-                  </span>
-                  <span style={{ fontWeight: 600 }}>{item.name}</span>
-                </div>
-              ))}
-              {browserItems.length === 0 && !browserLoading && (
-                <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>
-                  Empty directory
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <FileBrowser
+        open={browserOpen}
+        onClose={() => setBrowserOpen(false)}
+        onSelect={(p) => { selectFolder(p); setBrowserOpen(false); }}
+        mode="folder"
+        title={scanDirs.length === 0 ? 'Select Evidence Folder' : `Add Evidence Folder (${scanDirs.length} already added)`}
+      />
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>

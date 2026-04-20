@@ -37,7 +37,7 @@ const VIEWS: Record<string, React.FC> = {
 };
 
 export default function Layout() {
-  const { caseInfo, activeView, setActiveView, copilotOpen, toggleCopilot, lastAction } = useStore();
+  const { caseInfo, activeView, setActiveView, copilotOpen, toggleCopilot, lastAction, caseManagerOpen, setCaseManagerOpen } = useStore();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -134,6 +134,28 @@ export default function Layout() {
           </aside>
         )}
       </div>
+      {/* CaseManager overlay — shown when the user clicks "+ Add case" from Header. */}
+      {caseManagerOpen && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'var(--bg)', zIndex: 900,
+          display: 'flex', flexDirection: 'column',
+        }}>
+          <div style={{
+            padding: '10px 16px', borderBottom: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <span style={{ fontWeight: 700, fontSize: 13 }}>Add Another Case</span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              Opening a new case adds it to the multi-case set; the current case stays loaded.
+            </span>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm" onClick={() => setCaseManagerOpen(false)}>Close</button>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <CaseManager />
+          </div>
+        </div>
+      )}
       {/* Status bar */}
       <div style={{
         height: 24, background: 'var(--surface)', borderTop: '1px solid var(--border)',

@@ -382,6 +382,36 @@ async def get_artifact_types() -> dict:
 
 
 @mcp.tool()
+async def coverage_explainer(artifact_types: str = "") -> dict:
+    """Report which artifact families are searchable vs structurally unavailable.
+
+    Use this before concluding "0 results = no activity". Distinguishes:
+      - searched                : loaded cases hold records for this family.
+      - available_not_loaded    : family is supported by the current case
+                                  format but has zero records (could be genuine
+                                  absence or a parser miss — verify raw evidence).
+      - structurally_unavailable: the current case format cannot expose this
+                                  family at all (e.g. AXIOM-only carving on a
+                                  KAPE-only case). Absence here is NOT evidence
+                                  of absence in reality.
+
+    Args:
+        artifact_types: Optional comma-separated names to narrow the report
+                        (e.g. "Prefetch Files - Windows 8/10/11,SRUM Network Usage").
+                        Omit to list every loaded family plus the AXIOM-only
+                        families that would be invisible under KAPE.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.coverage import build_coverage_report
+        requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
+        # Pass only the axiom:* connectors — coverage never touches E01/Vol/Ghidra.
+        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+        return _mask(build_coverage_report(axiom_conns, artifact_types=requested))
+    return await _traced("coverage_explainer", {"artifact_types": artifact_types}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
 async def search_artifacts(
     keyword: str = "",
     keywords: str = "",

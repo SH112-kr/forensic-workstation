@@ -171,12 +171,49 @@ class AppState:
         except Exception:
             pass
 
-    def list_cases(self) -> list[dict]:
-        """List all open AXIOM cases."""
-        cases = []
+    def iter_axiom_cases(self):
+        """Yield (case_id, connector) pairs for every connected axiom:* case.
+
+        Cross-case aggregators (compare, pivot, fan-out search) iterate this
+        helper instead of touching ``_connectors`` directly so the "skip the
+        active alias" rule lives in one place.
+        """
         for name, c in self._connectors.items():
             if name.startswith("axiom:") and c.is_connected():
-                cases.append({"case_id": name.replace("axiom:", ""), "metadata": c.get_metadata()})
+                yield name.replace("axiom:", ""), c
+
+    def get_active_case_id(self) -> str:
+        """Return the case_id whose connector currently sits under the plain 'axiom' alias.
+
+        Empty string when no case is active.
+        """
+        active = self._connectors.get("axiom")
+        if not active:
+            return ""
+        for case_id, c in self.iter_axiom_cases():
+            if c is active:
+                return case_id
+        return ""
+
+    def list_cases(self) -> list[dict]:
+        """List open cases with provenance already surfaced.
+
+        Keeps the legacy ``metadata`` field so older callers keep working, but
+        also pulls out ``source_type``, ``source_path``, ``case_name``, and
+        ``total_hits`` at the top level so the UI does not have to drill into
+        metadata on every render.
+        """
+        cases = []
+        for case_id, c in self.iter_axiom_cases():
+            meta = c.get_metadata()
+            cases.append({
+                "case_id": case_id,
+                "source_type": meta.get("source_type", ""),
+                "source_path": meta.get("source_path", ""),
+                "case_name": meta.get("case_name", case_id),
+                "total_hits": meta.get("total_hits", 0),
+                "metadata": meta,
+            })
         return cases
 
     def switch_case(self, case_id: str) -> dict:

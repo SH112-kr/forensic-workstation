@@ -2,6 +2,8 @@ import { create } from 'zustand';
 
 interface CaseInfo {
   case_name: string;
+  source_type?: string;
+  source_path?: string;
   total_hits: number;
   artifact_type_count: number;
   date_range_start: string;
@@ -47,6 +49,11 @@ interface AppState {
   // Copilot
   copilotOpen: boolean;
   toggleCopilot: () => void;
+
+  // CaseManager overlay — lets Header/Sidebar reopen CaseManager while a case is loaded,
+  // so the "+ Add case" affordance doesn't have to throw away current analysis state.
+  caseManagerOpen: boolean;
+  setCaseManagerOpen: (v: boolean) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -89,4 +96,7 @@ export const useStore = create<AppState>((set) => ({
 
   copilotOpen: false,
   toggleCopilot: () => set((s) => ({ copilotOpen: !s.copilotOpen })),
+
+  caseManagerOpen: false,
+  setCaseManagerOpen: (v) => set({ caseManagerOpen: v }),
 }));

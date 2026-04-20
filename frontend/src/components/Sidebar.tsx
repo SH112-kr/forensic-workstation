@@ -120,8 +120,19 @@ export default function Sidebar() {
           padding: '12px 16px', borderTop: '1px solid var(--border)',
           fontSize: 11, color: 'var(--text-dim)',
         }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--text)' }}>
-            {caseInfo.case_name}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4,
+          }}>
+            {caseInfo.source_type && (
+              <span style={{
+                fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                background: caseInfo.source_type === 'kape' ? 'rgba(96,165,250,0.15)' : 'rgba(74,222,128,0.15)',
+                color: caseInfo.source_type === 'kape' ? '#60a5fa' : '#4ade80',
+              }}>{caseInfo.source_type.toUpperCase()}</span>
+            )}
+            <span style={{ fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {caseInfo.case_name}
+            </span>
           </div>
           <div>{caseInfo.total_hits?.toLocaleString()} artifacts</div>
           <div>{caseInfo.artifact_type_count} types</div>

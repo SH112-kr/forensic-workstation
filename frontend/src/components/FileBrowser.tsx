@@ -15,6 +15,12 @@ interface FileBrowserProps {
   onClose: () => void;
   onSelect: (path: string) => void;
   title?: string;
+  /**
+   * 'file'   — default; clicking a file returns it via onSelect, directories drill in.
+   * 'folder' — files are rendered greyed out and non-selectable; the current directory
+   *            can be returned via the "Select This Folder" action in the path bar.
+   */
+  mode?: 'file' | 'folder';
 }
 
 const icons: Record<string, string> = {
@@ -30,7 +36,7 @@ const icons: Record<string, string> = {
   'Other': '\u{1F4C4}',
 };
 
-export default function FileBrowser({ open, onClose, onSelect, title }: FileBrowserProps) {
+export default function FileBrowser({ open, onClose, onSelect, title, mode = 'file' }: FileBrowserProps) {
   const [browserPath, setBrowserPath] = useState('');
   const [browserItems, setBrowserItems] = useState<FileItem[]>([]);
   const [browserLoading, setBrowserLoading] = useState(false);
@@ -69,7 +75,11 @@ export default function FileBrowser({ open, onClose, onSelect, title }: FileBrow
   const selectFile = (item: FileItem) => {
     if (item.type === 'drive' || item.type === 'directory') {
       browse(item.path);
-    } else {
+      return;
+    }
+    // File clicked — only selectable in file mode. Folder mode leaves files
+    // visible for orientation but does not return them.
+    if (mode === 'file') {
       onSelect(item.path);
     }
   };
@@ -108,24 +118,35 @@ export default function FileBrowser({ open, onClose, onSelect, title }: FileBrow
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <button className="btn btn-sm" onClick={() => browse('')}>Drives</button>
-          <span>{browserPath || 'Select a drive'}</span>
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {browserPath || 'Select a drive'}
+          </span>
+          {mode === 'folder' && browserPath && (
+            <button className="btn btn-sm btn-primary" onClick={() => onSelect(browserPath)}
+              style={{ fontSize: 11, padding: '4px 12px', flexShrink: 0 }}>
+              Select This Folder
+            </button>
+          )}
           {browserLoading && <span style={{ color: 'var(--accent)' }}>Loading...</span>}
         </div>
 
         {/* File list */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {browserItems.map((item, i) => (
+          {browserItems.map((item, i) => {
+            const isFile = item.type === 'file';
+            const fileIsDim = mode === 'folder' && isFile;
+            return (
             <div
               key={i}
               onClick={() => selectFile(item)}
-              onDoubleClick={() => item.type === 'file' && onSelect(item.path)}
+              onDoubleClick={() => isFile && mode === 'file' && onSelect(item.path)}
               style={{
-                padding: '8px 16px', cursor: 'pointer', display: 'flex',
+                padding: '8px 16px', cursor: fileIsDim ? 'default' : 'pointer', display: 'flex',
                 alignItems: 'center', gap: 10, borderBottom: '1px solid var(--border-light)',
-                fontSize: 13,
+                fontSize: 13, opacity: fileIsDim ? 0.4 : 1,
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-light)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onMouseEnter={(e) => { if (!fileIsDim) e.currentTarget.style.background = 'var(--accent-light)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             >
               <span>{icons[item.type === 'file' ? (item.file_type || 'Other') : item.type] || '\u{1F4C4}'}</span>
               <span style={{ flex: 1, fontWeight: item.type !== 'file' ? 600 : 400 }}>
@@ -140,7 +161,8 @@ export default function FileBrowser({ open, onClose, onSelect, title }: FileBrow
                 </span>
               )}
             </div>
-          ))}
+            );
+          })}
           {browserItems.length === 0 && !browserLoading && (
             <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-dim)' }}>
               No forensic files found. Enable "Show all files" to see everything.

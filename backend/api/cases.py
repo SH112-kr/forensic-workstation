@@ -155,10 +155,27 @@ async def get_artifact_types():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/coverage")
+async def get_coverage(artifact_types: str = ""):
+    """Report searchable vs structurally unavailable artifact families.
+
+    Offline and deterministic: reads only from already-loaded connectors and a
+    static AXIOM-vs-KAPE capability matrix. Never sends data outside.
+    """
+    from state import app_state
+    from core.analysis.coverage import build_coverage_report
+    requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
+    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+    return build_coverage_report(axiom_conns, artifact_types=requested)
+
+
 @router.get("/list")
 async def list_cases():
     from state import app_state
-    return {"cases": app_state.list_cases()}
+    return {
+        "cases": app_state.list_cases(),
+        "active_case_id": app_state.get_active_case_id(),
+    }
 
 
 @router.post("/switch")
