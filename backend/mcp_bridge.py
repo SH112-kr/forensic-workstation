@@ -1914,22 +1914,60 @@ async def auto_triage(
             "artifact_types": case_meta.get("artifact_type_count", 0),
         })
 
-        # ── Step 3: Find Suspicious ──
+        # ── Step 3: Find Suspicious + Strength Scoring ──
         t3 = _t.time()
+        strength_rollup = {}
         try:
             from core.analysis.suspicious import find_suspicious as _find
+            from core.analysis.evidence_strength import score_findings as _score
             suspicious = _find(c.artifact_queries)
+            _score(suspicious)
             findings = suspicious.get("findings", [])
+            strength_rollup = suspicious.get("strength_rollup", {})
             steps.append({
                 "step": "find_suspicious",
                 "duration_s": round(_t.time() - t3, 1),
                 "total_findings": len(findings),
                 "critical": len([f for f in findings if f.get("severity") == "critical"]),
                 "high": len([f for f in findings if f.get("severity") == "high"]),
+                "strength_rollup": strength_rollup,
             })
         except Exception as e:
             findings = []
             steps.append({"step": "find_suspicious", "error": str(e)})
+
+        # ── Step 3b: Anti-forensics ──
+        t3b = _t.time()
+        anti_forensics = {"rules_fired": 0, "total_hits": 0, "rules": []}
+        try:
+            from core.analysis.anti_forensics import detect_anti_forensics as _anti
+            anti_forensics = _anti(c.artifact_queries)
+            steps.append({
+                "step": "anti_forensics",
+                "duration_s": round(_t.time() - t3b, 1),
+                "rules_fired": anti_forensics.get("rules_fired", 0),
+                "total_hits": anti_forensics.get("total_hits", 0),
+            })
+        except Exception as e:
+            steps.append({"step": "anti_forensics", "error": str(e)})
+
+        # ── Step 3c: Coverage ──
+        t3c = _t.time()
+        coverage_summary = {}
+        try:
+            from core.analysis.coverage import build_coverage_report as _cov
+            cov = _cov({"axiom:auto": c})
+            coverage_summary = {
+                "case_format": cov.get("case_context", {}).get("case_format", ""),
+                **cov.get("summary", {}),
+            }
+            steps.append({
+                "step": "coverage",
+                "duration_s": round(_t.time() - t3c, 1),
+                **coverage_summary,
+            })
+        except Exception as e:
+            steps.append({"step": "coverage", "error": str(e)})
 
         # ── Step 4: Extract IOCs ──
         t4 = _t.time()
@@ -2002,9 +2040,19 @@ async def auto_triage(
                 "iocs_extracted": len(ioc_list),
                 "timeline_events": timeline.get("total_events", 0),
                 "mitre_techniques": len(mitre.get("techniques", [])),
+                "strength_rollup": strength_rollup,
+                "anti_forensics_rules_fired": anti_forensics.get("rules_fired", 0),
+                "coverage_format": coverage_summary.get("case_format", ""),
             },
+            "anti_forensics": anti_forensics,
+            "coverage": coverage_summary,
             "top_findings": [
-                {"rule": f["rule_name"], "severity": f["severity"], "count": f["matching_count"]}
+                {
+                    "rule": f["rule_name"],
+                    "severity": f["severity"],
+                    "strength": f.get("overall_strength", "moderate"),
+                    "count": f["matching_count"],
+                }
                 for f in sorted(findings, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.get("severity", "low"), 4))[:10]
             ],
             "steps": steps,
