@@ -188,6 +188,23 @@ async def get_compare():
     return _compare(axiom_conns)
 
 
+class ExplainZeroRequest(BaseModel):
+    tool_name: str
+    params: dict = {}
+
+
+@router.post("/explain-zero")
+async def post_explain_zero(req: ExplainZeroRequest):
+    """Diagnose a zero-result response and return causes + follow-up queries.
+
+    Offline: reads only the allowlisted connectors and case metadata.
+    """
+    from state import app_state
+    from core.analysis.zero_results import explain_zero_results as _explain
+    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+    return _explain(axiom_conns, tool_name=req.tool_name, params=req.params)
+
+
 @router.get("/coverage")
 async def get_coverage(artifact_types: str = ""):
     """Report searchable vs structurally unavailable artifact families.

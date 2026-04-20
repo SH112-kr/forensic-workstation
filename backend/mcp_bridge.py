@@ -434,6 +434,43 @@ async def compare_cases() -> dict:
 
 
 @mcp.tool()
+async def explain_zero_results(
+    tool_name: str,
+    params_json: str = "{}",
+) -> dict:
+    """Diagnose why a query returned zero rows and suggest follow-up queries.
+
+    Use this immediately whenever search_artifacts / build_timeline /
+    find_suspicious / pivot_across_cases returns an empty result set — the
+    response enumerates observable reasons (structural gap, date range outside
+    case window, stacked filters, no cases loaded) and proposes concrete
+    retries. Never concludes "no activity"; that's always the analyst's call
+    after seeing the raw evidence.
+
+    Args:
+        tool_name: The tool that just returned zero rows (e.g. "search_artifacts").
+        params_json: JSON string of the params that produced the empty response.
+                     Example: '{"keyword": "admin", "artifact_type": "Prefetch"}'.
+    """
+    def fn():
+        import json as _json
+        try:
+            params = _json.loads(params_json) if params_json else {}
+        except Exception:
+            return {"error": f"params_json must be valid JSON, got: {params_json[:120]}"}
+        from state import app_state
+        from core.analysis.zero_results import explain_zero_results as _explain
+        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+        return _mask(_explain(axiom_conns, tool_name=tool_name, params=params))
+    return await _traced(
+        "explain_zero_results",
+        {"tool_name": tool_name, "params_json": params_json[:200]},
+        fn,
+        timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
 async def coverage_explainer(artifact_types: str = "") -> dict:
     """Report which artifact families are searchable vs structurally unavailable.
 
