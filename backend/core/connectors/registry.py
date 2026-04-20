@@ -83,7 +83,30 @@ class RegistryConnector(BaseConnector):
         return {"total": count, "returned": len(results), "entries": results}
 
     def get_capabilities(self) -> list[str]:
-        return ["search", "run_plugins", "get_key"]
+        return ["search", "run_plugins", "get_key", "timeline"]
+
+    def timeline(self, limit: int = 200) -> dict:
+        """Return keys sorted by last-modified timestamp descending.
+
+        Useful for isolating recent changes (persistence, service install, etc.)
+        without guessing which specific keys to inspect first.
+        """
+        if not self._hive:
+            return {"entries": [], "error": "No hive loaded."}
+        entries: list[dict] = []
+        for e in self._hive.recurse_subkeys(as_json=True):
+            ts = e.get("timestamp")
+            if not ts:
+                continue
+            entries.append({
+                "path": e.get("path", ""),
+                "timestamp": str(ts),
+                "values_count": len(e.get("values", []) or []),
+            })
+            if len(entries) >= 5000:
+                break
+        entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        return {"total": len(entries), "entries": entries[:limit]}
 
     def run_plugins(self) -> dict:
         """Run all applicable regipy plugins for this hive type."""

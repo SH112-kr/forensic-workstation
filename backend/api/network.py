@@ -8,22 +8,55 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api/network", tags=["network"])
 
 
+def _pyshark_available() -> bool:
+    try:
+        import pyshark  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 class OpenPcapRequest(BaseModel):
     path: str
+
+
+@router.get("/status")
+async def status():
+    """Report whether pyshark is installed and a PCAP is loaded.
+
+    The UI calls this on mount so we can distinguish "dependency missing"
+    from "no file loaded" and show the right guidance.
+    """
+    from state import app_state
+    c = app_state.get("pcap")
+    loaded = bool(c and getattr(c, "is_connected", lambda: False)())
+    return {
+        "pyshark_available": _pyshark_available(),
+        "loaded": loaded,
+        "metadata": c.get_metadata() if loaded else None,
+        "install_hint": None if _pyshark_available() else (
+            "pyshark is not installed. Run `pip install pyshark` and ensure "
+            "Wireshark/tshark is on PATH."
+        ),
+    }
 
 
 @router.post("/open")
 async def open_pcap(req: OpenPcapRequest):
     from state import app_state
+    if not _pyshark_available():
+        raise HTTPException(
+            status_code=400,
+            detail="pyshark is not installed. Run `pip install pyshark` and ensure Wireshark/tshark is on PATH.",
+        )
     try:
+        app_state.add_allowed_evidence([req.path], source="network:open")
         from core.connectors.pcap import PcapConnector
         app_state.remove("pcap")
         c = PcapConnector()
         meta = c.connect(req.path)
         app_state.set("pcap", c)
         return meta
-    except ImportError:
-        raise HTTPException(status_code=400, detail="pyshark가 설치되지 않았습니다.")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
