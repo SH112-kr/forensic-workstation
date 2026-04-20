@@ -716,6 +716,8 @@ async def slice_timeline(
     limit: int = 200,
     offset: int = 0,
     all_cases: bool = False,
+    snapshot_slug: str = "",
+    bucket_name: str = "",
 ) -> dict:
     """Build a timeline and then filter it by user / process / host / path.
 
@@ -733,6 +735,11 @@ async def slice_timeline(
         process: substring for the process/executable (e.g. "powershell").
         host: substring for the computer/host name.
         path: substring matched against file paths and descriptions.
+        snapshot_slug + bucket_name: Optional bucket filter. When both are
+            set the call resolves the bucket's hit_ids from the named
+            snapshot and keeps only timeline entries whose hit_id is in
+            that set. A typo in either value hard-errors with the list of
+            valid buckets — never a silent empty result.
 
     Returns the usual timeline payload plus a ``slice`` block describing which
     filters ran and how much each one removed.
@@ -742,10 +749,28 @@ async def slice_timeline(
         "artifact_types": artifact_types, "keywords": keywords,
         "limit": limit, "offset": offset, "all_cases": all_cases,
         "user": user, "process": process, "host": host, "path": path,
+        "snapshot_slug": snapshot_slug, "bucket_name": bucket_name,
     }
 
     def fn():
         from core.analysis.timeline_slice import slice_entries
+
+        # Bucket selector resolution first — fail fast on typos.
+        bucket_hit_ids: set[int] | None = None
+        bucket_info: dict | None = None
+        if snapshot_slug or bucket_name:
+            if not (snapshot_slug and bucket_name):
+                return {"ok": False, "error": "snapshot_slug and bucket_name must be provided together"}
+            from core.analysis.case_snapshot import (
+                resolve_bucket_hit_ids, BucketNotFoundError, SnapshotNotFoundError,
+            )
+            try:
+                bucket_hit_ids = resolve_bucket_hit_ids(snapshot_slug, bucket_name)
+                bucket_info = {"snapshot_slug": snapshot_slug, "bucket": bucket_name,
+                               "hit_count": len(bucket_hit_ids)}
+            except (BucketNotFoundError, SnapshotNotFoundError) as e:
+                return {"ok": False, "error": str(e)}
+
         cap = min(limit, config.timeline_max_limit)
         type_list = [t.strip() for t in artifact_types.split(",") if t.strip()] if artifact_types else None
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
@@ -772,9 +797,16 @@ async def slice_timeline(
                 base = axiom.get_timeline(start_date, end_date, type_list, overfetch_cap, 0)
             raw_entries = base.get("entries", []) or []
 
+        # Apply bucket filter BEFORE substring slicing so we never pretend
+        # an empty bucket is a user typo.
+        if bucket_hit_ids is not None:
+            raw_entries = [e for e in raw_entries if e.get("hit_id") in bucket_hit_ids]
+
         filtered, slice_meta = slice_entries(
             raw_entries, user=user, process=process, host=host, path=path,
         )
+        if bucket_info is not None:
+            slice_meta["bucket"] = bucket_info
         sliced = filtered[offset : offset + cap]
 
         return _mask({
@@ -940,6 +972,8 @@ async def build_entity_graph(
     match_key: str = "raw",
     limit_per_node_type: int = 200,
     all_cases: bool = False,
+    snapshot_slug: str = "",
+    bucket_name: str = "",
 ) -> dict:
     """Build a typed graph (users / hosts / files / hashes / services / processes)
     from existing artifacts with per-node and per-edge audit trails.
@@ -974,28 +1008,62 @@ async def build_entity_graph(
     def fn():
         from state import app_state
         from core.analysis.entity_graph import build_entity_graph as _build
+
+        # Bucket filter — resolve FIRST so a typo hard-errors before we
+        # waste a full graph scan on the empty set.
+        bucket_hit_ids: set[int] | None = None
+        bucket_info: dict | None = None
+        if snapshot_slug or bucket_name:
+            if not (snapshot_slug and bucket_name):
+                return {"ok": False, "error": "snapshot_slug and bucket_name must be provided together"}
+            from core.analysis.case_snapshot import (
+                resolve_bucket_hit_ids, BucketNotFoundError, SnapshotNotFoundError,
+            )
+            try:
+                bucket_hit_ids = resolve_bucket_hit_ids(snapshot_slug, bucket_name)
+                bucket_info = {"snapshot_slug": snapshot_slug, "bucket": bucket_name,
+                               "hit_count": len(bucket_hit_ids)}
+            except (BucketNotFoundError, SnapshotNotFoundError) as e:
+                return {"ok": False, "error": str(e)}
+
         ets = [t.strip() for t in entity_types.split(",") if t.strip()] or None
         edts = [t.strip() for t in edge_types.split(",") if t.strip()] or None
         if all_cases:
-            return _mask(_build(
+            result = _build(
                 app_state._connectors,
                 entity_types=ets, edge_types=edts,
                 match_key=match_key, limit_per_node_type=limit_per_node_type,
-            ))
-        # Single active case: wrap it as a one-entry case list so the graph
-        # carries a proper case_id ('active') on every derived_from.
-        axiom = _get_axiom()
-        return _mask(_build(
-            connectors=None,
-            axiom_cases=[("active", axiom)],
-            entity_types=ets, edge_types=edts,
-            match_key=match_key, limit_per_node_type=limit_per_node_type,
-        ))
+            )
+        else:
+            axiom = _get_axiom()
+            result = _build(
+                connectors=None,
+                axiom_cases=[("active", axiom)],
+                entity_types=ets, edge_types=edts,
+                match_key=match_key, limit_per_node_type=limit_per_node_type,
+            )
+
+        # Bucket post-filter: keep only nodes whose collapsed_from references
+        # a hit_id in the bucket set. Drop edges orphaned by the filter.
+        if bucket_hit_ids is not None and result.get("ok"):
+            kept_node_ids = {
+                n["id"] for n in result.get("nodes", [])
+                if any(c.get("source_hit_id") in bucket_hit_ids for c in n.get("collapsed_from", []))
+            }
+            result["nodes"] = [n for n in result["nodes"] if n["id"] in kept_node_ids]
+            result["edges"] = [
+                e for e in result["edges"]
+                if e["source"] in kept_node_ids and e["target"] in kept_node_ids
+            ]
+            result["bucket_filter"] = bucket_info
+
+        return _mask(result)
     return await _traced(
         "build_entity_graph",
         {"entity_types": entity_types, "edge_types": edge_types,
          "match_key": match_key, "limit_per_node_type": limit_per_node_type,
-         "all_cases": all_cases},
+         "all_cases": all_cases,
+         "snapshot_slug": snapshot_slug, "bucket_name": bucket_name},
         fn, timeout_seconds=TIMEOUT_MEDIUM,
     )
 
@@ -1179,6 +1247,68 @@ async def list_case_snapshots() -> dict:
         from core.analysis.case_snapshot import list_snapshots
         return _mask(list_snapshots())
     return await _traced("list_case_snapshots", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def add_hits_to_bucket(
+    snapshot_slug: str,
+    bucket_name: str,
+    hit_ids: str,
+    hypothesis: str = "",
+) -> dict:
+    """Append hit IDs to a named bucket inside an existing snapshot.
+
+    Buckets let an analyst maintain multiple parallel hypothesis sets on
+    the same case (e.g. 'payload_files', 'compromised_users', 'exfil_ips')
+    without inventing a separate primitive. IDs are deduped and sorted.
+
+    Args:
+        snapshot_slug: Slug returned by save_case_snapshot.
+        bucket_name:   Human-readable bucket label; sanitized to a slug.
+        hit_ids:       Comma-separated hit_ids (e.g. "123,456,789").
+        hypothesis:    Optional free-form string stored alongside the bucket.
+    """
+    def fn():
+        from core.analysis.case_snapshot import add_hits_to_bucket as _add
+        ids = [int(x) for x in hit_ids.split(",") if x.strip().lstrip("-").isdigit()]
+        return _mask(_add(snapshot_slug, bucket_name, ids, hypothesis=hypothesis))
+    return await _traced(
+        "add_hits_to_bucket",
+        {"snapshot_slug": snapshot_slug, "bucket_name": bucket_name, "count": len(hit_ids.split(","))},
+        fn, timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
+async def remove_hits_from_bucket(
+    snapshot_slug: str,
+    bucket_name: str,
+    hit_ids: str,
+) -> dict:
+    """Remove hit IDs from a named bucket. Errors if the bucket doesn't exist."""
+    def fn():
+        from core.analysis.case_snapshot import remove_hits_from_bucket as _rm
+        ids = [int(x) for x in hit_ids.split(",") if x.strip().lstrip("-").isdigit()]
+        return _mask(_rm(snapshot_slug, bucket_name, ids))
+    return await _traced(
+        "remove_hits_from_bucket",
+        {"snapshot_slug": snapshot_slug, "bucket_name": bucket_name, "count": len(hit_ids.split(","))},
+        fn, timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
+async def get_bucket_hits(snapshot_slug: str, bucket_name: str) -> dict:
+    """Read a bucket's hit_ids + hypothesis. Hard-errors on unknown bucket
+    so a typo can't masquerade as 'no activity'."""
+    def fn():
+        from core.analysis.case_snapshot import get_bucket_hits as _get
+        return _mask(_get(snapshot_slug, bucket_name))
+    return await _traced(
+        "get_bucket_hits",
+        {"snapshot_slug": snapshot_slug, "bucket_name": bucket_name},
+        fn, timeout_seconds=TIMEOUT_LIGHT,
+    )
 
 
 @mcp.tool()
