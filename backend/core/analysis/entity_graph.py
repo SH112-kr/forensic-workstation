@@ -506,6 +506,10 @@ def build_entity_graph(
             "under different modes never share identity.",
             "has_prefetch_hash != has_sha1. Prefetch Hash is a volume/path fingerprint, "
             "NOT a cryptographic hash. Do not treat equality as file-content equality.",
+            "Hash-type nodes (type:*:*) are stored as opaque identifiers with no length "
+            "or format validation. Consumers must not assume the value is a syntactically "
+            "validated cryptographic hash — the edge type ('has_sha1' vs "
+            "'has_prefetch_hash') is the authoritative signal for what kind of hash it is.",
             "sample_hit_ids is a preview (max 10) for UI, NOT an authoritative list. "
             "Consult source artifacts for completeness.",
             "If graph_is_complete=False, at least one node_type hit its per-type cap "
