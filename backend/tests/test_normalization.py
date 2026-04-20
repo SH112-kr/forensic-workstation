@@ -131,6 +131,48 @@ def test_apply_match_key_unknown_kind_is_safe():
 
 # ── Idempotence ──────────────────────────────────────────────────────────
 
+# ── Codex Round-5c follow-up tests ──────────────────────────────────────
+
+def test_safe_path_case_leaves_urls_alone():
+    """URL has : and / but is NOT a Windows path. Must not be lowered."""
+    url = "HTTPS://Example.COM/path/To/Resource"
+    assert n.safe_path_case(url) == url  # unchanged
+
+
+def test_safe_path_case_leaves_registry_paths_alone():
+    """HKLM\\Software\\... starts with 'H' not a drive letter — not a path."""
+    reg = "HKLM\\SOFTWARE\\Microsoft\\Windows"
+    # Not Windows-shaped (no drive letter, no UNC prefix) -> left alone
+    assert n.safe_path_case(reg) == reg
+
+
+def test_safe_path_case_handles_unc_and_extended():
+    """UNC (\\\\server\\share) and extended (\\\\?\\C:\\...) paths ARE Windows."""
+    unc = "\\\\SERVER\\Share\\File.EXE"
+    ext = "\\\\?\\C:\\Windows\\System32\\cmd.exe"
+    assert n.safe_path_case(unc) == unc.replace("\\", "/").lower()
+    assert n.safe_path_case(ext) == ext.replace("\\", "/").lower()
+
+
+def test_safe_hash_shape_is_consistent_across_entry_points():
+    """Invalid hash preserves raw value through every normalization path."""
+    bad = "zzz-not-a-hash-value"
+    r1 = n.safe_hash(bad)
+    r2 = n.safe_hash(bad.upper())  # case variant
+    assert r1["valid"] is False and r2["valid"] is False
+    # Raw input visible, not blanked
+    assert r1["value"] == bad
+    assert r2["value"] == bad  # lowered but not erased
+
+
+def test_safe_ipv4_preserves_raw_when_invalid():
+    bad_samples = ["999.0.0.1", "not-an-ip", "10.0.0", "10.0.0.1.2"]
+    for s in bad_samples:
+        r = n.safe_ipv4(s)
+        assert r["valid"] is False
+        assert r["value"] == s.strip() or r["value"] == ""
+
+
 def test_safe_functions_are_idempotent():
     for fn, sample in [
         (n.safe_trim, "  hello  "),

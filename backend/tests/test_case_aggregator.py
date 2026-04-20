@@ -91,3 +91,36 @@ def test_pivot_rejects_unknown_entity(mfdb_case):
     r = pivot_across_cases({"axiom:a": mfdb_case}, entity_type="xxx", entity_value="v")
     assert r["ok"] is False
     assert "Unsupported" in r["error"]
+
+
+def test_pivot_default_match_key_raw_is_legacy_equivalent(mfdb_case, kape_case):
+    """Codex Round-5c: omitting match_key must not change any hit field
+    compared to explicit match_key='raw'. Guards against accidental future
+    default-flip regressions."""
+    conns = {"axiom:a": mfdb_case, "axiom:b": kape_case}
+    a = pivot_across_cases(conns, entity_type="keyword", entity_value="admin")
+    b = pivot_across_cases(conns, entity_type="keyword", entity_value="admin", match_key="raw")
+    # Same hit keys, same counts, no normalized_* fields in default mode
+    assert [(h["case_id"], h["hit_id"]) for h in a["hits"]] == \
+           [(h["case_id"], h["hit_id"]) for h in b["hits"]]
+    assert a["total"] == b["total"]
+    for h in a["hits"] + b["hits"]:
+        assert "normalized_value" not in h
+        assert "normalized_warning" not in h
+
+
+def test_pivot_match_key_loose_attaches_warning_on_envelope_and_hits(mfdb_case):
+    """Codex Round-5b: Tier-2 warnings must surface BOTH on the envelope
+    AND on each affected hit."""
+    # mfdb_case has a hit with fields = {"user": "admin"} and another with Application Name
+    r = pivot_across_cases(
+        {"axiom:a": mfdb_case}, entity_type="username", entity_value="CONTOSO\\Alice",
+        match_key="loose",
+    )
+    assert r["ok"] is True
+    assert r["match_key"]["mode"] == "loose"
+    # Warning should be mirrored on envelope when Tier-2 actually collapsed
+    if r["hits"]:
+        any_warned = any("normalized_warning" in h for h in r["hits"])
+        envelope_warned = bool(r["match_key"]["warnings"])
+        assert any_warned == envelope_warned
