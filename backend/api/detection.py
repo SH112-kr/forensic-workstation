@@ -16,9 +16,26 @@ class DetectionRequest(BaseModel):
 async def run_detection(req: DetectionRequest):
     from state import app_state
     from core.analysis.suspicious import find_suspicious
+    from core.analysis.evidence_strength import score_findings
     try:
         connector = app_state.get_axiom()
-        return find_suspicious(connector.artifact_queries, rules=req.rules)
+        payload = find_suspicious(connector.artifact_queries, rules=req.rules)
+        # Annotate each finding with CLAUDE.md strength tiers so the UI can
+        # render confirmed / strong / moderate / weak badges without a second
+        # round-trip.
+        score_findings(payload)
+        return payload
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/anti-forensics")
+async def get_anti_forensics():
+    """Run the anti-forensics rule bundle against the active case."""
+    from state import app_state
+    from core.analysis.anti_forensics import detect_anti_forensics as _run
+    try:
+        return _run(app_state.get_axiom().artifact_queries)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

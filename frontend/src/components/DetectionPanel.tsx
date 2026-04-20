@@ -2,21 +2,38 @@ import { useEffect, useState } from 'react';
 import { post, get } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
+type StrengthTier = 'confirmed' | 'strong' | 'moderate' | 'weak';
+
+const STRENGTH_LABEL: Record<StrengthTier, string> = {
+  confirmed: 'Confirmed',
+  strong: 'Strong',
+  moderate: 'Moderate',
+  weak: 'Weak',
+};
+
 export default function DetectionPanel() {
   const { detection, mitre, setDetection, setLastAction } = useStore();
   const [findings, setFindings] = useState<any[]>(detection?.findings || []);
+  const [strengthRollup, setStrengthRollup] = useState<Record<StrengthTier, number> | null>(detection?.strength_rollup || null);
   const [mitreData, setMitreData] = useState<any>(mitre);
   const [loading, setLoading] = useState(false);
   const [openIdx, setOpenIdx] = useState<number | null>(null);
+  const [antiForensics, setAntiForensics] = useState<any>(null);
+  const [afLoading, setAfLoading] = useState(false);
+  const [afError, setAfError] = useState('');
 
   // Use cached data if available, otherwise fetch
   useEffect(() => {
     if (detection?.findings) {
       setFindings(detection.findings);
       setMitreData(mitre);
+      setStrengthRollup(detection.strength_rollup || null);
     } else {
       runDetection();
     }
+    // Anti-forensics is cheap to pull alongside.
+    loadAntiForensics();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const runDetection = async () => {
@@ -29,12 +46,26 @@ export default function DetectionPanel() {
       ]);
       setFindings(det.findings || []);
       setMitreData(mit);
+      setStrengthRollup(det.strength_rollup || null);
       setDetection(det, mit);
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
       setLastAction(`Detection completed: ${det.total_findings ?? 0} findings (${elapsed}s)`);
     } catch (e) {
       console.error('Detection error:', e);
     } finally { setLoading(false); }
+  };
+
+  const loadAntiForensics = async () => {
+    setAfLoading(true);
+    setAfError('');
+    try {
+      const r = await get('/api/detection/anti-forensics');
+      setAntiForensics(r);
+    } catch (e: any) {
+      setAfError(e?.message || 'Failed to run anti-forensics detection');
+    } finally {
+      setAfLoading(false);
+    }
   };
 
   return (
@@ -53,6 +84,57 @@ export default function DetectionPanel() {
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
       )}
+
+      {/* Evidence strength rollup — CLAUDE.md tiers for quick triage. */}
+      {strengthRollup && (
+        <div style={{
+          display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center',
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase' }}>
+            Evidence strength
+          </span>
+          {(['confirmed', 'strong', 'moderate', 'weak'] as StrengthTier[]).map((tier) => (
+            <span key={tier} className={`badge-strength badge-strength-${tier}`} title={
+              tier === 'confirmed' ? 'Prefetch+SRUM, MFT, definitive EIDs' :
+              tier === 'strong' ? 'Prefetch Last Run, Sysmon / ScriptBlock' :
+              tier === 'moderate' ? 'AmCache, UserAssist, Scheduled Tasks' :
+              'Shim Cache, Link Date — NOT execution proof'
+            }>
+              {strengthRollup[tier] ?? 0} {STRENGTH_LABEL[tier]}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Anti-forensics — visible only when rules fired so empty cases stay clean. */}
+      {antiForensics && antiForensics.rules_fired > 0 && (
+        <div style={{
+          marginBottom: 20, padding: '12px 16px', borderRadius: 10,
+          background: 'var(--critical-bg)', border: '1px solid var(--critical)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 15 }}>⚠</span>
+            <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--critical)' }}>
+              Anti-forensic activity detected — {antiForensics.rules_fired} rule{antiForensics.rules_fired > 1 ? 's' : ''} fired,
+              {' '}{antiForensics.total_hits} total hit{antiForensics.total_hits === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            {(antiForensics.rules || []).filter((r: any) => r.ok && r.count).map((r: any) => (
+              <div key={r.rule_name} style={{ padding: '2px 0' }}>
+                <span style={{ fontWeight: 600, color: 'var(--text)' }}>{r.rule_name}</span>
+                <span style={{ marginLeft: 6, fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--critical)' }}>
+                  {r.mitre_technique}
+                </span>
+                <span style={{ marginLeft: 6 }}>· {r.count} hit{r.count === 1 ? '' : 's'}</span>
+                <span style={{ marginLeft: 8, color: 'var(--text-dim)' }}>{r.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {afLoading && <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 12 }}>Checking anti-forensics…</div>}
+      {afError && <div style={{ fontSize: 11, color: 'var(--critical)', marginBottom: 12 }}>{afError}</div>}
 
       {/* MITRE Matrix */}
       {mitreData?.narrative?.length > 0 && (
@@ -93,6 +175,12 @@ export default function DetectionPanel() {
                 }}
               >
                 <span className={`badge badge-${f.severity}`}>{f.severity.toUpperCase()}</span>
+                {f.overall_strength && (
+                  <span className={`badge-strength badge-strength-${f.overall_strength}`}
+                    title="Best evidence strength across this finding's details">
+                    {STRENGTH_LABEL[f.overall_strength as StrengthTier]}
+                  </span>
+                )}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>
                     {f.rule_name.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
@@ -132,8 +220,13 @@ export default function DetectionPanel() {
                       background: 'var(--surface2)', border: '1px solid var(--border-light)',
                       borderRadius: 6, padding: 10, marginTop: 6, fontSize: 11,
                     }}>
-                      <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
                         <span style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 10 }}>{d.artifact_type}</span>
+                        {d.strength && (
+                          <span className={`badge-strength badge-strength-${d.strength}`} title={d.strength_reason}>
+                            {STRENGTH_LABEL[d.strength as StrengthTier]}
+                          </span>
+                        )}
                         <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-dim)', fontSize: 10 }}>{d.timestamp}</span>
                       </div>
                       {d.matched_value && (

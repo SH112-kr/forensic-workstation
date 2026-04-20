@@ -13,6 +13,13 @@ export default function TimelineView() {
   const [limit] = useState(500);
   const [allCases, setAllCases] = useState(false);
   const [caseCount, setCaseCount] = useState(1);
+  // Slice filters (user/process/host/path) — post-filter substrings matched
+  // case-insensitively against description + artifact_type + fields.
+  const [sliceUser, setSliceUser] = useState('');
+  const [sliceProcess, setSliceProcess] = useState('');
+  const [sliceHost, setSliceHost] = useState('');
+  const [slicePath, setSlicePath] = useState('');
+  const [showSlice, setShowSlice] = useState(false);
   const didAutoLoad = useRef(false);
 
   useEffect(() => {
@@ -41,11 +48,21 @@ export default function TimelineView() {
     load(start, end);
   }, []);
 
-  const filtered = filter
-    ? entries.filter(e =>
-        (e.description || '').toLowerCase().includes(filter.toLowerCase()) ||
-        (e.artifact_type || '').toLowerCase().includes(filter.toLowerCase()))
-    : entries;
+  const sliceMatch = (e: any, sub: string) => {
+    if (!sub) return true;
+    const hay = `${e.description || ''} ${e.artifact_type || ''} ${Object.values(e.fields || {}).join(' ')}`.toLowerCase();
+    return hay.includes(sub.toLowerCase());
+  };
+  const filtered = entries.filter(e => {
+    if (filter && !((e.description || '').toLowerCase().includes(filter.toLowerCase()) ||
+                    (e.artifact_type || '').toLowerCase().includes(filter.toLowerCase()))) return false;
+    if (!sliceMatch(e, sliceUser)) return false;
+    if (!sliceMatch(e, sliceProcess)) return false;
+    if (!sliceMatch(e, sliceHost)) return false;
+    if (!sliceMatch(e, slicePath)) return false;
+    return true;
+  });
+  const sliceActive = sliceUser || sliceProcess || sliceHost || slicePath;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -81,10 +98,42 @@ export default function TimelineView() {
         <div style={{ flex: 1 }} />
         <input type="text" placeholder="Filter events..." value={filter} onChange={e => setFilter(e.target.value)}
           style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12, width: 200 }} />
+        <button
+          onClick={() => setShowSlice(!showSlice)}
+          className="btn btn-sm"
+          title="Per-user / process / host / path filters"
+          style={{ borderColor: sliceActive ? 'var(--accent)' : undefined, color: sliceActive ? 'var(--accent)' : undefined }}>
+          {showSlice ? '▾' : '▸'} Slice{sliceActive ? ' ●' : ''}
+        </button>
         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
           {filtered.length}/{total} events
         </span>
       </div>
+
+      {/* Slice filters */}
+      {showSlice && (
+        <div style={{
+          padding: '10px 16px', display: 'flex', gap: 8, flexWrap: 'wrap',
+          borderBottom: '1px solid var(--border)', background: 'var(--surface)',
+          alignItems: 'center',
+        }}>
+          <span className="help-text">Substring filters applied to description + fields:</span>
+          <input placeholder="user" value={sliceUser} onChange={e => setSliceUser(e.target.value)}
+            className="input input-sm" style={{ width: 120 }} />
+          <input placeholder="process" value={sliceProcess} onChange={e => setSliceProcess(e.target.value)}
+            className="input input-sm" style={{ width: 140 }} />
+          <input placeholder="host" value={sliceHost} onChange={e => setSliceHost(e.target.value)}
+            className="input input-sm" style={{ width: 120 }} />
+          <input placeholder="path" value={slicePath} onChange={e => setSlicePath(e.target.value)}
+            className="input input-sm" style={{ width: 160 }} />
+          {sliceActive && (
+            <button className="btn btn-sm"
+              onClick={() => { setSliceUser(''); setSliceProcess(''); setSliceHost(''); setSlicePath(''); }}>
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Timeline list */}
       <div style={{ flex: 1, overflowY: 'auto' }}>

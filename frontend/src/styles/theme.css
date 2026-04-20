@@ -73,6 +73,14 @@ body {
 .badge-low { background: var(--low-bg); color: var(--low); }
 .badge-info { background: var(--surface2); color: var(--text-dim); }
 
+/* Evidence strength tiers — map the CLAUDE.md vocabulary onto distinct colors
+   so the analyst can scan a result set without re-reading every rationale. */
+.badge-strength { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.badge-strength-confirmed { background: rgba(74,222,128,0.16); color: #16a34a; }
+.badge-strength-strong    { background: rgba(56,139,253,0.16); color: #2563eb; }
+.badge-strength-moderate  { background: rgba(245,158,11,0.15); color: #b45309; }
+.badge-strength-weak      { background: rgba(148,163,184,0.22); color: #475569; }
+
 /* Card */
 .card {
   background: var(--surface);
