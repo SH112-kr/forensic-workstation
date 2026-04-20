@@ -16,6 +16,10 @@ class OpenMemoryRequest(BaseModel):
 async def open_memory(req: OpenMemoryRequest):
     from state import app_state
     try:
+        # Honour the evidence allowlist guardrail — a memory dump opened through
+        # the web UI must be registered as user-picked evidence so downstream MCP
+        # tools that consult is_path_allowed() will accept it too.
+        app_state.add_allowed_evidence([req.path], source="memory:open")
         from core.connectors.volatility_connector import VolatilityConnector
         app_state.remove("volatility")
         c = VolatilityConnector()
@@ -23,9 +27,20 @@ async def open_memory(req: OpenMemoryRequest):
         app_state.set("volatility", c)
         return meta
     except ImportError:
-        raise HTTPException(status_code=400, detail="volatility3가 설치되지 않았습니다.")
+        raise HTTPException(status_code=400, detail="volatility3가 설치되지 않았습니다. pip install volatility3")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/status")
+async def status():
+    """Quick readiness probe so the UI can decide whether to show the load form."""
+    from state import app_state
+    c = app_state.get("volatility")
+    return {
+        "loaded": bool(c and getattr(c, "is_connected", lambda: False)()),
+        "metadata": c.get_metadata() if c and getattr(c, "is_connected", lambda: False)() else None,
+    }
 
 
 def _vol():
