@@ -155,6 +155,26 @@ async def get_artifact_types():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class PivotRequest(BaseModel):
+    entity_type: str
+    entity_value: str
+    window_minutes: int = 60
+    limit_per_case: int = 100
+
+
+@router.post("/pivot")
+async def post_pivot(req: PivotRequest):
+    """Pivot on an entity across every loaded case.
+
+    Offline: fans out to already-loaded connectors and merges hits with
+    per-case provenance. No external lookup.
+    """
+    from state import app_state
+    from core.analysis.case_aggregator import pivot_across_cases as _pivot
+    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+    return _pivot(axiom_conns, req.entity_type, req.entity_value, req.window_minutes, req.limit_per_case)
+
+
 @router.get("/compare")
 async def get_compare():
     """Return metadata + artifact-count matrix across every loaded case.

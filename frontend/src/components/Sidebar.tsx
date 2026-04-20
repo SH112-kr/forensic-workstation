@@ -24,6 +24,7 @@ const SECTIONS: NavSection[] = [
       { id: 'ioc', label: 'IOC', icon: '🎯' },
       { id: 'coverage', label: 'Coverage', icon: '🧾' },
       { id: 'compare', label: 'Compare', icon: '⇄' },
+      { id: 'pivot', label: 'Pivot', icon: '🎯' },
     ],
   },
   {

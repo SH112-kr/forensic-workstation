@@ -20,6 +20,7 @@ import Settings from './Settings';
 import KapeBuilder from './KapeBuilder';
 import CoveragePanel from './CoveragePanel';
 import CaseComparePanel from './CaseComparePanel';
+import PivotPanel from './PivotPanel';
 
 const VIEWS: Record<string, React.FC> = {
   dashboard: Dashboard,
@@ -29,6 +30,7 @@ const VIEWS: Record<string, React.FC> = {
   ioc: IOCTable,
   coverage: CoveragePanel,
   compare: CaseComparePanel,
+  pivot: PivotPanel,
   memory: MemoryAnalysis,
   binary: BinaryAnalysis,
   logs: LogAnalysis,

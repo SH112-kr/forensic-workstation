@@ -155,3 +155,255 @@ def compare_cases(connectors: dict[str, Any]) -> dict[str, Any]:
         },
         "warnings": sorted(set(meta["warnings"] + counts["warnings"])),
     }
+
+
+# ── Cross-case fan-out: search / timeline / hash / pivot ──
+
+def _tag_hits_with_provenance(hits: list[dict[str, Any]], provenance: dict[str, str]) -> list[dict[str, Any]]:
+    """Return a copy of each hit with the per-case provenance fields merged in.
+
+    We never mutate the original hit so the connector's result stays untouched
+    for other callers.
+    """
+    tagged = []
+    for h in hits or []:
+        tagged.append({**h, **provenance})
+    return tagged
+
+
+def _hit_sort_key(h: dict[str, Any]) -> tuple:
+    """Deterministic sort key: earliest timestamp first, then case_id, then hit_id."""
+    ts = h.get("timestamp") or ""
+    # Empty-timestamp rows sort at the end, which is the right default when a
+    # case carries hits without parsable dates.
+    bucket = 1 if not ts else 0
+    return (bucket, ts, str(h.get("case_id", "")), int(h.get("hit_id", 0) or 0))
+
+
+def search_across_cases(
+    connectors: dict[str, Any],
+    keyword: str = "",
+    artifact_type: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit_per_case: int = 100,
+    global_limit: int = 200,
+    global_offset: int = 0,
+) -> dict[str, Any]:
+    """Fan-out keyword/filter search across every loaded case.
+
+    Per-case result envelopes carry ``ok``/``error`` so partial failures do not
+    poison the merged view. The merged page is produced with:
+    fetch ``limit_per_case`` per case → tag with provenance → sort globally →
+    slice ``[global_offset : global_offset + global_limit]``.
+    """
+    cases = iter_cases(connectors)
+
+    def _run(case_id: str, connector: Any) -> dict[str, Any]:
+        return connector.search(
+            keyword=keyword,
+            filters={"artifact_type": artifact_type, "start_date": start_date, "end_date": end_date},
+            limit=limit_per_case,
+            offset=0,
+        )
+
+    per_case, warnings = safe_collect(cases, _run)
+
+    merged: list[dict[str, Any]] = []
+    per_case_totals: dict[str, int] = {}
+    for env in per_case:
+        if not env.get("ok"):
+            continue
+        provenance = {k: env[k] for k in ("case_id", "source_type", "source_path")}
+        payload = env.get("data", {}) or {}
+        hits = payload.get("hits", []) or []
+        merged.extend(_tag_hits_with_provenance(hits, provenance))
+        per_case_totals[env["case_id"]] = int(payload.get("total") or payload.get("total_estimated") or 0)
+
+    merged.sort(key=_hit_sort_key)
+    sliced = merged[global_offset : global_offset + global_limit]
+
+    return {
+        "ok": True,
+        "query": {
+            "keyword": keyword,
+            "artifact_type": artifact_type,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+        "case_count": len(cases),
+        "per_case": per_case,
+        "per_case_totals": per_case_totals,
+        "merged_total": len(merged),
+        "global_offset": global_offset,
+        "global_limit": global_limit,
+        "returned": len(sliced),
+        "hits": sliced,
+        "warnings": warnings,
+    }
+
+
+def timeline_across_cases(
+    connectors: dict[str, Any],
+    start_date: str = "",
+    end_date: str = "",
+    artifact_types: list[str] | None = None,
+    limit_per_case: int = 200,
+    global_limit: int = 500,
+    global_offset: int = 0,
+) -> dict[str, Any]:
+    """Fan-out timeline construction across every loaded case.
+
+    Same contract as ``search_across_cases`` — provenance on every event,
+    per-case envelopes for partial failures, global-sort-then-slice paging.
+    """
+    cases = iter_cases(connectors)
+
+    def _run(case_id: str, connector: Any) -> dict[str, Any]:
+        return connector.get_timeline(
+            start_date=start_date,
+            end_date=end_date,
+            artifact_types=artifact_types,
+            limit=limit_per_case,
+            offset=0,
+        )
+
+    per_case, warnings = safe_collect(cases, _run)
+
+    merged: list[dict[str, Any]] = []
+    for env in per_case:
+        if not env.get("ok"):
+            continue
+        provenance = {k: env[k] for k in ("case_id", "source_type", "source_path")}
+        payload = env.get("data", {}) or {}
+        entries = payload.get("entries", []) or payload.get("events", []) or []
+        merged.extend(_tag_hits_with_provenance(entries, provenance))
+
+    merged.sort(key=_hit_sort_key)
+    sliced = merged[global_offset : global_offset + global_limit]
+
+    return {
+        "ok": True,
+        "query": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "artifact_types": artifact_types or [],
+        },
+        "case_count": len(cases),
+        "per_case": per_case,
+        "merged_total": len(merged),
+        "global_offset": global_offset,
+        "global_limit": global_limit,
+        "returned": len(sliced),
+        "entries": sliced,
+        "warnings": warnings,
+    }
+
+
+def hash_across_cases(
+    connectors: dict[str, Any],
+    hash_value: str,
+    limit_per_case: int = 50,
+) -> dict[str, Any]:
+    """Look up a hash across every loaded case and return merged hits."""
+    cases = iter_cases(connectors)
+
+    def _run(case_id: str, connector: Any) -> dict[str, Any]:
+        return connector.search_by_hash(hash_value, limit=limit_per_case, offset=0)
+
+    per_case, warnings = safe_collect(cases, _run)
+
+    merged: list[dict[str, Any]] = []
+    for env in per_case:
+        if not env.get("ok"):
+            continue
+        provenance = {k: env[k] for k in ("case_id", "source_type", "source_path")}
+        payload = env.get("data", {}) or {}
+        hits = payload.get("hits", []) or []
+        merged.extend(_tag_hits_with_provenance(hits, provenance))
+
+    merged.sort(key=_hit_sort_key)
+
+    return {
+        "ok": True,
+        "query": {"hash": hash_value},
+        "case_count": len(cases),
+        "per_case": per_case,
+        "total": len(merged),
+        "hits": merged,
+        "warnings": warnings,
+    }
+
+
+_ENTITY_TYPES = {"hash", "ip", "username", "filename", "path", "keyword"}
+
+
+def pivot_across_cases(
+    connectors: dict[str, Any],
+    entity_type: str,
+    entity_value: str,
+    window_minutes: int = 60,
+    limit_per_case: int = 100,
+) -> dict[str, Any]:
+    """Pivot on an entity (hash/ip/username/filename/path/keyword) across cases.
+
+    Reuses ``hash_across_cases`` for hashes and ``search_across_cases`` for
+    string entities. Returns per-case and merged views plus first/last-seen
+    markers so an analyst can quickly see where the entity first surfaces and
+    whether it crosses cases. ``window_minutes`` is accepted for future
+    clustering — v1 returns raw merged hits without temporal clustering.
+
+    Fully offline: only reads already-loaded connectors.
+    """
+    etype = (entity_type or "").strip().lower()
+    evalue = (entity_value or "").strip()
+    if etype not in _ENTITY_TYPES:
+        return {
+            "ok": False,
+            "error": f"Unsupported entity_type {entity_type!r}; expected one of {sorted(_ENTITY_TYPES)}",
+        }
+    if not evalue:
+        return {"ok": False, "error": "entity_value is empty"}
+
+    if etype == "hash":
+        base = hash_across_cases(connectors, evalue, limit_per_case=limit_per_case)
+        merged = base.get("hits", []) or []
+    else:
+        base = search_across_cases(
+            connectors,
+            keyword=evalue,
+            limit_per_case=limit_per_case,
+            global_limit=limit_per_case * max(1, base_case_count(connectors)),
+        )
+        merged = base.get("hits", []) or []
+
+    per_case_counts: dict[str, int] = {}
+    first_seen: dict[str, Any] | None = None
+    last_seen: dict[str, Any] | None = None
+    for h in merged:
+        cid = h.get("case_id", "")
+        per_case_counts[cid] = per_case_counts.get(cid, 0) + 1
+        ts = h.get("timestamp") or ""
+        if ts:
+            if first_seen is None or ts < first_seen.get("timestamp", ""):
+                first_seen = {"case_id": cid, "timestamp": ts, "hit_id": h.get("hit_id")}
+            if last_seen is None or ts > last_seen.get("timestamp", ""):
+                last_seen = {"case_id": cid, "timestamp": ts, "hit_id": h.get("hit_id")}
+
+    return {
+        "ok": True,
+        "entity": {"type": etype, "value": evalue},
+        "case_count": base.get("case_count", 0),
+        "per_case_counts": per_case_counts,
+        "total": len(merged),
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "hits": merged[: limit_per_case * 4],
+        "warnings": base.get("warnings", []),
+        "window_minutes": window_minutes,
+    }
+
+
+def base_case_count(connectors: dict[str, Any]) -> int:
+    """Small utility so callers can size limits from the number of loaded cases."""
+    return len(iter_cases(connectors))

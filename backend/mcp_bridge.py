@@ -382,6 +382,41 @@ async def get_artifact_types() -> dict:
 
 
 @mcp.tool()
+async def pivot_across_cases(
+    entity_type: str,
+    entity_value: str,
+    window_minutes: int = 60,
+    limit_per_case: int = 100,
+) -> dict:
+    """Pivot on an entity across every loaded case.
+
+    Args:
+        entity_type: One of ``hash``, ``ip``, ``username``, ``filename``,
+            ``path``, ``keyword``. Hash goes through search_by_hash; the rest
+            fall back to keyword search.
+        entity_value: The value to pivot on.
+        window_minutes: Reserved for future temporal clustering; v1 returns
+            raw merged hits.
+        limit_per_case: Max hits to pull from each case before merging.
+
+    Returns per-case counts, merged hits with full provenance, and
+    first/last-seen markers so you can see which case carried the entity
+    first and how it propagated. Fully offline.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.case_aggregator import pivot_across_cases as _pivot
+        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+        return _mask(_pivot(axiom_conns, entity_type, entity_value, window_minutes, limit_per_case))
+    return await _traced(
+        "pivot_across_cases",
+        {"entity_type": entity_type, "entity_value": entity_value[:100], "limit_per_case": limit_per_case},
+        fn,
+        timeout_seconds=TIMEOUT_MEDIUM,
+    )
+
+
+@mcp.tool()
 async def compare_cases() -> dict:
     """Compare every loaded case side by side — metadata plus artifact-count matrix.
 
@@ -438,6 +473,7 @@ async def search_artifacts(
     fields: str = "",
     limit: int = 50,
     offset: int = 0,
+    all_cases: bool = False,
 ) -> dict:
     """Search artifacts by keyword, type, date range.
 
@@ -452,10 +488,26 @@ async def search_artifacts(
                 e.g. "Name,Full Path,Application Name". Empty = all fields.
         limit: Max results (default 50, max 200).
         offset: Pagination offset.
+        all_cases: When True, fan out the search across every loaded case and
+                   return merged hits with per-case provenance
+                   (case_id / source_type / source_path on every hit). When
+                   False (default), only the active case is searched.
     """
     params = {"keyword": keyword, "keywords": keywords, "artifact_type": artifact_type,
-              "start_date": start_date, "end_date": end_date, "fields": fields, "limit": limit, "offset": offset}
+              "start_date": start_date, "end_date": end_date, "fields": fields, "limit": limit, "offset": offset,
+              "all_cases": all_cases}
     def fn():
+        if all_cases:
+            from state import app_state
+            from core.analysis.case_aggregator import search_across_cases
+            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+            cap = min(limit, config.search_max_limit)
+            return _mask(search_across_cases(
+                axiom_conns,
+                keyword=keyword or (keywords.split(",")[0].strip() if keywords else ""),
+                artifact_type=artifact_type, start_date=start_date, end_date=end_date,
+                limit_per_case=cap, global_limit=cap, global_offset=offset,
+            ))
         axiom = _get_axiom()
         cap = min(limit, config.search_max_limit)
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
@@ -527,6 +579,7 @@ async def build_timeline(
     keywords: str = "",
     limit: int = 200,
     offset: int = 0,
+    all_cases: bool = False,
 ) -> dict:
     """Build chronological timeline.
 
@@ -541,13 +594,29 @@ async def build_timeline(
         offset: Skip first N events (for pagination).
     """
     params = {"start_date": start_date, "end_date": end_date,
-              "artifact_types": artifact_types, "keywords": keywords, "limit": limit, "offset": offset}
+              "artifact_types": artifact_types, "keywords": keywords, "limit": limit, "offset": offset,
+              "all_cases": all_cases}
     def fn():
-        axiom = _get_axiom()
         cap = min(limit, config.timeline_max_limit)
         type_list = [t.strip() for t in artifact_types.split(",") if t.strip()] if artifact_types else None
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
 
+        if all_cases:
+            # Merged timeline across every loaded case. Keyword filtering in
+            # this mode falls back to the per-case get_timeline engine (no
+            # cross-case keyword join yet) — fine for the common "what
+            # happened between date X and Y?" workflow.
+            from state import app_state
+            from core.analysis.case_aggregator import timeline_across_cases
+            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+            return _mask(timeline_across_cases(
+                axiom_conns,
+                start_date=start_date, end_date=end_date,
+                artifact_types=type_list,
+                limit_per_case=cap, global_limit=cap, global_offset=offset,
+            ))
+
+        axiom = _get_axiom()
         if kw_list:
             return _mask(_timeline_with_keywords(axiom, start_date, end_date, kw_list, cap, offset))
         else:

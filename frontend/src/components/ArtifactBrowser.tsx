@@ -21,6 +21,12 @@ export default function ArtifactBrowser() {
   const [loading, setLoading] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [allCases, setAllCases] = useState(false);
+  const [caseCount, setCaseCount] = useState(1);
+
+  useEffect(() => {
+    get('/api/cases/list').then((d) => setCaseCount((d.cases || []).length)).catch(() => {});
+  }, []);
 
   const fetchRows = useCallback(async (newOffset: number, keyword?: string, type?: string) => {
     setLoading(true);
@@ -32,6 +38,7 @@ export default function ArtifactBrowser() {
         end_date: endDate,
         offset: newOffset,
         limit: PAGE_SIZE,
+        all_cases: allCases,
       });
       setRows(result.hits || result.rows || result.rowData || []);
       setTotalRows(result.total_estimated ?? result.total ?? result.rowCount ?? 0);
@@ -42,7 +49,7 @@ export default function ArtifactBrowser() {
     } finally {
       setLoading(false);
     }
-  }, [searchKeyword, artifactType, startDate, endDate]);
+  }, [searchKeyword, artifactType, startDate, endDate, allCases]);
 
   // Load artifact types and initial rows on mount
   useEffect(() => {
@@ -61,6 +68,13 @@ export default function ArtifactBrowser() {
 
   const columnDefs: ColDef[] = [
     { field: 'hit_id', headerName: 'ID', width: 90, sortable: true },
+    ...(allCases ? [{
+      field: 'case_id',
+      headerName: 'Case',
+      width: 140,
+      sortable: true,
+      cellStyle: { fontWeight: 600, color: '#60a5fa' },
+    } as ColDef] : []),
     { field: 'artifact_type', headerName: 'Type', width: 200, sortable: true },
     {
       field: 'fields',
@@ -153,6 +167,26 @@ export default function ArtifactBrowser() {
           }}
         />
         <button className="btn btn-sm" onClick={search}>Search</button>
+        {caseCount >= 2 && (
+          <label
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, fontSize: 11,
+              color: allCases ? 'var(--accent)' : 'var(--text-dim)', cursor: 'pointer',
+              padding: '6px 10px', borderRadius: 6,
+              border: '1px solid var(--border)',
+              background: allCases ? 'var(--accent-light)' : 'transparent',
+            }}
+            title="Search every loaded case and tag each row with its case_id"
+          >
+            <input
+              type="checkbox"
+              checked={allCases}
+              onChange={(e) => setAllCases(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            All cases
+          </label>
+        )}
       </div>
 
       {/* Grid + Detail split */}

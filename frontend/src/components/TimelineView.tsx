@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { post } from '../hooks/useApi';
+import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
 export default function TimelineView() {
@@ -11,13 +11,19 @@ export default function TimelineView() {
   const [endDate, setEndDate] = useState('');
   const [filter, setFilter] = useState('');
   const [limit] = useState(500);
+  const [allCases, setAllCases] = useState(false);
+  const [caseCount, setCaseCount] = useState(1);
   const didAutoLoad = useRef(false);
+
+  useEffect(() => {
+    get('/api/cases/list').then((d) => setCaseCount((d.cases || []).length)).catch(() => {});
+  }, []);
 
   const load = async (start?: string, end?: string) => {
     setLoading(true);
     try {
       const data = await post('/api/timeline', {
-        start_date: start ?? startDate, end_date: end ?? endDate, limit,
+        start_date: start ?? startDate, end_date: end ?? endDate, limit, all_cases: allCases,
       });
       setEntries(data.entries || []);
       setTotal(data.total_events || 0);
@@ -57,6 +63,21 @@ export default function TimelineView() {
         <button className="btn btn-primary btn-sm" onClick={() => load()} disabled={loading}>
           {loading ? 'Loading...' : 'Load Timeline'}
         </button>
+        {caseCount >= 2 && (
+          <label
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, fontSize: 11,
+              color: allCases ? 'var(--accent)' : 'var(--text-dim)', cursor: 'pointer',
+              padding: '4px 10px', borderRadius: 6,
+              border: '1px solid var(--border)',
+              background: allCases ? 'var(--accent-light)' : 'transparent',
+            }}
+            title="Merge timeline events from every loaded case"
+          >
+            <input type="checkbox" checked={allCases} onChange={(e) => setAllCases(e.target.checked)} style={{ margin: 0 }} />
+            All cases
+          </label>
+        )}
         <div style={{ flex: 1 }} />
         <input type="text" placeholder="Filter events..." value={filter} onChange={e => setFilter(e.target.value)}
           style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12, width: 200 }} />
@@ -95,13 +116,20 @@ export default function TimelineView() {
         )}
         {filtered.map((e, i) => (
           <div key={i} style={{
-            display: 'grid', gridTemplateColumns: '150px 180px 1fr', gap: 8,
+            display: 'grid',
+            gridTemplateColumns: allCases ? '150px 110px 180px 1fr' : '150px 180px 1fr',
+            gap: 8,
             padding: '6px 16px', borderBottom: '1px solid var(--border-light)',
             fontSize: 12, alignItems: 'start',
           }}>
             <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-dim)' }}>
               {(e.timestamp || '').substring(0, 23)}
             </span>
+            {allCases && (
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#60a5fa' }} title={e.source_path}>
+                {e.case_id || '—'}
+              </span>
+            )}
             <span style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 11 }}>
               {e.artifact_type}
             </span>
