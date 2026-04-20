@@ -20,6 +20,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+csv.field_size_limit(10 * 1024 * 1024)  # 10 MB — handles large PECmd fields
+
 from connectors.axiom_mfdb import AxiomMfdbConnector
 from connectors.kape_csv_mapping import (
     TOOL_MAPPINGS, TIMESTAMP_FORMATS, detect_tool, detect_tool_by_headers,

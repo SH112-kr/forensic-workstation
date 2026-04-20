@@ -384,6 +384,31 @@ Write-Host "  Path: $claudeSettingsPath" -ForegroundColor Gray
 Write-Host "  Restart Claude Code to activate MCP" -ForegroundColor Gray
 
 # ── 7. Verify ──
+# Also register MCP for Codex CLI (if installed)
+$codexInstalled = Get-Command codex -ErrorAction SilentlyContinue
+if ($codexInstalled) {
+    try {
+        & codex mcp get forensic-workstation *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & codex mcp remove forensic-workstation *> $null
+        }
+
+        $codexArgs = @("mcp", "add", "forensic-workstation", "--", "python", (Join-Path $ProjectDir "backend\mcp_bridge.py"))
+        & codex @codexArgs *> $null
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Codex MCP registered: forensic-workstation" -ForegroundColor Green
+            Write-Host "  Restart Codex CLI to activate MCP" -ForegroundColor Gray
+        } else {
+            Write-Host "  WARNING: Codex MCP registration failed" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  WARNING: Could not register Codex MCP: $_" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Codex CLI not found. Skipping Codex MCP registration." -ForegroundColor Yellow
+}
+
 Write-Host "[7/7] Verifying..." -ForegroundColor Yellow
 $testResult = python -c "
 import sys
@@ -407,4 +432,5 @@ Write-Host "Usage:" -ForegroundColor White
 Write-Host "  1. Double-click start.bat (or: python backend\main.py)" -ForegroundColor Gray
 Write-Host "  2. Open http://localhost:8001 in browser" -ForegroundColor Gray
 Write-Host "  3. Restart Claude Code for MCP tools (15 tools available)" -ForegroundColor Gray
+Write-Host "  4. Restart Codex CLI to activate MCP tools" -ForegroundColor Gray
 Write-Host ""

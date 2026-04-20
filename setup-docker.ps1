@@ -79,6 +79,31 @@ if (Test-Path $claudeSettingsPath) {
 }
 
 # ── 4. KAPE check ──
+# Also register MCP for Codex CLI (if installed)
+$codexInstalled = Get-Command codex -ErrorAction SilentlyContinue
+if ($codexInstalled) {
+    try {
+        & codex mcp get forensic-workstation *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & codex mcp remove forensic-workstation *> $null
+        }
+
+        $codexArgs = @("mcp", "add", "forensic-workstation", "--", "docker", "exec", "-i", "forensic-workstation", "python", "backend/mcp_bridge.py")
+        & codex @codexArgs *> $null
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Codex MCP registered: forensic-workstation" -ForegroundColor Green
+            Write-Host "  Restart Codex CLI to activate MCP" -ForegroundColor Gray
+        } else {
+            Write-Host "  WARNING: Codex MCP registration failed" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  WARNING: Could not register Codex MCP: $_" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Codex CLI not found. Skipping Codex MCP registration." -ForegroundColor Yellow
+}
+
 Write-Host "[4/4] Checking KAPE..." -ForegroundColor Yellow
 $kapePath = $null
 Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -ne $null } | ForEach-Object {
@@ -128,6 +153,7 @@ Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Web UI:      http://localhost:8001" -ForegroundColor White
 Write-Host "  Claude Code: Restart to activate MCP tools" -ForegroundColor White
+Write-Host "  Codex CLI:   Restart to activate MCP tools" -ForegroundColor White
 Write-Host "  KAPE:        $(if ($kapePath) { 'Ready' } else { 'Not installed (optional)' })" -ForegroundColor White
 Write-Host ""
 Write-Host "  Stop:    docker compose down" -ForegroundColor Gray
