@@ -17,13 +17,15 @@ async def run_detection(req: DetectionRequest):
     from state import app_state
     from core.analysis.suspicious import find_suspicious
     from core.analysis.evidence_strength import score_findings
+    from core.analysis.provenance import attach_provenance
     try:
         connector = app_state.get_axiom()
         payload = find_suspicious(connector.artifact_queries, rules=req.rules)
-        # Annotate each finding with CLAUDE.md strength tiers so the UI can
-        # render confirmed / strong / moderate / weak badges without a second
-        # round-trip.
+        # Strength tiers (confirmed/strong/moderate/weak) + provenance
+        # (supporting_artifacts + absent_corroboration) so the UI can render
+        # both defensibility and gaps without a second round-trip.
         score_findings(payload)
+        attach_provenance(payload, app_state._connectors)
         return payload
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

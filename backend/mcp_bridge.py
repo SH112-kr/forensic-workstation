@@ -1008,23 +1008,38 @@ async def assess_evidence_strength(findings_json: str = "") -> dict:
 
 
 @mcp.tool()
-async def find_suspicious(rules: str = "", score_strength: bool = True) -> dict:
+async def find_suspicious(
+    rules: str = "",
+    score_strength: bool = True,
+    include_provenance: bool = True,
+) -> dict:
     """Run structured threat detection rules.
 
     Args:
         rules: Optional comma-separated rule names. Empty runs every rule.
         score_strength: When True (default) annotate each detail with the
-            CLAUDE.md strength tier (confirmed/strong/moderate/weak) via
-            assess_evidence_strength. Set False to get the raw payload.
+            CLAUDE.md strength tier (confirmed/strong/moderate/weak).
+        include_provenance: When True (default) attach supporting_artifacts
+            and absent_corroboration to every finding so the analyst sees
+            which families back the finding and which corroborating
+            families are missing from the loaded case(s).
     """
     def fn():
+        from state import app_state
         from core.analysis.suspicious import find_suspicious as _find
         payload = _find(_get_axiom().artifact_queries, rules=rules)
         if score_strength:
             from core.analysis.evidence_strength import score_findings
             score_findings(payload)
+        if include_provenance:
+            from core.analysis.provenance import attach_provenance
+            attach_provenance(payload, app_state._connectors)
         return _mask(payload)
-    return await _traced("find_suspicious", {"rules": rules, "score_strength": score_strength}, fn, timeout_seconds=TIMEOUT_HEAVY)
+    return await _traced(
+        "find_suspicious",
+        {"rules": rules, "score_strength": score_strength, "include_provenance": include_provenance},
+        fn, timeout_seconds=TIMEOUT_HEAVY,
+    )
 
 
 @mcp.tool()
