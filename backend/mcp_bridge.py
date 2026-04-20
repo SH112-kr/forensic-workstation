@@ -38,6 +38,7 @@ from core.connectors.volatility_connector import VolatilityConnector
 from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
 from core.config import config
+from state import build_not_allowed_message, is_path_allowed
 
 mcp = FastMCP(
     name="forensic-workstation",
@@ -183,6 +184,20 @@ def _localize_timestamps(data: Any, _depth: int = 0) -> Any:
     return data
 
 
+def _load_case_from_path(path: str, case_id: str = "") -> Any:
+    """Load a single case source by path and register it."""
+    if not is_path_allowed(path):
+        raise RuntimeError(build_not_allowed_message(path))
+    if os.path.isdir(path):
+        c = KapeCsvConnector()
+    else:
+        c = AxiomMfdbConnector()
+    c.connect(path)
+    if case_id:
+        _connectors[f"axiom:{case_id}"] = c
+    return c
+
+
 def _get_axiom() -> AxiomMfdbConnector:
     c = _connectors.get("axiom")
     if c and c.is_connected():
@@ -193,10 +208,43 @@ def _get_axiom() -> AxiomMfdbConnector:
         try:
             with open(state_file, "r", encoding="utf-8") as f:
                 info = json.load(f)
+            all_cases = info.get("all_cases", [])
+            if all_cases:
+                # Parse each case in parallel — KAPE directories can each take
+                # tens of seconds, so a sequential load blocks the first MCP
+                # tool call for N × (per-case time) on multi-case projects.
+                from concurrent.futures import ThreadPoolExecutor
+                targets = [
+                    (case.get("path", ""), case.get("case_id", ""))
+                    for case in all_cases
+                    if case.get("path") and os.path.exists(case.get("path", ""))
+                ]
+                if targets:
+                    primary_path = info.get("path", "")
+                    last_c = None
+                    primary_c = None
+                    with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
+                        futures = {
+                            ex.submit(_load_case_from_path, p, cid): (p, cid)
+                            for p, cid in targets
+                        }
+                        for fut in futures:
+                            p, cid = futures[fut]
+                            try:
+                                loaded = fut.result()
+                            except Exception:
+                                continue
+                            last_c = loaded
+                            if p == primary_path:
+                                primary_c = loaded
+                    chosen = primary_c or last_c
+                    if chosen:
+                        _connectors["axiom"] = chosen
+                        return chosen
+            # Fallback: single path
             path = info.get("path", "")
             if path and os.path.exists(path):
-                c = AxiomMfdbConnector()
-                c.connect(path)
+                c = _load_case_from_path(path)
                 _connectors["axiom"] = c
                 return c
         except Exception:
@@ -252,21 +300,45 @@ async def set_timezone(tz_name: str = "KST", utc_offset_hours: int = 9) -> dict:
 
 # ── Case Tools ──
 
-def _traced(tool_name: str, params: dict, fn):
+# Timeout profiles (seconds). Tune per-deployment via environment variables:
+#   FW_TIMEOUT_LIGHT   — metadata lookups, cached Ghidra queries
+#   FW_TIMEOUT_MEDIUM  — Volatility plugins, search, IOC extraction, reports
+#   FW_TIMEOUT_HEAVY   — timeline, correlate, find_suspicious, auto_triage
+TIMEOUT_LIGHT = int(os.environ.get("FW_TIMEOUT_LIGHT", "120"))
+TIMEOUT_MEDIUM = int(os.environ.get("FW_TIMEOUT_MEDIUM", "600"))
+TIMEOUT_HEAVY = int(os.environ.get("FW_TIMEOUT_HEAVY", "1200"))
+
+
+async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEOUT_MEDIUM):
     """Run a tool function with full request/response event logging.
 
     Post-processing pipeline: fn() → _mask() → _localize_timestamps()
     The localization step annotates UTC timestamps with local timezone.
+    Heavy operations run in a thread pool to avoid blocking the async event
+    loop, with a per-tool timeout drawn from the LIGHT/MEDIUM/HEAVY profiles.
     """
     import time as _time
+    import asyncio
     _log_event("request", tool_name, params=params)
     t0 = _time.time()
     try:
-        result = fn()
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, fn),
+            timeout=timeout_seconds
+        )
         result = _localize_timestamps(result)
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
         return result
+    except asyncio.TimeoutError:
+        elapsed = _time.time() - t0
+        _log_event("error", tool_name,
+                   data={"error": f"Operation timed out after {timeout_seconds}s"},
+                   duration=elapsed)
+        return {"error": f"{tool_name} timed out after {timeout_seconds}s. "
+                f"Override via FW_TIMEOUT_LIGHT/MEDIUM/HEAVY env vars if the "
+                f"dataset legitimately needs more time."}
     except Exception as e:
         elapsed = _time.time() - t0
         _log_event("error", tool_name, data={"error": str(e)}, duration=elapsed)
@@ -277,6 +349,8 @@ def _traced(tool_name: str, params: dict, fn):
 async def open_case(path: str, case_name: str = "") -> dict:
     """Open an AXIOM case (.mfdb) file or KAPE output directory."""
     def fn():
+        if not is_path_allowed(path):
+            return {"error": build_not_allowed_message(path)}
         _connectors.pop("axiom", None)
         if os.path.isdir(path):
             c = KapeCsvConnector()
@@ -289,13 +363,13 @@ async def open_case(path: str, case_name: str = "") -> dict:
             meta["case_name"] = case_name
         _connectors["axiom"] = c  # same key for backward compatibility
         return _mask({"status": "success", **meta})
-    return _traced("open_case", {"path": path, "case_name": case_name}, fn)
+    return await _traced("open_case", {"path": path, "case_name": case_name}, fn)
 
 
 @mcp.tool()
 async def get_summary() -> dict:
     """Get case overview."""
-    return _traced("get_summary", {}, lambda: _mask(_get_axiom().get_metadata()))
+    return await _traced("get_summary", {}, lambda: _mask(_get_axiom().get_metadata()), timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -304,7 +378,7 @@ async def get_artifact_types() -> dict:
     def fn():
         types = _get_axiom().get_artifact_type_counts()
         return _mask({"artifact_types": types, "total_types": len(types)})
-    return _traced("get_artifact_types", {}, fn)
+    return await _traced("get_artifact_types", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -389,13 +463,13 @@ async def search_artifacts(
             resp["per_keyword_totals"] = per_keyword_totals
             resp["union_returned"] = union_returned
         return _mask(resp)
-    return _traced("search_artifacts", params, fn)
+    return await _traced("search_artifacts", params, fn)
 
 
 @mcp.tool()
 async def get_hit_detail(hit_id: int) -> dict:
     """Get full detail for a specific artifact hit."""
-    return _traced("get_hit_detail", {"hit_id": hit_id}, lambda: _mask(_get_axiom().get_hit_detail(hit_id)))
+    return await _traced("get_hit_detail", {"hit_id": hit_id}, lambda: _mask(_get_axiom().get_hit_detail(hit_id)), timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -431,7 +505,7 @@ async def build_timeline(
             return _mask(_timeline_with_keywords(axiom, start_date, end_date, kw_list, cap, offset))
         else:
             return _mask(axiom.get_timeline(start_date, end_date, type_list, cap, offset))
-    return _traced("build_timeline", params, fn)
+    return await _traced("build_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 def _timeline_with_keywords(axiom, start_date, end_date, kw_list, limit, offset=0):
@@ -504,7 +578,7 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
     def fn():
         from core.analysis.ioc_extractor import extract_iocs as _extract
         return _mask(_extract(_get_axiom(), ioc_types, exclude_private_ips, exclude_known_good))
-    return _traced("extract_iocs", params, fn)
+    return await _traced("extract_iocs", params, fn)
 
 
 @mcp.tool()
@@ -513,7 +587,7 @@ async def find_suspicious(rules: str = "") -> dict:
     def fn():
         from core.analysis.suspicious import find_suspicious as _find
         return _mask(_find(_get_axiom().artifact_queries, rules=rules))
-    return _traced("find_suspicious", {"rules": rules}, fn)
+    return await _traced("find_suspicious", {"rules": rules}, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 @mcp.tool()
@@ -562,7 +636,7 @@ async def correlate(
             return _mask(_corr(_get_axiom(), pivot_field, pivot_value, window_minutes, limit, offset))
         else:
             return {"error": "Provide either keywords for multi-keyword correlation, or pivot_field + pivot_value for classic mode."}
-    return _traced("correlate", params, fn)
+    return await _traced("correlate", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 def _correlate_keywords(axiom, kw_list, start_date, end_date, window_minutes, limit, offset=0):
@@ -691,19 +765,19 @@ async def map_to_mitre(custom_findings: str = "") -> dict:
                 return {"error": f"Invalid JSON in custom_findings: {e}"}
 
         return _mask(get_attack_narrative(findings))
-    return _traced("map_to_mitre", {"custom_findings": custom_findings[:200] + "..." if len(custom_findings) > 200 else custom_findings}, fn)
+    return await _traced("map_to_mitre", {"custom_findings": custom_findings[:200] + "..." if len(custom_findings) > 200 else custom_findings}, fn)
 
 
 @mcp.tool()
 async def get_tagged_hits(tag_name: str = "") -> dict:
     """Get investigator-tagged hits."""
-    return _traced("get_tagged_hits", {"tag_name": tag_name}, lambda: _mask(_get_axiom().get_tagged_hits(tag_name)))
+    return await _traced("get_tagged_hits", {"tag_name": tag_name}, lambda: _mask(_get_axiom().get_tagged_hits(tag_name)), timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
 async def search_by_hash(hash_value: str, limit: int = 50, offset: int = 0) -> dict:
     """Find artifacts by hash."""
-    return _traced("search_by_hash", {"hash": hash_value, "limit": limit, "offset": offset},
+    return await _traced("search_by_hash", {"hash": hash_value, "limit": limit, "offset": offset},
                    lambda: _mask(_get_axiom().search_by_hash(hash_value, limit, offset)))
 
 
@@ -713,7 +787,7 @@ async def generate_report(output_path: str = "") -> dict:
     def fn():
         from core.analysis.report_generator import generate_report as _gen
         return _gen({"axiom": _get_axiom()}, _masker, output_path)
-    return _traced("generate_report", {"output_path": output_path}, fn)
+    return await _traced("generate_report", {"output_path": output_path}, fn)
 
 
 # ── E01 Image Tools ──
@@ -746,6 +820,8 @@ def _get_vol() -> VolatilityConnector:
 async def mount_image(e01_path: str) -> dict:
     """Mount E01/VMDK/raw disk image for file extraction."""
     def fn():
+        if not is_path_allowed(e01_path):
+            return {"error": build_not_allowed_message(e01_path)}
         old = _connectors.pop("e01", None)
         if old:
             old.disconnect()
@@ -753,7 +829,7 @@ async def mount_image(e01_path: str) -> dict:
         meta = c.connect(e01_path)
         _connectors["e01"] = c
         return _mask({"status": "mounted", **meta})
-    return _traced("mount_image", {"e01_path": e01_path}, fn)
+    return await _traced("mount_image", {"e01_path": e01_path}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -767,7 +843,7 @@ async def list_files(path: str = "/", pattern: str = "") -> dict:
         else:
             files = e01.list_directory(path)
         return _mask({"path": path, "pattern": pattern, "count": len(files), "files": files})
-    return _traced("list_files", params, fn)
+    return await _traced("list_files", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -787,7 +863,7 @@ async def extract_file(internal_path: str, output_dir: str = "") -> dict:
             counter += 1
         result = e01.extract_file(internal_path, output_path)
         return _mask(result)
-    return _traced("extract_file", {"internal_path": internal_path}, fn)
+    return await _traced("extract_file", {"internal_path": internal_path}, fn)
 
 
 @mcp.tool()
@@ -848,7 +924,7 @@ async def get_file_timestamps(internal_path: str) -> dict:
             notes.append("No timestamp anomalies detected")
 
         return _mask(result)
-    return _traced("get_file_timestamps", params, fn)
+    return await _traced("get_file_timestamps", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 # ── Ghidra Binary Analysis Tools ──
@@ -864,7 +940,7 @@ async def analyze_binary(file_path: str, ghidra_install_dir: str = "") -> dict:
         meta = g.connect(file_path, ghidra_install_dir=ghidra_install_dir or config.ghidra_install_dir)
         _connectors["ghidra"] = g
         return _mask(meta)
-    return _traced("analyze_binary", {"file_path": file_path}, fn)
+    return await _traced("analyze_binary", {"file_path": file_path}, fn)
 
 
 @mcp.tool()
@@ -873,7 +949,7 @@ async def ghidra_decompile(function_name: str = "", address: str = "") -> dict:
     params = {"function_name": function_name, "address": address}
     def fn():
         return _mask(_get_ghidra().decompile_function(address=address, name=function_name))
-    return _traced("ghidra_decompile", params, fn)
+    return await _traced("ghidra_decompile", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -882,7 +958,7 @@ async def ghidra_imports() -> dict:
     def fn():
         imports = _get_ghidra().list_imports()
         return _mask({"total": len(imports), "imports": imports})
-    return _traced("ghidra_imports", {}, fn)
+    return await _traced("ghidra_imports", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -890,7 +966,7 @@ async def ghidra_suspicious_apis() -> dict:
     """Find suspicious Win32 API imports with MITRE ATT&CK mapping."""
     def fn():
         return _mask(_get_ghidra().find_suspicious_apis())
-    return _traced("ghidra_suspicious_apis", {}, fn)
+    return await _traced("ghidra_suspicious_apis", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -904,7 +980,7 @@ async def ghidra_strings(keyword: str = "", min_length: int = 4, limit: int = 20
             strings = [s for s in strings if kw in s.get("value", "").lower()]
         page = strings[offset:offset + limit]
         return _mask({"total": len(strings), "returned": len(page), "offset": offset, "strings": page})
-    return _traced("ghidra_strings", params, fn)
+    return await _traced("ghidra_strings", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -915,7 +991,7 @@ async def ghidra_functions(filter_pattern: str = "", limit: int = 100, offset: i
         funcs = _get_ghidra().list_functions(filter_pattern=filter_pattern, limit=limit + offset)
         page = funcs[offset:offset + limit]
         return _mask({"total": len(funcs), "returned": len(page), "offset": offset, "functions": page})
-    return _traced("ghidra_functions", params, fn)
+    return await _traced("ghidra_functions", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -924,7 +1000,7 @@ async def ghidra_exports() -> dict:
     def fn():
         exports = _get_ghidra().list_exports()
         return _mask({"total": len(exports), "exports": exports})
-    return _traced("ghidra_exports", {}, fn)
+    return await _traced("ghidra_exports", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 # ── Volatility Memory Analysis Tools ──
@@ -940,7 +1016,7 @@ async def vol_load_memory(memory_path: str) -> dict:
         meta = v.connect(memory_path)
         _connectors["volatility"] = v
         return _mask({"status": "loaded", **meta})
-    return _traced("vol_load_memory", {"memory_path": memory_path}, fn)
+    return await _traced("vol_load_memory", {"memory_path": memory_path}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -949,7 +1025,7 @@ async def vol_pslist() -> dict:
     def fn():
         results = _get_vol().pslist()
         return _mask({"total": len(results), "processes": results})
-    return _traced("vol_pslist", {}, fn)
+    return await _traced("vol_pslist", {}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -958,7 +1034,7 @@ async def vol_pstree() -> dict:
     def fn():
         results = _get_vol().pstree()
         return _mask({"total": len(results), "processes": results})
-    return _traced("vol_pstree", {}, fn)
+    return await _traced("vol_pstree", {}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -967,7 +1043,7 @@ async def vol_netscan() -> dict:
     def fn():
         results = _get_vol().netscan()
         return _mask({"total": len(results), "connections": results})
-    return _traced("vol_netscan", {}, fn)
+    return await _traced("vol_netscan", {}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -976,7 +1052,7 @@ async def vol_cmdline() -> dict:
     def fn():
         results = _get_vol().cmdline()
         return _mask({"total": len(results), "cmdlines": results})
-    return _traced("vol_cmdline", {}, fn)
+    return await _traced("vol_cmdline", {}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -985,7 +1061,7 @@ async def vol_malfind() -> dict:
     def fn():
         results = _get_vol().malfind()
         return _mask({"total": len(results), "findings": results})
-    return _traced("vol_malfind", {}, fn)
+    return await _traced("vol_malfind", {}, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 # ── SRUM Integrated View ──
@@ -1074,7 +1150,7 @@ async def srum_by_process(
             "processes": names,
             "results": results_by_process,
         })
-    return _traced("srum_by_process", params, fn)
+    return await _traced("srum_by_process", params, fn)
 
 
 # ── WER Report Parsing ──
@@ -1186,7 +1262,7 @@ async def search_wer_reports(process_filter: str = "", process_filters: str = ""
             "reports": reports,
             "errors": parse_errors[:10],  # first 10 errors for debugging
         })
-    return _traced("search_wer_reports", params, fn)
+    return await _traced("search_wer_reports", params, fn)
 
 
 def _parse_wer(data: bytes, source_path: str) -> dict | None:
@@ -1253,7 +1329,7 @@ async def import_logs(log_path: str, log_type: str = "auto") -> dict:
     def fn():
         result = _log_connector.load(log_path, log_type)
         return _mask(result)
-    return _traced("import_logs", {"log_path": log_path, "log_type": log_type}, fn)
+    return await _traced("import_logs", {"log_path": log_path, "log_type": log_type}, fn)
 
 
 @mcp.tool()
@@ -1279,7 +1355,7 @@ async def search_logs(
             status_code=status_code, limit=limit, offset=offset,
         )
         return _mask(result)
-    return _traced("search_logs", params, fn)
+    return await _traced("search_logs", params, fn)
 
 
 @mcp.tool()
@@ -1287,7 +1363,7 @@ async def log_stats() -> dict:
     """Get statistics for imported logs (unique IPs, top paths, date range)."""
     def fn():
         return _mask(_log_connector.get_stats())
-    return _traced("log_stats", {}, fn)
+    return await _traced("log_stats", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 # ── Large Result Query Tool ──
@@ -1389,7 +1465,7 @@ async def query_result(
             "items": page,
         })
 
-    return _traced("query_result", {"file_path": file_path, "expression": expression, "keys": keys, "limit": limit, "offset": offset}, fn)
+    return await _traced("query_result", {"file_path": file_path, "expression": expression, "keys": keys, "limit": limit, "offset": offset}, fn)
 
 
 def _find_items(data: Any) -> list | None:
@@ -1620,7 +1696,7 @@ async def auto_triage(
             "steps": steps,
         })
 
-    return _traced("auto_triage", params, fn)
+    return await _traced("auto_triage", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 def main():
