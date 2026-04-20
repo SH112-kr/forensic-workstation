@@ -208,3 +208,44 @@ def test_duplicate_hits_dont_duplicate_collapsed_from():
 
 def test_entity_types_shipped():
     assert set(ENTITY_TYPES) == {"user", "host", "file", "hash", "service", "process"}
+
+
+def test_edge_type_filter_separates_prefetch_edges():
+    """Codex Round-7b: requesting only 'has_prefetch_hash' must not return
+    'executed' edges even though both come from the same Prefetch scan."""
+    aq = _FakeAQ(prefetch=[{
+        "hit_id": 10, "Application Name": "powershell.exe",
+        "Application Path": "C:\\Windows\\System32\\powershell.exe",
+        "Computer": "PC1", "Prefetch Hash": "ABCDEF01",
+        "Last Run Date/Time - UTC (yyyy-mm-dd)": "2026-04-10T10:00:00",
+    }])
+    only_hash = build_entity_graph(
+        axiom_cases=[("a", aq)], edge_types=["has_prefetch_hash"],
+    )
+    assert only_hash["ok"]
+    types = {e["type"] for e in only_hash["edges"]}
+    assert types == {"has_prefetch_hash"}, f"Unexpected edge types: {types}"
+
+    only_exec = build_entity_graph(
+        axiom_cases=[("a", aq)], edge_types=["executed"],
+    )
+    types = {e["type"] for e in only_exec["edges"]}
+    assert types == {"executed"}, f"Unexpected edge types: {types}"
+
+
+def test_unknown_match_key_rejected():
+    r = build_entity_graph(axiom_cases=[], match_key="aggressive")
+    assert r["ok"] is False
+    assert "match_key" in r["error"]
+
+
+def test_unknown_edge_type_rejected():
+    r = build_entity_graph(axiom_cases=[], edge_types=["not_a_real_edge"])
+    assert r["ok"] is False
+    assert "edge_types" in r["error"] or "Unknown" in r["error"]
+
+
+def test_unknown_entity_type_rejected():
+    r = build_entity_graph(axiom_cases=[], entity_types=["not_a_real_entity"])
+    assert r["ok"] is False
+    assert "entity_types" in r["error"] or "Unknown" in r["error"]

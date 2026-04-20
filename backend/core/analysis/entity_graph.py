@@ -451,8 +451,35 @@ def build_entity_graph(
                 continue
             axiom_cases.append((name.replace("axiom:", ""), c))
 
-    wanted_edges = set(edge_types) if edge_types else set(EDGE_TYPES)
-    wanted_entities = set(entity_types) if entity_types else set(ENTITY_TYPES)
+    # Input validation — Codex Round-7b caught that unknown selector values
+    # silently passed through as if valid. Reject unknown values with a clear
+    # error so misuse surfaces immediately instead of producing wrong data.
+    valid_match = {"raw", "strict", "loose"}
+    if match_key not in valid_match:
+        return {
+            "ok": False,
+            "error": f"match_key must be one of {sorted(valid_match)}, got {match_key!r}",
+        }
+
+    req_entities = set(entity_types) if entity_types else set(ENTITY_TYPES)
+    bad_entities = req_entities - set(ENTITY_TYPES)
+    if bad_entities:
+        return {
+            "ok": False,
+            "error": f"Unknown entity_types: {sorted(bad_entities)}. "
+                     f"Allowed: {sorted(ENTITY_TYPES)}",
+        }
+    req_edges = set(edge_types) if edge_types else set(EDGE_TYPES)
+    bad_edges = req_edges - set(EDGE_TYPES)
+    if bad_edges:
+        return {
+            "ok": False,
+            "error": f"Unknown edge_types: {sorted(bad_edges)}. "
+                     f"Allowed: {sorted(EDGE_TYPES)}",
+        }
+
+    wanted_edges = req_edges
+    wanted_entities = req_entities
 
     b = _GraphBuilder(match_key=match_key, limit_per_node_type=limit_per_node_type)
 
@@ -473,11 +500,16 @@ def build_entity_graph(
             except Exception as e:
                 b.warnings.append(f"{case_id}: {edge_name} inference failed: {e}")
 
-    # Apply entity_types filter to the final output.
+    # Apply entity_types AND edge_types filters to the final output.
+    # Codex Round-7b caught that _edge_executed emits both 'executed' and
+    # 'has_prefetch_hash' in a single scan — without filtering by edge type
+    # here, a consumer asking for only one would still receive the other.
     filtered_nodes = {nid: n for nid, n in b.nodes.items() if n["type"] in wanted_entities}
     filtered_edges = [
         e for e in b.edges.values()
-        if e["source"] in filtered_nodes and e["target"] in filtered_nodes
+        if e["type"] in wanted_edges
+        and e["source"] in filtered_nodes
+        and e["target"] in filtered_nodes
     ]
 
     graph_is_complete = not b.truncated_types
