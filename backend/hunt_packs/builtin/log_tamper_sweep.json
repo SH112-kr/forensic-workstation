@@ -1,0 +1,10 @@
+{
+  "name": "log_tamper_sweep",
+  "description": "Detect anti-forensic log tampering — Security/System log clears, audit-policy changes, logging-tamper registry edits, and service stops against EventLog / Defender / Sysmon.",
+  "params_schema": {},
+  "steps": [
+    {"tool": "detect_anti_forensics", "args": {}},
+    {"tool": "hunt_evtx_rules", "args": {"rule_ids": "fw-evtx-006", "severity_min": "low"}},
+    {"tool": "coverage_explainer", "args": {"artifact_types": "Windows Event Logs"}}
+  ]
+}

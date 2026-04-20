@@ -1,0 +1,9 @@
+{
+  "name": "persistence_sweep",
+  "description": "Enumerate common persistence vectors — service installs, scheduled tasks, suspicious MSI installs, and new user / group modifications.",
+  "params_schema": {},
+  "steps": [
+    {"tool": "find_suspicious", "args": {"rules": "service_installation,scheduled_task_creation,suspicious_msi_install,suspicious_service_paths"}},
+    {"tool": "hunt_evtx_rules", "args": {"rule_ids": "fw-evtx-002,fw-evtx-003,fw-evtx-009", "severity_min": "low"}}
+  ]
+}

@@ -23,7 +23,8 @@ import json
 import re
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+import inspect
+from typing import Any, Callable
 
 # Setup paths
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -847,6 +848,95 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
         from core.analysis.ioc_extractor import extract_iocs as _extract
         return _mask(_extract(_get_axiom(), ioc_types, exclude_private_ips, exclude_known_good))
     return await _traced("extract_iocs", params, fn)
+
+
+# Registry of callables a hunt pack is allowed to invoke. Kept explicit so
+# the authoring surface is auditable — pack steps cannot reach beyond the
+# tools named here.
+_HUNT_PACK_DISPATCH: dict[str, Callable[..., Any]] = {}
+
+
+def _register_hunt_tool(name: str, fn: Callable[..., Any]) -> None:
+    _HUNT_PACK_DISPATCH[name] = fn
+
+
+def _coerce_pack_args(name: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Ensure each value matches the signature of the dispatched tool.
+
+    Hunt pack JSON always sends strings for placeholders; some tools declare
+    ``int`` / ``bool`` params. This mapper shallow-coerces obvious cases so
+    packs remain plain data without per-tool special-casing in the engine.
+    """
+    fn = _HUNT_PACK_DISPATCH.get(name)
+    if not fn:
+        return raw
+    try:
+        sig = inspect.signature(fn)
+    except Exception:
+        return raw
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        param = sig.parameters.get(key)
+        if param is None:
+            out[key] = value
+            continue
+        anno = param.annotation
+        if anno is int and isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            out[key] = int(value)
+        elif anno is bool and isinstance(value, str):
+            out[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            out[key] = value
+    return out
+
+
+@mcp.tool()
+async def list_hunt_packs() -> dict:
+    """List every available hunt pack (built-in + local)."""
+    def fn():
+        from core.analysis.hunt_packs import list_packs
+        return _mask(list_packs())
+    return await _traced("list_hunt_packs", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def run_hunt_pack(name: str, params_json: str = "{}") -> dict:
+    """Execute a named hunt pack. Calls existing MCP tools only — no code.
+
+    Packs are JSON recipes that list tool calls in order. The engine
+    substitutes ``{param_name}`` placeholders into each step's args before
+    dispatching to the named tool. Every step's resolved args and output
+    summary are returned so the hunt is fully auditable.
+
+    Args:
+        name: Pack name (see list_hunt_packs).
+        params_json: JSON string of parameter values for this run.
+    """
+    import json as _json
+    try:
+        params = _json.loads(params_json) if params_json else {}
+    except Exception:
+        return {"ok": False, "error": "params_json must be valid JSON"}
+
+    async def dispatch(tool_name: str, args: dict[str, Any]):
+        fn = _HUNT_PACK_DISPATCH.get(tool_name)
+        if fn is None:
+            raise RuntimeError(
+                f"Tool '{tool_name}' is not registered for hunt packs. "
+                f"Allowed: {sorted(_HUNT_PACK_DISPATCH.keys())}"
+            )
+        coerced = _coerce_pack_args(tool_name, args)
+        result = fn(**coerced)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    from core.analysis.hunt_packs import run_pack
+    try:
+        result = await run_pack(name, params=params, tool_dispatch=dispatch)
+        return _mask(result)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @mcp.tool()
@@ -2254,6 +2344,31 @@ async def auto_triage(
 
 def main():
     mcp.run(transport="stdio")
+
+
+# ── Hunt-pack dispatch registry ──
+# Explicit allowlist of tools a pack author may call. Kept at module-bottom
+# so the @mcp.tool functions above are fully bound before registration.
+for _tool_name in (
+    "find_suspicious",
+    "detect_anti_forensics",
+    "hunt_evtx_rules",
+    "coverage_explainer",
+    "search_artifacts",
+    "build_timeline",
+    "extract_iocs",
+    "correlate",
+    "map_to_mitre",
+    "compare_cases",
+    "pivot_across_cases",
+    "slice_timeline",
+    "assess_evidence_strength",
+    "get_summary",
+    "get_artifact_types",
+):
+    _fn = globals().get(_tool_name)
+    if _fn is not None:
+        _register_hunt_tool(_tool_name, _fn)
 
 
 if __name__ == "__main__":

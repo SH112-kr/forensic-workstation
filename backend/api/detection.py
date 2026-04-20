@@ -58,6 +58,41 @@ async def suppressions_remove(rule_id: str):
     return remove_suppression(rule_id=rule_id)
 
 
+@router.get("/hunt-packs")
+async def hunt_packs_list():
+    from core.analysis.hunt_packs import list_packs
+    return list_packs()
+
+
+class HuntPackRunRequest(BaseModel):
+    name: str
+    params: dict = {}
+
+
+@router.post("/hunt-packs/run")
+async def hunt_packs_run(req: HuntPackRunRequest):
+    """Execute a hunt pack by name.
+
+    Dispatches through mcp_bridge's registered hunt-pack tools so the same
+    allowlist applies whether the caller is Claude Code (MCP) or the web UI.
+    """
+    import inspect as _ins
+    from core.analysis.hunt_packs import run_pack
+    import mcp_bridge as _bridge
+
+    async def dispatch(tool_name: str, args: dict):
+        fn = _bridge._HUNT_PACK_DISPATCH.get(tool_name)
+        if fn is None:
+            raise HTTPException(status_code=400, detail=f"Tool '{tool_name}' not permitted in hunt packs")
+        coerced = _bridge._coerce_pack_args(tool_name, args)
+        result = fn(**coerced)
+        if _ins.isawaitable(result):
+            result = await result
+        return result
+
+    return await run_pack(req.name, params=req.params, tool_dispatch=dispatch)
+
+
 @router.get("/anti-forensics")
 async def get_anti_forensics():
     """Run the anti-forensics rule bundle against the active case."""

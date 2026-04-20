@@ -75,3 +75,6 @@ backend/state/snapshots/
 
 # Rule suppressions (analyst-private, per-environment)
 backend/state/suppressions.json
+
+# Hunt packs — analyst-authored local packs only
+backend/hunt_packs/local/
