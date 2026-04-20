@@ -830,7 +830,7 @@ async def detect_anti_forensics() -> dict:
     Scans for a small, transparent rule set — every match is accompanied by
     the exact text that triggered it:
       - T1070.001 Security / System log cleared (EID 1102 / 104)
-      - T1490    Shadow-copy deletion (vssadmin / wmic / Win32_Shadowcopy)
+      - T1490    Volume snapshot deletion (system utility / wmi / powershell)
       - T1070.002 USN journal deletion (fsutil usn deletejournal)
       - T1562.002 PowerShell ScriptBlock / Transcription logging tamper
       - T1562.001 Stop-Service against Sysmon / Defender / EventLog

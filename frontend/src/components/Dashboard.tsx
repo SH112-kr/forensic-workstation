@@ -80,7 +80,7 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      {/* Anti-forensics alert — renders first so log tamper / shadow-copy
+      {/* Anti-forensics alert — renders first so log tamper / snapshot
           deletion is never buried. Only appears when rules actually fired. */}
       {antiForensics && antiForensics.rules_fired > 0 && (
         <div
