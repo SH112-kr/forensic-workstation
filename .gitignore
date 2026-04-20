@@ -72,3 +72,6 @@ backend/.pytest_cache/
 
 # Case snapshots (analyst-private state)
 backend/state/snapshots/
+
+# Rule suppressions (analyst-private, per-environment)
+backend/state/suppressions.json

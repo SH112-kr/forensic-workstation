@@ -850,6 +850,52 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
 
 
 @mcp.tool()
+async def list_suppressions() -> dict:
+    """List all rule suppression entries (active + expired).
+
+    Suppressions mute specific find_suspicious rules in environments where the
+    rule fires legitimately. Matching is exact rule_id only — no regex, no
+    conditional logic. Each entry carries reason / analyst / expires_at so
+    the decision is auditable.
+    """
+    def fn():
+        from core.analysis.suppressions import list_suppressions as _list
+        return _mask(_list())
+    return await _traced("list_suppressions", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def add_suppression(rule_id: str, reason: str, analyst: str = "", expires_at: str = "") -> dict:
+    """Suppress a specific find_suspicious rule for this environment.
+
+    Args:
+        rule_id: Exact rule_name as emitted by find_suspicious (e.g.
+            "rdp_lateral_movement"). No globs, no regex.
+        reason: Required. Why this rule is muted here (audit trail).
+        analyst: Optional name of the analyst adding the suppression.
+        expires_at: Optional ISO 8601 timestamp; after this, the entry is
+            treated as inactive and surfaced in suppression_notes.
+    """
+    def fn():
+        from core.analysis.suppressions import add_suppression as _add
+        return _mask(_add(rule_id=rule_id, reason=reason, analyst=analyst, expires_at=expires_at))
+    return await _traced(
+        "add_suppression",
+        {"rule_id": rule_id, "analyst": analyst, "expires_at": expires_at},
+        fn, timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
+async def remove_suppression(rule_id: str) -> dict:
+    """Delete a suppression entry by rule_id."""
+    def fn():
+        from core.analysis.suppressions import remove_suppression as _rm
+        return _mask(_rm(rule_id=rule_id))
+    return await _traced("remove_suppression", {"rule_id": rule_id}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
 async def save_case_snapshot(
     name: str,
     tagged_hit_ids: str = "",
@@ -1012,6 +1058,7 @@ async def find_suspicious(
     rules: str = "",
     score_strength: bool = True,
     include_provenance: bool = True,
+    apply_suppressions: bool = True,
 ) -> dict:
     """Run structured threat detection rules.
 
@@ -1020,9 +1067,11 @@ async def find_suspicious(
         score_strength: When True (default) annotate each detail with the
             CLAUDE.md strength tier (confirmed/strong/moderate/weak).
         include_provenance: When True (default) attach supporting_artifacts
-            and absent_corroboration to every finding so the analyst sees
-            which families back the finding and which corroborating
-            families are missing from the loaded case(s).
+            and absent_corroboration to every finding.
+        apply_suppressions: When True (default) move findings whose rule_id
+            matches an active suppression entry into a separate ``suppressed``
+            list. Suppressed items keep all their fields plus the matching
+            suppression entry so audit is preserved.
     """
     def fn():
         from state import app_state
@@ -1034,10 +1083,14 @@ async def find_suspicious(
         if include_provenance:
             from core.analysis.provenance import attach_provenance
             attach_provenance(payload, app_state._connectors)
+        if apply_suppressions:
+            from core.analysis.suppressions import apply_suppressions as _suppress
+            _suppress(payload)
         return _mask(payload)
     return await _traced(
         "find_suspicious",
-        {"rules": rules, "score_strength": score_strength, "include_provenance": include_provenance},
+        {"rules": rules, "score_strength": score_strength,
+         "include_provenance": include_provenance, "apply_suppressions": apply_suppressions},
         fn, timeout_seconds=TIMEOUT_HEAVY,
     )
 

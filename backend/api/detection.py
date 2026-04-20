@@ -18,17 +18,44 @@ async def run_detection(req: DetectionRequest):
     from core.analysis.suspicious import find_suspicious
     from core.analysis.evidence_strength import score_findings
     from core.analysis.provenance import attach_provenance
+    from core.analysis.suppressions import apply_suppressions
     try:
         connector = app_state.get_axiom()
         payload = find_suspicious(connector.artifact_queries, rules=req.rules)
-        # Strength tiers (confirmed/strong/moderate/weak) + provenance
-        # (supporting_artifacts + absent_corroboration) so the UI can render
-        # both defensibility and gaps without a second round-trip.
         score_findings(payload)
         attach_provenance(payload, app_state._connectors)
+        apply_suppressions(payload)
         return payload
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class SuppressionAddRequest(BaseModel):
+    rule_id: str
+    reason: str
+    analyst: str = ""
+    expires_at: str = ""
+
+
+@router.get("/suppressions")
+async def suppressions_list():
+    from core.analysis.suppressions import list_suppressions
+    return list_suppressions()
+
+
+@router.post("/suppressions")
+async def suppressions_add(req: SuppressionAddRequest):
+    from core.analysis.suppressions import add_suppression
+    return add_suppression(
+        rule_id=req.rule_id, reason=req.reason,
+        analyst=req.analyst, expires_at=req.expires_at,
+    )
+
+
+@router.delete("/suppressions/{rule_id}")
+async def suppressions_remove(rule_id: str):
+    from core.analysis.suppressions import remove_suppression
+    return remove_suppression(rule_id=rule_id)
 
 
 @router.get("/anti-forensics")
