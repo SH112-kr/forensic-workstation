@@ -906,6 +906,73 @@ def _coerce_pack_args(name: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def build_entity_graph(
+    entity_types: str = "",
+    edge_types: str = "",
+    match_key: str = "raw",
+    limit_per_node_type: int = 200,
+    all_cases: bool = False,
+) -> dict:
+    """Build a typed graph (users / hosts / files / hashes / services / processes)
+    from existing artifacts with per-node and per-edge audit trails.
+
+    Deterministic and pure — no LLM interpretation. Every node carries
+    ``collapsed_from`` listing the raw values that merged plus the rule
+    that merged them; every edge carries ``derived_from`` listing the
+    artifact rows that produced it. The envelope publishes the exact
+    derivation criteria for each edge type so construction logic is
+    auditable without reading source.
+
+    Args:
+        entity_types: Comma-separated subset of
+            user / host / file / hash / service / process.
+            Empty = all.
+        edge_types: Comma-separated subset of
+            logon / executed / has_hash / created_svc / parent_of.
+            Empty = all.
+        match_key: Node identity mode.
+            - ``raw`` (default): Tier-1 safe_* normalization only. Never
+              collapses DOMAIN / realm / FQDN / full paths.
+            - ``strict``: Alias for ``raw`` — kept for API symmetry.
+            - ``loose``: Invokes Tier-2 (user_bare, host_first_label,
+              path_basename). CAN collapse distinct identities; each
+              affected node carries lossy_merge_warning and the envelope
+              carries a top-level warning list.
+        limit_per_node_type: Per-type cap (default 200). Prevents graph
+            explosion on huge cases; truncation is logged in the response.
+        all_cases: When True (default False) iterate every loaded axiom:*
+            case and merge nodes by (type, normalized_value).
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.entity_graph import build_entity_graph as _build
+        ets = [t.strip() for t in entity_types.split(",") if t.strip()] or None
+        edts = [t.strip() for t in edge_types.split(",") if t.strip()] or None
+        if all_cases:
+            return _mask(_build(
+                app_state._connectors,
+                entity_types=ets, edge_types=edts,
+                match_key=match_key, limit_per_node_type=limit_per_node_type,
+            ))
+        # Single active case: wrap it as a one-entry case list so the graph
+        # carries a proper case_id ('active') on every derived_from.
+        axiom = _get_axiom()
+        return _mask(_build(
+            connectors=None,
+            axiom_cases=[("active", axiom)],
+            entity_types=ets, edge_types=edts,
+            match_key=match_key, limit_per_node_type=limit_per_node_type,
+        ))
+    return await _traced(
+        "build_entity_graph",
+        {"entity_types": entity_types, "edge_types": edge_types,
+         "match_key": match_key, "limit_per_node_type": limit_per_node_type,
+         "all_cases": all_cases},
+        fn, timeout_seconds=TIMEOUT_MEDIUM,
+    )
+
+
+@mcp.tool()
 async def baseline_diff(
     reference_case_id: str = "",
     categories: str = "",
