@@ -824,6 +824,28 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
 
 
 @mcp.tool()
+async def detect_anti_forensics() -> dict:
+    """Detect publicly-documented anti-forensic activity in the active case.
+
+    Scans for a small, transparent rule set — every match is accompanied by
+    the exact text that triggered it:
+      - T1070.001 Security / System log cleared (EID 1102 / 104)
+      - T1490    Shadow-copy deletion (vssadmin / wmic / Win32_Shadowcopy)
+      - T1070.002 USN journal deletion (fsutil usn deletejournal)
+      - T1562.002 PowerShell ScriptBlock / Transcription logging tamper
+      - T1562.001 Stop-Service against Sysmon / Defender / EventLog
+      - T1070    Execution of sdelete / cipher / bcdedit cleanup utilities
+
+    Fully offline. Timestomp detection ($SI/$FN divergence) is explicitly out
+    of scope — use ``get_file_timestamps`` on suspect files instead.
+    """
+    def fn():
+        from core.analysis.anti_forensics import detect_anti_forensics as _run
+        return _mask(_run(_get_axiom().artifact_queries))
+    return await _traced("detect_anti_forensics", {}, fn, timeout_seconds=TIMEOUT_HEAVY)
+
+
+@mcp.tool()
 async def assess_evidence_strength(findings_json: str = "") -> dict:
     """Tag suspicious findings with CLAUDE.md strength tiers.
 
