@@ -22,6 +22,7 @@ const SECTIONS: NavSection[] = [
       { id: 'timeline', label: 'Timeline', icon: '⏱' },
       { id: 'detection', label: 'Detection', icon: '🛡' },
       { id: 'ioc', label: 'IOC', icon: '🎯' },
+      { id: 'coverage', label: 'Coverage', icon: '🧾' },
     ],
   },
   {

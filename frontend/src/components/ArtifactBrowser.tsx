@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, type ColDef } from 'ag-grid-community';
 import { post, get } from '../hooks/useApi';
+import { useStore } from '../hooks/useStore';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
 const PAGE_SIZE = 100;
 
 export default function ArtifactBrowser() {
+  const { setActiveView } = useStore();
   const gridRef = useRef<AgGridReact>(null);
   const [detail, setDetail] = useState<any>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -170,6 +172,28 @@ export default function ArtifactBrowser() {
               }} />
               Loading artifacts...
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+          {rows.length === 0 && !loading && (
+            <div
+              style={{
+                padding: '14px 16px', background: 'var(--surface)',
+                borderBottom: '1px solid var(--border-light)',
+                fontSize: 12, color: 'var(--text-dim)',
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}
+            >
+              <span>No artifacts match the current filter.</span>
+              <button
+                onClick={() => setActiveView('coverage')}
+                style={{
+                  padding: '4px 10px', borderRadius: 4, background: 'transparent',
+                  border: '1px solid var(--border)', color: 'var(--accent)',
+                  cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                }}
+              >
+                Why 0 results? → Check coverage
+              </button>
             </div>
           )}
           <div style={{ flex: 1 }}>

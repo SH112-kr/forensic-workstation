@@ -18,6 +18,7 @@ import RegistryAnalysis from './RegistryAnalysis';
 import CopilotPanel from './CopilotPanel';
 import Settings from './Settings';
 import KapeBuilder from './KapeBuilder';
+import CoveragePanel from './CoveragePanel';
 
 const VIEWS: Record<string, React.FC> = {
   dashboard: Dashboard,
@@ -25,6 +26,7 @@ const VIEWS: Record<string, React.FC> = {
   detection: DetectionPanel,
   timeline: TimelineView,
   ioc: IOCTable,
+  coverage: CoveragePanel,
   memory: MemoryAnalysis,
   binary: BinaryAnalysis,
   logs: LogAnalysis,

@@ -3,7 +3,7 @@ import { post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
 export default function TimelineView() {
-  const { caseInfo } = useStore();
+  const { caseInfo, setActiveView } = useStore();
   const [entries, setEntries] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -69,7 +69,21 @@ export default function TimelineView() {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 && !loading && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
-            {entries.length === 0 ? 'No timeline events found. Adjust the date range and try again.' : 'No events match the filter.'}
+            <div style={{ marginBottom: 12 }}>
+              {entries.length === 0 ? 'No timeline events found. Adjust the date range and try again.' : 'No events match the filter.'}
+            </div>
+            {entries.length === 0 && (
+              <button
+                onClick={() => setActiveView('coverage')}
+                style={{
+                  padding: '6px 14px', borderRadius: 6, background: 'transparent',
+                  border: '1px solid var(--border)', color: 'var(--accent)',
+                  cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                }}
+              >
+                Why 0 events? → Check coverage
+              </button>
+            )}
           </div>
         )}
         {loading && (

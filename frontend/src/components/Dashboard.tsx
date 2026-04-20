@@ -5,6 +5,7 @@ import { useStore } from '../hooks/useStore';
 export default function Dashboard() {
   const { caseInfo, detection, mitre, detectionLoading, setDetection, setDetectionLoading, setActiveView, setLastAction, kapeDiagnostics, setKapeDiagnostics } = useStore();
   const [topTypes, setTopTypes] = useState<any[]>([]);
+  const [coverageSummary, setCoverageSummary] = useState<{ searched: number; available_not_loaded: number; structurally_unavailable: number; case_format: string } | null>(null);
 
   useEffect(() => {
     // Only fetch if not already cached
@@ -23,6 +24,19 @@ export default function Dashboard() {
 
     // Fetch top artifact types for bar chart
     get('/api/cases/types').then(data => setTopTypes((data.artifact_types || []).slice(0, 10))).catch(() => {});
+
+    // Coverage summary — gives the analyst an at-a-glance hint that some
+    // families are structurally unavailable before they chase empty searches.
+    get('/api/cases/coverage').then((d) => {
+      if (d && d.summary) {
+        setCoverageSummary({
+          searched: d.summary.searched,
+          available_not_loaded: d.summary.available_not_loaded,
+          structurally_unavailable: d.summary.structurally_unavailable,
+          case_format: d.case_context?.case_format || '',
+        });
+      }
+    }).catch(() => {});
 
     // Fetch KAPE diagnostics if not already loaded
     if (!kapeDiagnostics) {
@@ -58,6 +72,38 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      {/* Evidence Coverage — compact summary with a jump to the full view. Hides
+          when no hints are actionable (everything searched, nothing structural). */}
+      {coverageSummary && (coverageSummary.structurally_unavailable > 0 || coverageSummary.available_not_loaded > 0) && (
+        <div
+          onClick={() => setActiveView('coverage')}
+          style={{
+            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+          }}
+          title="Open full coverage view"
+        >
+          <span style={{ fontSize: 16 }}>🧾</span>
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: 'var(--text)' }}>Evidence Coverage</div>
+            <div style={{ color: 'var(--text-dim)' }}>
+              <span style={{ color: '#4ade80' }}>{coverageSummary.searched} searchable</span>
+              {coverageSummary.available_not_loaded > 0 && (
+                <> · <span style={{ color: '#f59e0b' }}>{coverageSummary.available_not_loaded} with zero records</span></>
+              )}
+              {coverageSummary.structurally_unavailable > 0 && (
+                <> · <span style={{ color: '#ef4444' }}>{coverageSummary.structurally_unavailable} structurally unavailable</span></>
+              )}
+              {coverageSummary.case_format === 'kape' && (
+                <> — KAPE-only case; AXIOM-only families cannot be searched here.</>
+              )}
+            </div>
+          </div>
+          <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>Details →</span>
+        </div>
+      )}
+
       {/* KAPE Diagnostics Banner */}
       {kapeDiagnostics && kapeDiagnostics.modules_failed > 0 && (
         <div style={{
