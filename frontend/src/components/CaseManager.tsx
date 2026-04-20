@@ -7,9 +7,14 @@ interface EvidenceItem {
   path: string;
   label: string;
   size?: string;
+  size_bytes?: number;
   loaded?: boolean;
   status?: string;
 }
+
+// Default-deselect threshold: files larger than this are treated as "review
+// before loading" so an accidental giant image doesn't auto-enter the allowlist.
+const LARGE_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
 
 interface SavedProject {
   name: string;
@@ -67,8 +72,8 @@ export default function CaseManager() {
   // Tab: 'quick' (single file) or 'project'
   const [tab, setTab] = useState<'project' | 'quick'>('project');
 
-  // Quick open
-  const [quickPath, setQuickPath] = useState('');
+  // Quick open (multi-path support)
+  const [quickPaths, setQuickPaths] = useState<string[]>(['']);
   const [quickLoading, setQuickLoading] = useState(false);
   const [quickError, setQuickError] = useState('');
 
@@ -83,8 +88,8 @@ export default function CaseManager() {
   const [knownIocs, setKnownIocs] = useState('');
   const [notes] = useState('');
 
-  // Evidence scan
-  const [scanDir, setScanDir] = useState('');
+  // Evidence scan — supports multiple folders
+  const [scanDirs, setScanDirs] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [selectedEvidence, setSelectedEvidence] = useState<Set<number>>(new Set());
@@ -126,46 +131,63 @@ export default function CaseManager() {
     browse('');
   };
 
-  const selectFolder = (path: string) => {
-    setScanDir(path);
-    setEvidenceDir(path);
-    setBrowserOpen(false);
-    // Auto-scan after selecting
-    setTimeout(async () => {
-      setScanning(true);
-      try {
-        const data = await post('/api/project/scan-evidence', { directory: path });
-        const found: EvidenceItem[] = data.found || [];
-        setEvidence(found);
-        setSelectedEvidence(new Set(found.map((_: any, i: number) => i)));
-        if (!projectName) {
-          const parts = path.replace(/\\/g, '/').split('/');
-          setProjectName(parts[parts.length - 1] || parts[parts.length - 2] || '');
-        }
-      } catch (e: any) { setError('Scan failed: ' + e.message); }
-      finally { setScanning(false); }
-    }, 0);
-  };
-
-  // Evidence scan
-  const handleScan = async () => {
-    if (!scanDir.trim()) return;
+  // Scan one or more directories in parallel, merge & dedupe by path
+  const scanDirectories = async (dirs: string[]) => {
+    const targets = dirs.map(d => d.trim()).filter(Boolean);
+    if (targets.length === 0) { setEvidence([]); setSelectedEvidence(new Set()); return; }
     setScanning(true);
     try {
-      const data = await post('/api/project/scan-evidence', { directory: scanDir.trim() });
-      const found: EvidenceItem[] = data.found || [];
-      setEvidence(found);
-      setSelectedEvidence(new Set(found.map((_: any, i: number) => i)));
-      if (!projectName && scanDir) {
-        const parts = scanDir.replace(/\\/g, '/').split('/');
+      const results = await Promise.all(
+        targets.map(d => post('/api/project/scan-evidence', { directory: d })
+          .then(r => ({ dir: d, found: (r.found || []) as EvidenceItem[] }))
+          .catch(e => ({ dir: d, found: [] as EvidenceItem[], error: e.message }))
+        )
+      );
+      const errors = results.filter((r: any) => r.error).map((r: any) => `${r.dir}: ${r.error}`);
+      if (errors.length) setError('Scan errors — ' + errors.join('; ')); else setError('');
+      const merged: EvidenceItem[] = [];
+      const seen = new Set<string>();
+      for (const r of results) for (const ev of r.found) {
+        if (seen.has(ev.path)) continue;
+        seen.add(ev.path);
+        merged.push(ev);
+      }
+      setEvidence(merged);
+      // Default-select every detected item so the common path (create project →
+      // load everything) stays one click. Files above LARGE_FILE_BYTES are
+      // left unchecked as an accident-prevention rail — the user still has to
+      // opt them in before they reach the allowlist.
+      const autoSelect = new Set<number>();
+      merged.forEach((ev, i) => {
+        const big = typeof ev.size_bytes === 'number' && ev.size_bytes > LARGE_FILE_BYTES;
+        if (!big) autoSelect.add(i);
+      });
+      setSelectedEvidence(autoSelect);
+      if (!projectName && targets[0]) {
+        const parts = targets[0].replace(/\\/g, '/').split('/');
         setProjectName(parts[parts.length - 1] || parts[parts.length - 2] || '');
       }
-    } catch (e: any) {
-      setError('Scan failed: ' + e.message);
-    } finally {
-      setScanning(false);
-    }
+    } finally { setScanning(false); }
   };
+
+  const selectFolder = (path: string) => {
+    // Append if new; avoid duplicates
+    const next = scanDirs.includes(path) ? scanDirs : [...scanDirs, path];
+    setScanDirs(next);
+    setEvidenceDir(next[0] || path); // store primary dir for downstream tools
+    setBrowserOpen(false);
+    setTimeout(() => scanDirectories(next), 0);
+  };
+
+  const removeScanDir = (path: string) => {
+    const next = scanDirs.filter(d => d !== path);
+    setScanDirs(next);
+    setEvidenceDir(next[0] || '');
+    scanDirectories(next);
+  };
+
+  // Rescan all
+  const handleScan = () => scanDirectories(scanDirs);
 
   const toggleEvidence = (idx: number) => {
     setSelectedEvidence(prev => {
@@ -206,7 +228,7 @@ export default function CaseManager() {
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
           setKapeDiagnostics(caseData.kape_diagnostics || null);
-          const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDir, source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
           setActiveView('dashboard');
         } catch {
@@ -220,7 +242,7 @@ export default function CaseManager() {
             evidence_sources: [],
             artifact_types: {},
           });
-          const rc: RecentCase = { name: projectName, path: data.project_path || scanDir, source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          const rc: RecentCase = { name: projectName, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
           setActiveView('dashboard');
         }
@@ -265,18 +287,34 @@ export default function CaseManager() {
     }
   };
 
-  // Quick open
+  // Quick open (supports multiple paths)
   const handleQuickOpen = async () => {
-    if (!quickPath.trim()) return;
+    const validPaths = quickPaths.map(p => p.trim()).filter(Boolean);
+    if (validPaths.length === 0) return;
     setQuickLoading(true);
-    setLoadingPhase('Opening case file...');
+    setLoadingPhase('Opening case files...');
     setQuickError('');
     try {
-      const data = await post('/api/cases/open', { path: quickPath.trim() });
-      setCaseInfo(data);
-      setKapeDiagnostics(data.kape_diagnostics || null);
-      const src = quickPath.trim().endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
-      saveRecent({ name: data.case_name || quickPath.trim().split(/[\\/]/).pop() || '', path: quickPath.trim(), source: src, totalHits: data.total_hits, openedAt: '' });
+      if (validPaths.length === 1) {
+        // Single path: use original endpoint
+        const data = await post('/api/cases/open', { path: validPaths[0] });
+        setCaseInfo(data);
+        setKapeDiagnostics(data.kape_diagnostics || null);
+        const src = validPaths[0].endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
+        saveRecent({ name: data.case_name || validPaths[0].split(/[\\/]/).pop() || '', path: validPaths[0], source: src, totalHits: data.total_hits, openedAt: '' });
+      } else {
+        // Multiple paths: use multi endpoint
+        const data = await post('/api/cases/open-multi', { paths: validPaths });
+        setCaseInfo(data);
+        setKapeDiagnostics(data.kape_diagnostics || null);
+        // Save each loaded path as recent
+        for (const r of (data.results || [])) {
+          if (r.status === 'loaded') {
+            const src = r.source_type === 'kape' ? 'kape' as const : 'axiom' as const;
+            saveRecent({ name: r.case_name || r.case_id || r.path.split(/[\\/]/).pop() || '', path: r.path, source: src, totalHits: r.total_hits, openedAt: '' });
+          }
+        }
+      }
       setRecentCases(loadRecent());
       setActiveView('dashboard');
     } catch (e: any) {
@@ -468,32 +506,76 @@ export default function CaseManager() {
           {/* Evidence Scan */}
           <div style={sectionStyle}>
             <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', display: 'block', marginBottom: 8 }}>
-              Evidence Folder
+              Evidence Folders
             </label>
             <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 8px' }}>
-              Select the case folder — evidence files will be auto-detected
+              Add one or more case folders — evidence files will be auto-detected and merged
             </p>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <div style={{
-                ...inputStyle, flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center',
-                color: scanDir ? 'var(--text)' : 'var(--text-dim)',
-              }} onClick={openFolderBrowser}>
-                {scanDir || 'Click to browse...'}
+
+            {/* Selected folders list */}
+            {scanDirs.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                {scanDirs.map((d, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+                    border: '1px solid var(--border)', borderRadius: 6, marginBottom: 6,
+                    background: 'var(--bg)', fontFamily: 'monospace', fontSize: 12,
+                  }}>
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
+                      background: 'rgba(96,165,250,0.15)', color: '#60a5fa',
+                    }}>#{i + 1}</span>
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d}</span>
+                    <span onClick={() => removeScanDir(d)}
+                      style={{ cursor: 'pointer', color: 'var(--text-dim)', fontSize: 14, padding: '0 4px' }}
+                      title="Remove folder">✕</span>
+                  </div>
+                ))}
               </div>
-              <button className="btn" onClick={openFolderBrowser} style={{ padding: '8px 16px' }}>
-                Browse
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={openFolderBrowser} style={{ padding: '8px 16px', flex: 1 }}>
+                {scanDirs.length === 0 ? '+ Browse Evidence Folder' : '+ Add Another Folder'}
               </button>
-              {scanDir && (
+              {scanDirs.length > 0 && (
                 <button className="btn btn-primary" onClick={handleScan} disabled={scanning}
                   style={{ padding: '8px 16px' }}>
-                  {scanning ? '...' : 'Rescan'}
+                  {scanning ? '...' : 'Rescan All'}
                 </button>
               )}
             </div>
 
-            {/* Detected Evidence */}
-            {evidence.length > 0 && (
+          {/* Detected Evidence */}
+          {evidence.length > 0 && (
               <div style={{ marginTop: 12 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+                  padding: '8px 10px', background: 'rgba(96,165,250,0.08)',
+                  border: '1px solid rgba(96,165,250,0.25)', borderRadius: 6,
+                  fontSize: 11, color: 'var(--text-dim)',
+                }}>
+                  <span style={{ flex: 1 }}>
+                    {selectedEvidence.size}/{evidence.length} selected — checked items are registered in the evidence allowlist on Create.
+                    {evidence.some(ev => typeof ev.size_bytes === 'number' && ev.size_bytes > LARGE_FILE_BYTES) && (
+                      <span style={{ color: '#f59e0b', marginLeft: 6 }}>Files &gt; 10 GB are unchecked by default — review before enabling.</span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEvidence(new Set(evidence.map((_, i) => i)))}
+                    disabled={selectedEvidence.size === evidence.length}
+                    style={{ padding: '3px 8px', fontSize: 11, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)' }}>
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedEvidence(new Set())}
+                    disabled={selectedEvidence.size === 0}
+                    style={{ padding: '3px 8px', fontSize: 11, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text)' }}>
+                    None
+                  </button>
+                </div>
                 {evidence.map((ev, i) => (
                   <label key={i} style={{
                     display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px',
@@ -572,7 +654,7 @@ export default function CaseManager() {
           {/* Create */}
           <button className="btn btn-primary"
             onClick={handleCreate}
-            disabled={creating || (evidence.length === 0 && !projectName)}
+            disabled={creating || selectedEvidence.size === 0}
             style={{ width: '100%', padding: '12px', fontSize: 14, fontWeight: 600, marginBottom: 24 }}>
             {creating ? 'Creating...' : 'Create Project & Load Evidence'}
           </button>
@@ -583,18 +665,41 @@ export default function CaseManager() {
       {tab === 'quick' && (
         <div style={sectionStyle}>
           <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', display: 'block', marginBottom: 8 }}>
-            Open a single case file (.mfdb or KAPE parsed directory)
+            Open case files — add multiple sources (.mfdb + KAPE directory) to load together
           </label>
+          {quickPaths.map((p, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <input style={{ ...inputStyle, flex: 1 }}
+                placeholder={i === 0 ? "Path to .mfdb file or KAPE parsed directory..." : "Additional path..."}
+                value={p}
+                onChange={e => {
+                  const next = [...quickPaths];
+                  next[i] = e.target.value;
+                  setQuickPaths(next);
+                }}
+                onKeyDown={e => e.key === 'Enter' && handleQuickOpen()}
+              />
+              {quickPaths.length > 1 && (
+                <button
+                  onClick={() => setQuickPaths(quickPaths.filter((_, j) => j !== i))}
+                  style={{ padding: '6px 10px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14 }}
+                  title="Remove">
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
           <div style={{ display: 'flex', gap: 8 }}>
-            <input style={{ ...inputStyle, flex: 1 }}
-              placeholder="Path to .mfdb file or KAPE parsed directory..."
-              value={quickPath} onChange={e => setQuickPath(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleQuickOpen()}
-            />
+            <button
+              onClick={() => setQuickPaths([...quickPaths, ''])}
+              style={{ padding: '6px 16px', background: 'none', border: '1px dashed var(--border)', borderRadius: 6, color: 'var(--accent)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+              + Add Source
+            </button>
+            <div style={{ flex: 1 }} />
             <button className="btn btn-primary" onClick={handleQuickOpen}
-              disabled={quickLoading || !quickPath.trim()}
+              disabled={quickLoading || quickPaths.every(p => !p.trim())}
               style={{ padding: '8px 24px' }}>
-              {quickLoading ? 'Opening...' : 'Open'}
+              {quickLoading ? 'Opening...' : `Open${quickPaths.filter(p => p.trim()).length > 1 ? ` (${quickPaths.filter(p => p.trim()).length})` : ''}`}
             </button>
           </div>
           {quickError && (
@@ -645,7 +750,9 @@ export default function CaseManager() {
               padding: '12px 16px', borderBottom: '1px solid var(--border)',
               display: 'flex', alignItems: 'center', gap: 8,
             }}>
-              <span style={{ fontWeight: 600, fontSize: 14 }}>Select Evidence Folder</span>
+              <span style={{ fontWeight: 600, fontSize: 14 }}>
+                {scanDirs.length === 0 ? 'Select Evidence Folder' : `Add Evidence Folder (${scanDirs.length} already added)`}
+              </span>
               <div style={{ flex: 1 }} />
               <button className="btn btn-sm" onClick={() => setBrowserOpen(false)}>Close</button>
             </div>
