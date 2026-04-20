@@ -65,3 +65,7 @@ skills-lock.json
 *.Interop.dll
 .codex-brainstorm-output.txt
 .codex-brainstorm-prompt.txt
+
+# pytest
+.pytest_cache/
+backend/.pytest_cache/
