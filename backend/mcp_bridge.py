@@ -850,6 +850,43 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
 
 
 @mcp.tool()
+async def hunt_evtx_rules(
+    rule_ids: str = "",
+    severity_min: str = "low",
+    limit_per_rule: int = 100,
+) -> dict:
+    """Run a built-in Sigma-style rule pack against the case's Event Log artifact.
+
+    Lightweight alternative to Hayabusa — no external binary or ruleset
+    dependency. Covers EIDs that find_suspicious does not already handle:
+    failed logon bursts, account / group creation, Kerberos weak-enc
+    requests, NTLM auth, audit-policy change, firewall rule edits, SMB
+    share access, scheduled task firings, RDP session events, and special-
+    privilege use. Every rule is published verbatim in the response so the
+    analyst can audit or tune matches.
+
+    Args:
+        rule_ids: Comma-separated rule ids (e.g. "fw-evtx-001,fw-evtx-006").
+                  Empty = run every rule.
+        severity_min: "low" / "medium" / "high" / "critical". Filters before
+                      execution.
+        limit_per_rule: Max hits kept per rule. Raw match counts are still
+                        reported so nothing silently disappears.
+    """
+    def fn():
+        from core.analysis.evtx_rules import hunt_evtx_rules as _hunt
+        ids = [r.strip() for r in rule_ids.split(",") if r.strip()] if rule_ids else None
+        return _mask(_hunt(_get_axiom().artifact_queries, rule_ids=ids,
+                            severity_min=severity_min, limit_per_rule=limit_per_rule))
+    return await _traced(
+        "hunt_evtx_rules",
+        {"rule_ids": rule_ids, "severity_min": severity_min, "limit_per_rule": limit_per_rule},
+        fn,
+        timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+@mcp.tool()
 async def detect_anti_forensics() -> dict:
     """Detect publicly-documented anti-forensic activity in the active case.
 

@@ -40,6 +40,21 @@ async def get_anti_forensics():
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/evtx-hunt")
+async def get_evtx_hunt(rule_ids: str = "", severity_min: str = "low", limit_per_rule: int = 100):
+    """Run the built-in Sigma-style EVTX rule pack against the active case."""
+    from state import app_state
+    from core.analysis.evtx_rules import hunt_evtx_rules as _hunt
+    try:
+        ids = [r.strip() for r in rule_ids.split(",") if r.strip()] if rule_ids else None
+        return _hunt(
+            app_state.get_axiom().artifact_queries,
+            rule_ids=ids, severity_min=severity_min, limit_per_rule=limit_per_rule,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/mitre")
 async def get_mitre_mapping():
     from state import app_state
