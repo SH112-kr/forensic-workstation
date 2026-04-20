@@ -279,6 +279,11 @@ footer { padding:20px 32px; border-top:1px solid var(--border); color:var(--text
   <h2>Attack Kill Chain</h2>
   <div class="kc" id="killchain"></div>
 
+  <div id="antiforensics-banner"></div>
+
+  <h2>Evidence Strength</h2>
+  <div id="strength-rollup" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
+
   <h2>Key Findings</h2>
   <div id="key-findings"></div>
 
@@ -299,7 +304,7 @@ footer { padding:20px 32px; border-top:1px solid var(--border); color:var(--text
   <div class="mitre" id="mitre-matrix"></div>
 
   <h2>All Findings</h2>
-  <table><thead><tr><th>Severity</th><th>Rule</th><th>MITRE</th><th>Hits</th><th>Description</th><th>Patterns</th></tr></thead>
+  <table><thead><tr><th>Severity</th><th>Strength</th><th>Rule</th><th>MITRE</th><th>Hits</th><th>Description</th><th>Patterns</th></tr></thead>
   <tbody id="findings-body"></tbody></table>
 
   <h2>Artifact Types</h2>
@@ -500,10 +505,23 @@ function renderMitre() {
 
 function renderAllFindings() {
   const tbody = document.getElementById('findings-body');
+  const strengthBadge = (s) => {
+    if (!s) return '';
+    const colors = {
+      confirmed: ['#16a34a','rgba(74,222,128,0.16)'],
+      strong:    ['#2563eb','rgba(56,139,253,0.16)'],
+      moderate:  ['#b45309','rgba(245,158,11,0.15)'],
+      weak:      ['#475569','rgba(148,163,184,0.22)'],
+    };
+    const [fg,bg] = colors[s] || colors.moderate;
+    return `<span style="padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;
+      text-transform:uppercase;letter-spacing:0.04em;background:${bg};color:${fg}">${s}</span>`;
+  };
   tbody.innerHTML = (DATA.findings||[]).map(f => {
     const pats = Object.entries(f.matched_patterns||{}).sort((a,b)=>b[1]-a[1]).slice(0,5)
       .map(([p,c])=>`<span class="pattern-tag">${esc(p)}<span class="pattern-count">\u00d7${c}</span></span>`).join('');
     return `<tr><td><span class="badge badge-${f.severity}">${f.severity.toUpperCase()}</span></td>
+    <td>${strengthBadge(f.overall_strength)}</td>
     <td>${f.rule_name}</td><td>${(f.mitre_techniques||[]).map(t=>'<span class="tag">'+t+'</span>').join(' ')}</td>
     <td>${f.matching_count.toLocaleString()}</td><td>${f.description}</td><td>${pats}</td></tr>`;
   }).join('');
@@ -569,8 +587,48 @@ function filterTimeline() {
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escRx(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 
+function renderStrengthRollup() {
+  const el = document.getElementById('strength-rollup');
+  if (!el) return;
+  const r = DATA.strength_rollup || {};
+  const tiers = [
+    ['confirmed', 'Confirmed', '#16a34a', 'rgba(74,222,128,0.16)'],
+    ['strong',    'Strong',    '#2563eb', 'rgba(56,139,253,0.16)'],
+    ['moderate',  'Moderate',  '#b45309', 'rgba(245,158,11,0.15)'],
+    ['weak',      'Weak',      '#475569', 'rgba(148,163,184,0.22)'],
+  ];
+  el.innerHTML = tiers.map(([k,label,color,bg]) =>
+    `<div style="padding:6px 14px;border-radius:8px;background:${bg};border:1px solid ${color}33;font-size:12px">
+      <div style="font-weight:700;color:${color};font-size:16px">${r[k]||0}</div>
+      <div style="color:var(--text-dim)">${label}</div>
+    </div>`
+  ).join('');
+}
+
+function renderAntiForensicsBanner() {
+  const el = document.getElementById('antiforensics-banner');
+  if (!el) return;
+  const af = DATA.anti_forensics || {};
+  if (!af.rules_fired) { el.innerHTML = ''; return; }
+  const fired = (af.rules||[]).filter(r => r.ok && r.count);
+  el.innerHTML = `<div style="padding:14px 18px;border-radius:10px;margin:16px 0;
+    background:var(--critical-bg);border:1px solid var(--critical)">
+    <div style="font-weight:700;color:var(--critical);margin-bottom:6px">
+      \u26A0 Anti-forensic activity detected
+      \u2014 ${af.rules_fired} rule${af.rules_fired>1?'s':''} fired, ${af.total_hits} hit${af.total_hits===1?'':'s'}
+    </div>
+    ${fired.map(r => `<div style="font-size:12px;padding:2px 0">
+      <strong>${esc(r.rule_name)}</strong>
+      <span style="font-family:var(--mono);color:var(--critical);margin-left:6px">${esc(r.mitre_technique)}</span>
+      <span style="margin-left:6px">\u00b7 ${r.count} hit${r.count===1?'':'s'}</span>
+      <span style="margin-left:8px;color:var(--text-dim)">${esc(r.description||'')}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
 // ── Init ──
-renderRisk(); renderKillChain(); renderKeyFindings(); renderIOCSummary();
+renderRisk(); renderKillChain(); renderStrengthRollup(); renderAntiForensicsBanner();
+renderKeyFindings(); renderIOCSummary();
 renderKeyTimeline(); renderRecs(); renderMitre(); renderAllFindings();
 renderTypes(); renderIOCs(); renderTimeline();
 </script>
@@ -592,20 +650,39 @@ def generate_report(
     from analysis.suspicious import find_suspicious
     from analysis.ioc_extractor import extract_iocs
     from analysis.mitre_mapper import get_attack_narrative
+    from analysis.evidence_strength import score_findings
+    from analysis.anti_forensics import detect_anti_forensics as _anti_forensics
+    from analysis.coverage import build_coverage_report
 
     metadata = axiom.get_metadata()
     types = axiom.get_artifact_type_counts()
     sus = find_suspicious(axiom.artifact_queries)
+    # Annotate findings with CLAUDE.md strength tiers so the report carries the
+    # same confirmed/strong/moderate/weak classification as the live UI.
+    score_findings(sus)
     iocs = extract_iocs(axiom)
     narrative = get_attack_narrative(sus.get("findings", []))
     timeline = axiom.get_timeline(limit=500)
+    # Anti-forensics and coverage are cheap to include and often the first
+    # sections an incident reviewer wants.
+    try:
+        anti = _anti_forensics(axiom.artifact_queries)
+    except Exception:
+        anti = {"ok": False, "rules_fired": 0, "total_hits": 0, "rules": []}
+    try:
+        coverage = build_coverage_report(connectors)
+    except Exception:
+        coverage = {"ok": False, "coverage": [], "summary": {}, "case_context": {}}
 
     json_data = {
         "findings": sus.get("findings", []),
+        "strength_rollup": sus.get("strength_rollup", {}),
         "iocs": iocs.get("iocs", []),
         "narrative": narrative.get("narrative", []),
         "timeline": timeline.get("entries", []),
         "artifact_types": types,
+        "anti_forensics": anti,
+        "coverage": coverage,
     }
 
     if masker and masker.enabled:
