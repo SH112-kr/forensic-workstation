@@ -824,12 +824,62 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
 
 
 @mcp.tool()
-async def find_suspicious(rules: str = "") -> dict:
-    """Run structured threat detection rules."""
+async def assess_evidence_strength(findings_json: str = "") -> dict:
+    """Tag suspicious findings with CLAUDE.md strength tiers.
+
+    Annotates each detail inside a ``find_suspicious`` payload with a
+    ``strength`` tier (confirmed / strong / moderate / weak) and a
+    ``strength_reason`` explaining why. Adds a ``strength_rollup`` summary.
+
+    Rules are transparent, rule-based, and fully offline:
+      - confirmed: Prefetch+SRUM, MFT, definitive EIDs (4688/7045/1102/...)
+      - strong:    Prefetch Last Run, Sysmon / PS ScriptBlock
+      - moderate:  AmCache, UserAssist, Scheduled Tasks
+      - weak:      Shim Cache, Link Date (NOT execution proof)
+
+    Args:
+        findings_json: JSON string of a find_suspicious response (the same
+                       shape ``find_suspicious`` returns). Passing an empty
+                       string auto-runs find_suspicious with default rules.
+    """
+    def fn():
+        import json as _json
+        from core.analysis.evidence_strength import score_findings
+        if findings_json:
+            try:
+                payload = _json.loads(findings_json)
+            except Exception:
+                return {"error": f"findings_json must be valid JSON"}
+        else:
+            from core.analysis.suspicious import find_suspicious as _find
+            payload = _find(_get_axiom().artifact_queries, rules="")
+        return _mask(score_findings(payload))
+    return await _traced(
+        "assess_evidence_strength",
+        {"findings_json": (findings_json[:200] + "…") if len(findings_json) > 200 else findings_json},
+        fn,
+        timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+@mcp.tool()
+async def find_suspicious(rules: str = "", score_strength: bool = True) -> dict:
+    """Run structured threat detection rules.
+
+    Args:
+        rules: Optional comma-separated rule names. Empty runs every rule.
+        score_strength: When True (default) annotate each detail with the
+            CLAUDE.md strength tier (confirmed/strong/moderate/weak) via
+            assess_evidence_strength. Set False to get the raw payload.
+    """
     def fn():
         from core.analysis.suspicious import find_suspicious as _find
-        return _mask(_find(_get_axiom().artifact_queries, rules=rules))
-    return await _traced("find_suspicious", {"rules": rules}, fn, timeout_seconds=TIMEOUT_HEAVY)
+        payload = _find(_get_axiom().artifact_queries, rules=rules)
+        if score_strength:
+            from core.analysis.evidence_strength import score_findings
+            score_findings(payload)
+        return _mask(payload)
+    return await _traced("find_suspicious", {"rules": rules, "score_strength": score_strength}, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 @mcp.tool()
