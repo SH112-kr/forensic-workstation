@@ -15,6 +15,7 @@ export default function DetectionPanel() {
   const { detection, mitre, setDetection, setLastAction } = useStore();
   const [findings, setFindings] = useState<any[]>(detection?.findings || []);
   const [strengthRollup, setStrengthRollup] = useState<Record<StrengthTier, number> | null>(detection?.strength_rollup || null);
+  const [minStrength, setMinStrength] = useState<StrengthTier | ''>('');
   const [mitreData, setMitreData] = useState<any>(mitre);
   const [loading, setLoading] = useState(false);
   const [openIdx, setOpenIdx] = useState<number | null>(null);
@@ -163,10 +164,38 @@ export default function DetectionPanel() {
       {/* Findings */}
       {!loading && (
         <>
-          <h3 style={{ fontSize: 12, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 10 }}>
-            Findings ({findings.length})
-          </h3>
-          {findings.map((f, i) => (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 10 }}>
+            <h3 style={{ fontSize: 12, color: 'var(--text-dim)', textTransform: 'uppercase', margin: 0 }}>
+              Findings ({findings.filter((f) => {
+                if (!minStrength) return true;
+                const order = { confirmed: 4, strong: 3, moderate: 2, weak: 1 } as const;
+                const actual = (order as any)[f.overall_strength || 'moderate'] || 2;
+                const required = (order as any)[minStrength] || 1;
+                return actual >= required;
+              }).length}/{findings.length})
+            </h3>
+            <div style={{ flex: 1 }} />
+            <label className="label" style={{ margin: 0 }}>Min strength</label>
+            <select
+              value={minStrength}
+              onChange={(e) => setMinStrength(e.target.value as StrengthTier | '')}
+              className="input input-sm"
+              style={{ width: 140 }}
+            >
+              <option value="">Any</option>
+              <option value="weak">Weak or above</option>
+              <option value="moderate">Moderate or above</option>
+              <option value="strong">Strong or above</option>
+              <option value="confirmed">Confirmed only</option>
+            </select>
+          </div>
+          {findings.filter((f) => {
+            if (!minStrength) return true;
+            const order = { confirmed: 4, strong: 3, moderate: 2, weak: 1 } as const;
+            const actual = (order as any)[f.overall_strength || 'moderate'] || 2;
+            const required = (order as any)[minStrength] || 1;
+            return actual >= required;
+          }).map((f, i) => (
             <div key={i} className="card" style={{ marginBottom: 8, padding: 0, overflow: 'hidden' }}>
               <div
                 onClick={() => setOpenIdx(openIdx === i ? null : i)}

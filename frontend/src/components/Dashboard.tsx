@@ -6,6 +6,7 @@ export default function Dashboard() {
   const { caseInfo, detection, mitre, detectionLoading, setDetection, setDetectionLoading, setActiveView, setLastAction, kapeDiagnostics, setKapeDiagnostics } = useStore();
   const [topTypes, setTopTypes] = useState<any[]>([]);
   const [coverageSummary, setCoverageSummary] = useState<{ searched: number; available_not_loaded: number; structurally_unavailable: number; case_format: string } | null>(null);
+  const [antiForensics, setAntiForensics] = useState<any>(null);
 
   useEffect(() => {
     // Only fetch if not already cached
@@ -36,6 +37,13 @@ export default function Dashboard() {
           case_format: d.case_context?.case_format || '',
         });
       }
+    }).catch(() => {});
+
+    // Anti-forensics — runs against the active case and surfaces at the top
+    // of the Dashboard when any rule fires so log-tamper / shadow-deletion is
+    // impossible to miss.
+    get('/api/detection/anti-forensics').then((d) => {
+      if (d && d.rules_fired > 0) setAntiForensics(d);
     }).catch(() => {});
 
     // Fetch KAPE diagnostics if not already loaded
@@ -72,6 +80,33 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+      {/* Anti-forensics alert — renders first so log tamper / shadow-copy
+          deletion is never buried. Only appears when rules actually fired. */}
+      {antiForensics && antiForensics.rules_fired > 0 && (
+        <div
+          onClick={() => setActiveView('detection')}
+          style={{
+            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
+            background: 'var(--critical-bg)', border: '1px solid var(--critical)',
+            display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+          }}
+          title="Review the full anti-forensics findings in Detection"
+        >
+          <span style={{ fontSize: 18 }}>⚠</span>
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: 'var(--critical)' }}>
+              Anti-forensic activity detected
+            </div>
+            <div style={{ color: 'var(--text-dim)' }}>
+              {antiForensics.rules_fired} rule{antiForensics.rules_fired > 1 ? 's' : ''} fired ·
+              {' '}{antiForensics.total_hits} total hit{antiForensics.total_hits === 1 ? '' : 's'} ·
+              {' '}{(antiForensics.rules || []).filter((r: any) => r.ok && r.count).map((r: any) => r.rule_name).join(', ')}
+            </div>
+          </div>
+          <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review →</span>
+        </div>
+      )}
+
       {/* Evidence Coverage — compact summary with a jump to the full view. Hides
           when no hints are actionable (everything searched, nothing structural). */}
       {coverageSummary && (coverageSummary.structurally_unavailable > 0 || coverageSummary.available_not_loaded > 0) && (
