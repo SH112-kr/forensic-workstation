@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 interface MCPEvent {
   timestamp: string;
-  type: 'request' | 'response' | 'error';
+  type: 'request' | 'response' | 'error' | 'rotation';
   tool: string;
   params?: any;
   result?: any;
@@ -71,6 +71,7 @@ export default function CopilotPanel() {
     request:  { bg: 'var(--accent-light)', color: 'var(--accent)', label: 'REQ', icon: '→' },
     response: { bg: 'var(--low-bg)', color: 'var(--low)', label: 'RES', icon: '←' },
     error:    { bg: 'var(--critical-bg)', color: 'var(--critical)', label: 'ERR', icon: '✕' },
+    rotation: { bg: 'var(--surface2)', color: 'var(--text-dim)', label: 'SYS', icon: '↻' },
   };
 
   return (

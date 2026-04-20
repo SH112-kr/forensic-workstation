@@ -62,18 +62,33 @@ _tz_config: dict[str, Any] = {
     "enabled": True,
 }
 
+_EVENT_LOG_MAX_BYTES = int(os.environ.get("FW_EVENT_LOG_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+
+
 def _log_event(event_type: str, tool: str, data: Any = None, params: Any = None, result: Any = None, duration: float = 0):
-    """Log a tool event for the web UI to stream."""
+    """Record a tool event for the web UI to stream via /ws/mcp-monitor.
+
+    Applies the same masker that tools use for their return values to the
+    params payload as well — otherwise sensitive keywords (IPs, usernames,
+    hostnames) that the analyst typed into a search would flow unmasked into
+    the live event stream even with masking globally enabled.
+
+    Also rotates ``.mcp_events.jsonl`` once it exceeds FW_EVENT_LOG_MAX_BYTES
+    (default 20 MB) so long investigations don't leave multi-gigabyte state
+    files behind. Rotation is a simple overwrite — the UI's in-memory buffer
+    handles continuity for anyone watching live.
+    """
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "type": event_type,
         "tool": tool,
     }
     if params is not None:
-        entry["params"] = _truncate(params)
+        entry["params"] = _truncate(_mask(params) if _masker.enabled else params)
     if data is not None:
-        entry["data"] = _truncate(data)
+        entry["data"] = _truncate(_mask(data) if _masker.enabled else data)
     if result is not None:
+        # ``result`` is already masked by the tool's fn(); truncating only.
         entry["result"] = _truncate(result)
     if duration:
         entry["duration_ms"] = round(duration * 1000)
@@ -82,6 +97,17 @@ def _log_event(event_type: str, tool: str, data: Any = None, params: Any = None,
         _event_log.pop(0)
     try:
         event_file = os.path.join(os.path.dirname(__file__), ".mcp_events.jsonl")
+        # Rotate before writing so we never exceed the cap.
+        try:
+            if os.path.exists(event_file) and os.path.getsize(event_file) > _EVENT_LOG_MAX_BYTES:
+                with open(event_file, "w", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "type": "rotation", "tool": "_system",
+                        "data": {"note": "event log rotated", "max_bytes": _EVENT_LOG_MAX_BYTES},
+                    }, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
         with open(event_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
     except Exception:

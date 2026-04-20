@@ -133,14 +133,28 @@ async def get_mcp_events(since: int = 0):
 
 @router.websocket("/ws/mcp-monitor")
 async def mcp_monitor_ws(websocket: WebSocket):
-    """Real-time MCP traffic monitor — streams events as they happen."""
+    """Real-time MCP traffic monitor — streams events as they happen.
+
+    On connect, replays the last N events so the analyst doesn't have to
+    re-run tools to see what just happened. After the backfill, tails the
+    event file for new lines.
+    """
     await websocket.accept()
     event_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".mcp_events.jsonl")
+    backfill_count = int(os.environ.get("FW_EVENT_BACKFILL", "50"))
     last_pos = 0
 
-    # Start from end of file
+    # Backfill: send the last N events, then tail from end.
     if os.path.exists(event_file):
-        last_pos = os.path.getsize(event_file)
+        try:
+            with open(event_file, "r", encoding="utf-8") as f:
+                all_lines = f.readlines()
+            tail = [ln.strip() for ln in all_lines[-backfill_count:] if ln.strip()]
+            for line in tail:
+                await websocket.send_text(line)
+            last_pos = os.path.getsize(event_file)
+        except Exception:
+            last_pos = os.path.getsize(event_file) if os.path.exists(event_file) else 0
 
     tick = 0
     try:
