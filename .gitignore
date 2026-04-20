@@ -69,3 +69,6 @@ skills-lock.json
 # pytest
 .pytest_cache/
 backend/.pytest_cache/
+
+# Case snapshots (analyst-private state)
+backend/state/snapshots/

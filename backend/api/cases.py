@@ -188,6 +188,44 @@ async def get_compare():
     return _compare(axiom_conns)
 
 
+class SnapshotSaveRequest(BaseModel):
+    name: str
+    tagged_hit_ids: list[int] = []
+    notes: str = ""
+    filters: dict = {}
+
+
+@router.post("/snapshot/save")
+async def snapshot_save(req: SnapshotSaveRequest):
+    from state import app_state
+    from core.analysis.case_snapshot import save_snapshot
+    return save_snapshot(
+        app_state._connectors,
+        name=req.name,
+        tagged_hits=req.tagged_hit_ids,
+        notes=req.notes,
+        filters=req.filters,
+    )
+
+
+@router.get("/snapshot/list")
+async def snapshot_list():
+    from core.analysis.case_snapshot import list_snapshots
+    return list_snapshots()
+
+
+@router.get("/snapshot/{slug}")
+async def snapshot_load(slug: str):
+    from core.analysis.case_snapshot import load_snapshot
+    return load_snapshot(slug)
+
+
+@router.delete("/snapshot/{slug}")
+async def snapshot_delete(slug: str):
+    from core.analysis.case_snapshot import delete_snapshot
+    return delete_snapshot(slug)
+
+
 class ExplainZeroRequest(BaseModel):
     tool_name: str
     params: dict = {}

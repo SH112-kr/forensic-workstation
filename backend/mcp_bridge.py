@@ -850,6 +850,66 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
 
 
 @mcp.tool()
+async def save_case_snapshot(
+    name: str,
+    tagged_hit_ids: str = "",
+    notes: str = "",
+    filters_json: str = "{}",
+) -> dict:
+    """Persist analyst context (tags / notes / filters / active case) as a named snapshot.
+
+    Snapshots let an analyst resume an investigation later without re-running
+    every query by hand. Loading a snapshot restores context; it never
+    silently reruns detection tools.
+
+    Args:
+        name: Human-readable snapshot name (becomes the slug).
+        tagged_hit_ids: Comma-separated hit ids the analyst flagged as
+                        interesting (e.g. "123,456,789").
+        notes: Free-form analyst notes.
+        filters_json: JSON string of the current UI filter state so the
+                      session can be replayed. Opaque to the engine.
+    """
+    def fn():
+        import json as _json
+        from state import app_state
+        from core.analysis.case_snapshot import save_snapshot
+        try:
+            filters = _json.loads(filters_json) if filters_json else {}
+        except Exception:
+            filters = {"_parse_error": filters_json[:120]}
+        hits = [int(h) for h in tagged_hit_ids.split(",") if h.strip().isdigit()]
+        masker_state = _masker.get_stats() if _masker.enabled else {}
+        return _mask(save_snapshot(
+            app_state._connectors, name=name, tagged_hits=hits,
+            notes=notes, filters=filters, masker_state=masker_state,
+        ))
+    return await _traced("save_case_snapshot", {"name": name}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def list_case_snapshots() -> dict:
+    """List every saved investigation snapshot with its metadata."""
+    def fn():
+        from core.analysis.case_snapshot import list_snapshots
+        return _mask(list_snapshots())
+    return await _traced("list_case_snapshots", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def load_case_snapshot(slug: str) -> dict:
+    """Load a saved snapshot by slug. Returns analyst context; does not re-run tools.
+
+    Args:
+        slug: Snapshot slug as returned by save_case_snapshot / list_case_snapshots.
+    """
+    def fn():
+        from core.analysis.case_snapshot import load_snapshot
+        return _mask(load_snapshot(slug))
+    return await _traced("load_case_snapshot", {"slug": slug}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
 async def hunt_evtx_rules(
     rule_ids: str = "",
     severity_min: str = "low",
