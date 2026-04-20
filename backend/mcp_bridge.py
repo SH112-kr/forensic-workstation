@@ -1188,6 +1188,7 @@ async def find_suspicious(
     score_strength: bool = True,
     include_provenance: bool = True,
     apply_suppressions: bool = True,
+    include_rule_coverage: bool = True,
 ) -> dict:
     """Run structured threat detection rules.
 
@@ -1201,6 +1202,11 @@ async def find_suspicious(
             matches an active suppression entry into a separate ``suppressed``
             list. Suppressed items keep all their fields plus the matching
             suppression entry so audit is preserved.
+        include_rule_coverage: When True (default) attach per-rule coverage
+            metadata + a top-level ``unevaluable_rules`` list so the analyst
+            can distinguish "rule ran and found nothing" from "rule couldn't
+            run because required artifacts are missing". Opt-out via False
+            when a caller depends on the pre-coverage payload shape.
     """
     def fn():
         from state import app_state
@@ -1215,11 +1221,15 @@ async def find_suspicious(
         if apply_suppressions:
             from core.analysis.suppressions import apply_suppressions as _suppress
             _suppress(payload)
+        if include_rule_coverage:
+            from core.analysis.rule_coverage import attach_rule_coverage
+            attach_rule_coverage(payload, app_state._connectors)
         return _mask(payload)
     return await _traced(
         "find_suspicious",
         {"rules": rules, "score_strength": score_strength,
-         "include_provenance": include_provenance, "apply_suppressions": apply_suppressions},
+         "include_provenance": include_provenance, "apply_suppressions": apply_suppressions,
+         "include_rule_coverage": include_rule_coverage},
         fn, timeout_seconds=TIMEOUT_HEAVY,
     )
 

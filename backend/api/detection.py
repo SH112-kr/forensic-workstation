@@ -19,12 +19,14 @@ async def run_detection(req: DetectionRequest):
     from core.analysis.evidence_strength import score_findings
     from core.analysis.provenance import attach_provenance
     from core.analysis.suppressions import apply_suppressions
+    from core.analysis.rule_coverage import attach_rule_coverage
     try:
         connector = app_state.get_axiom()
         payload = find_suspicious(connector.artifact_queries, rules=req.rules)
         score_findings(payload)
         attach_provenance(payload, app_state._connectors)
         apply_suppressions(payload)
+        attach_rule_coverage(payload, app_state._connectors)
         return payload
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
