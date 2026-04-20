@@ -20,6 +20,7 @@ export/
 
 # ── Forensic Data (case-specific, NEVER commit) ──
 backend/.active_case.json
+backend/.allowed_evidence.json
 backend/.mcp_events.jsonl
 backend/extracted/
 audit_log.jsonl

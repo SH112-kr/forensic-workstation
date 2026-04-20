@@ -43,10 +43,17 @@ class OpenCaseRequest(BaseModel):
     case_name: str = ""
 
 
+class OpenMultiRequest(BaseModel):
+    paths: list[str]
+
+
 @router.post("/open")
 async def open_case(req: OpenCaseRequest):
     from state import app_state
     try:
+        # Additive — a quick-open must not erase evidence already registered
+        # through the project flow.
+        app_state.add_allowed_evidence([req.path], source="cases:open")
         result = app_state.open_axiom(req.path, req.case_name)
 
         # For KAPE sources, attach diagnostics (loaded vs missing artifacts)
@@ -64,11 +71,58 @@ async def open_case(req: OpenCaseRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/open-multi")
+async def open_multi(req: OpenMultiRequest):
+    """Open multiple case sources (MFDB + KAPE) simultaneously."""
+    from state import app_state
+    if not req.paths:
+        raise HTTPException(status_code=400, detail="No paths provided")
+
+    app_state.add_allowed_evidence(req.paths, source="cases:open_multi")
+
+    results = []
+    last_kape_diag = None
+    for path in req.paths:
+        path = path.strip()
+        if not path:
+            continue
+        try:
+            r = app_state.open_axiom(path)
+            if r.get("source_type") == "kape":
+                try:
+                    from core.kape_log_parser import get_diagnostics
+                    diag = get_diagnostics(path)
+                    if "error" not in diag:
+                        last_kape_diag = _build_kape_diagnostics(diag)
+                        r["kape_diagnostics"] = last_kape_diag
+                except Exception:
+                    pass
+            results.append({"status": "loaded", "path": path, **r})
+        except Exception as e:
+            results.append({"status": "error", "path": path, "error": str(e)})
+
+    loaded = [r for r in results if r["status"] == "loaded"]
+    if not loaded:
+        raise HTTPException(status_code=400, detail="All sources failed to load")
+
+    # Return combined info: use last loaded case as primary summary
+    primary = loaded[-1]
+    return {
+        "status": "success",
+        "cases_loaded": len(loaded),
+        "results": results,
+        "case_name": primary.get("case_name", ""),
+        "total_hits": sum(r.get("total_hits", 0) for r in loaded),
+        "source_type": "multi" if len(loaded) > 1 else primary.get("source_type"),
+        "kape_diagnostics": last_kape_diag,
+    }
+
+
 @router.post("/close")
 async def close_case():
     from state import app_state
-    app_state.remove("axiom")
-    return {"status": "closed"}
+    info = app_state.close_all_cases()
+    return {"status": "closed", **info}
 
 
 @router.get("/summary")

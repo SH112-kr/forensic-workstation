@@ -85,6 +85,8 @@ def _save_project(path: str, data: dict):
 @router.post("/create")
 async def create_project(info: ProjectInfo):
     """Create a new project and optionally load evidence."""
+    from state import app_state
+
     _ensure_projects_dir()
     path = _project_path(info.name)
 
@@ -97,7 +99,8 @@ async def create_project(info: ProjectInfo):
     }
     _save_project(path, project)
 
-    # Auto-load evidence that exists
+    # Only the evidence explicitly selected by the user becomes loadable.
+    app_state.set_allowed_evidence([e.path for e in info.evidence], source="project:create")
     load_results = await _load_evidence(info.evidence, info.timezone)
 
     return {
@@ -116,6 +119,8 @@ class OpenProjectRequest(BaseModel):
 @router.post("/open")
 async def open_project(req: OpenProjectRequest):
     """Open an existing project by path or name."""
+    from state import app_state
+
     path = req.path
     name = req.name
     if not path and name:
@@ -127,7 +132,8 @@ async def open_project(req: OpenProjectRequest):
     info = project.get("info", {})
     evidence = [EvidenceItem(**e) for e in info.get("evidence", [])]
 
-    # Auto-load evidence
+    # Reload only the evidence previously saved from explicit user selection.
+    app_state.set_allowed_evidence([e.path for e in evidence], source="project:open")
     load_results = await _load_evidence(evidence, info.get("timezone", ""))
 
     return {
@@ -249,6 +255,7 @@ async def scan_evidence(req: ScanEvidenceRequest):
             etype = ext_map.get(ext) or ext_map.get(ext_lower)
             if etype:
                 # Determine size
+                size = 0
                 try:
                     size = os.path.getsize(filepath)
                     if size < 1024:
@@ -270,6 +277,7 @@ async def scan_evidence(req: ScanEvidenceRequest):
                     "path": filepath.replace("\\", "/"),
                     "label": label,
                     "size": size_str,
+                    "size_bytes": size,
                     "loaded": False,
                 })
 
@@ -294,6 +302,7 @@ async def scan_evidence(req: ScanEvidenceRequest):
                         "path": dirpath.replace("\\", "/"),
                         "label": f"KAPE Output ({csv_count} CSVs)",
                         "size": f"{csv_count} files",
+                        "size_bytes": 0,
                         "loaded": False,
                     })
 
@@ -316,6 +325,14 @@ async def _load_evidence(evidence: list[EvidenceItem], timezone_str: str = "") -
     results: list[dict] = []
 
     for ev in evidence:
+        if not app_state.is_allowed_evidence(ev.path):
+            results.append({
+                "type": ev.type,
+                "path": ev.path,
+                "status": "blocked",
+                "error": "Path is outside the user-selected evidence allowlist",
+            })
+            continue
         if not ev.path or not os.path.exists(ev.path):
             results.append({"type": ev.type, "path": ev.path, "status": "not_found"})
             continue
