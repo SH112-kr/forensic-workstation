@@ -93,3 +93,57 @@ body {
 .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn-primary:hover { opacity: 0.9; }
 .btn-sm { padding: 3px 8px; font-size: 11px; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn[disabled],
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Forms ──────────────────────────────────────────────────────────────────────
+   Shared primitives so components stop redefining the same input/label/field
+   styles inline. Accessibility lives here: every input pairs with a .label via
+   htmlFor, invalid fields get .input-invalid + aria-invalid="true" from the
+   component, and help/error text uses .help-text/.field-error and is surfaced
+   via aria-describedby. */
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.field-row { display: flex; flex-direction: row; gap: 8px; align-items: center; margin-bottom: 10px; }
+.label {
+  font-size: 11px; font-weight: 600; color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+.label .required { color: var(--critical); margin-left: 2px; }
+.input {
+  padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font-size: 12px;
+  font-family: var(--font);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+.input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+.input-sm { padding: 4px 8px; font-size: 11px; }
+.input-mono { font-family: var(--mono); }
+.input-invalid {
+  border-color: var(--critical) !important;
+  box-shadow: 0 0 0 2px var(--critical-bg) !important;
+}
+.input:disabled { opacity: 0.6; cursor: not-allowed; }
+.help-text { font-size: 11px; color: var(--text-dim); }
+.field-error {
+  font-size: 11px; color: var(--critical); font-weight: 500;
+  display: flex; align-items: center; gap: 4px;
+}
+.field-error::before { content: '⚠'; font-size: 10px; }
+
+/* Inline spinner so components show a button-local loading state instead of
+   covering the screen with an overlay. */
+.spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: fw-spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+.spinner-sm { width: 10px; height: 10px; border-width: 2px; }
+@keyframes fw-spin { to { transform: rotate(360deg); } }

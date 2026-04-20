@@ -599,42 +599,105 @@ export default function CaseManager() {
             </label>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Project Name <span style={{ color: '#ef4444' }}>*</span></label>
-                <input style={inputStyle} placeholder="e.g. Case_001" value={projectName} onChange={e => setProjectName(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-project-name">
+                  Project Name <span className="required">*</span>
+                </label>
+                <input
+                  id="fw-project-name"
+                  className={`input${creating && !projectName.trim() ? ' input-invalid' : ''}`}
+                  placeholder="e.g. Case_001"
+                  value={projectName}
+                  onChange={e => setProjectName(e.target.value)}
+                  aria-invalid={creating && !projectName.trim()}
+                  aria-describedby={creating && !projectName.trim() ? 'fw-project-name-err' : undefined}
+                  required
+                />
+                {creating && !projectName.trim() && (
+                  <span id="fw-project-name-err" className="field-error">Project Name is required</span>
+                )}
               </div>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Incident Date <span style={{ color: '#ef4444' }}>*</span></label>
-                <input style={inputStyle} type="date" value={incidentDate} onChange={e => setIncidentDate(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-incident-date">
+                  Incident Date <span className="required">*</span>
+                </label>
+                <input
+                  id="fw-incident-date"
+                  type="date"
+                  className={`input${creating && !incidentDate ? ' input-invalid' : ''}`}
+                  value={incidentDate}
+                  onChange={e => setIncidentDate(e.target.value)}
+                  aria-invalid={creating && !incidentDate}
+                />
               </div>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Hostname <span style={{ color: '#ef4444' }}>*</span></label>
-                <input style={inputStyle} placeholder="e.g. WORKSTATION-01" value={hostname} onChange={e => setHostname(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-hostname">
+                  Hostname <span className="required">*</span>
+                </label>
+                <input
+                  id="fw-hostname"
+                  className={`input${creating && !hostname.trim() ? ' input-invalid' : ''}`}
+                  placeholder="e.g. WORKSTATION-01"
+                  value={hostname}
+                  onChange={e => setHostname(e.target.value)}
+                  aria-invalid={creating && !hostname.trim()}
+                />
               </div>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Timezone <span style={{ color: '#ef4444' }}>*</span></label>
-                <input style={inputStyle} placeholder="Asia/Seoul" value={timezone} onChange={e => setTimezone(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-timezone">
+                  Timezone <span className="required">*</span>
+                </label>
+                <input
+                  id="fw-timezone"
+                  className={`input${creating && !timezone.trim() ? ' input-invalid' : ''}`}
+                  placeholder="Asia/Seoul"
+                  value={timezone}
+                  onChange={e => setTimezone(e.target.value)}
+                  aria-invalid={creating && !timezone.trim()}
+                />
               </div>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>IP Addresses</label>
-                <input style={inputStyle} placeholder="192.168.1.10, 10.0.0.5" value={ipAddresses} onChange={e => setIpAddresses(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-ip-addresses">IP Addresses</label>
+                <input
+                  id="fw-ip-addresses"
+                  className="input"
+                  placeholder="192.168.1.10, 10.0.0.5"
+                  value={ipAddresses}
+                  onChange={e => setIpAddresses(e.target.value)}
+                />
               </div>
-              <div>
-                <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>User Accounts</label>
-                <input style={inputStyle} placeholder="admin, user01" value={userAccounts} onChange={e => setUserAccounts(e.target.value)} />
+              <div className="field">
+                <label className="label" htmlFor="fw-user-accounts">User Accounts</label>
+                <input
+                  id="fw-user-accounts"
+                  className="input"
+                  placeholder="admin, user01"
+                  value={userAccounts}
+                  onChange={e => setUserAccounts(e.target.value)}
+                />
               </div>
             </div>
 
-            <div style={{ marginTop: 10 }}>
-              <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Known IOCs (IPs, hashes, domains)</label>
-              <input style={inputStyle} placeholder="1.2.3.4, evil.exe, malware.com" value={knownIocs} onChange={e => setKnownIocs(e.target.value)} />
+            <div className="field">
+              <label className="label" htmlFor="fw-known-iocs">Known IOCs (IPs, hashes, domains)</label>
+              <input
+                id="fw-known-iocs"
+                className="input input-mono"
+                placeholder="1.2.3.4, evil.exe, malware.com"
+                value={knownIocs}
+                onChange={e => setKnownIocs(e.target.value)}
+              />
             </div>
 
-            <div style={{ marginTop: 10 }}>
-              <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>Description / Notes</label>
-              <textarea style={{ ...inputStyle, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+            <div className="field">
+              <label className="label" htmlFor="fw-project-desc">Description / Notes</label>
+              <textarea
+                id="fw-project-desc"
+                className="input"
+                style={{ minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
                 placeholder="Incident background, scope, anything relevant..."
-                value={projectDesc} onChange={e => setProjectDesc(e.target.value)}
+                value={projectDesc}
+                onChange={e => setProjectDesc(e.target.value)}
               />
             </div>
           </div>
@@ -643,8 +706,12 @@ export default function CaseManager() {
           <button className="btn btn-primary"
             onClick={handleCreate}
             disabled={creating || selectedEvidence.size === 0}
-            style={{ width: '100%', padding: '12px', fontSize: 14, fontWeight: 600, marginBottom: 24 }}>
-            {creating ? 'Creating...' : 'Create Project & Load Evidence'}
+            aria-busy={creating}
+            title={selectedEvidence.size === 0 ? 'Select at least one evidence item first' : undefined}
+            style={{ width: '100%', padding: '12px', fontSize: 14, fontWeight: 600, marginBottom: 24,
+                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            {creating && <span className="spinner spinner-sm" aria-hidden="true" />}
+            {creating ? (loadingPhase || 'Creating…') : 'Create Project & Load Evidence'}
           </button>
         </>
       )}
@@ -652,12 +719,15 @@ export default function CaseManager() {
       {/* ── QUICK OPEN TAB ── */}
       {tab === 'quick' && (
         <div style={sectionStyle}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', display: 'block', marginBottom: 8 }}>
+          <label className="label" htmlFor="fw-quick-path-0" style={{ display: 'block', marginBottom: 8 }}>
             Open case files — add multiple sources (.mfdb + KAPE directory) to load together
           </label>
           {quickPaths.map((p, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-              <input style={{ ...inputStyle, flex: 1 }}
+              <input
+                id={`fw-quick-path-${i}`}
+                className="input input-mono"
+                style={{ flex: 1 }}
                 placeholder={i === 0 ? "Path to .mfdb file or KAPE parsed directory..." : "Additional path..."}
                 value={p}
                 onChange={e => {
@@ -670,7 +740,8 @@ export default function CaseManager() {
               {quickPaths.length > 1 && (
                 <button
                   onClick={() => setQuickPaths(quickPaths.filter((_, j) => j !== i))}
-                  style={{ padding: '6px 10px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14 }}
+                  className="btn"
+                  aria-label={`Remove path ${i + 1}`}
                   title="Remove">
                   ✕
                 </button>
@@ -680,18 +751,23 @@ export default function CaseManager() {
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={() => setQuickPaths([...quickPaths, ''])}
-              style={{ padding: '6px 16px', background: 'none', border: '1px dashed var(--border)', borderRadius: 6, color: 'var(--accent)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+              className="btn"
+              style={{ borderStyle: 'dashed', color: 'var(--accent)' }}>
               + Add Source
             </button>
             <div style={{ flex: 1 }} />
             <button className="btn btn-primary" onClick={handleQuickOpen}
               disabled={quickLoading || quickPaths.every(p => !p.trim())}
-              style={{ padding: '8px 24px' }}>
-              {quickLoading ? 'Opening...' : `Open${quickPaths.filter(p => p.trim()).length > 1 ? ` (${quickPaths.filter(p => p.trim()).length})` : ''}`}
+              aria-busy={quickLoading}
+              style={{ padding: '8px 24px', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {quickLoading && <span className="spinner spinner-sm" aria-hidden="true" />}
+              {quickLoading ? 'Opening…' : `Open${quickPaths.filter(p => p.trim()).length > 1 ? ` (${quickPaths.filter(p => p.trim()).length})` : ''}`}
             </button>
           </div>
           {quickError && (
-            <div style={{ marginTop: 8, fontSize: 12, color: '#ef4444' }}>{quickError}</div>
+            <div className="field-error" role="alert" style={{ marginTop: 10 }}>
+              {quickError}
+            </div>
           )}
         </div>
       )}
