@@ -1,0 +1,37 @@
+{
+  "schema": "fw.windows_baseline.v1",
+  "source": "Hand-curated minimal list of known-good Windows 10/11 artifact names. Not exhaustive — extend with your own reference case for noise-free triage.",
+  "services": [
+    "AppHostSvc", "BFE", "BITS", "Browser", "CDPSvc", "CryptSvc", "DcomLaunch",
+    "Dhcp", "Dnscache", "DPS", "EventLog", "EventSystem", "fdPHost", "FDResPub",
+    "gpsvc", "LanmanServer", "LanmanWorkstation", "lmhosts", "MpsSvc", "Netlogon",
+    "Netman", "nsi", "PlugPlay", "PolicyAgent", "Power", "ProfSvc", "RpcEptMapper",
+    "RpcSs", "SamSs", "Schedule", "SENS", "SessionEnv", "SharedAccess", "ShellHWDetection",
+    "Spooler", "SSDPSRV", "SstpSvc", "TabletInputService", "TapiSrv", "Themes",
+    "TrkWks", "TrustedInstaller", "UmRdpService", "UserManager", "VSS", "W32Time",
+    "WebClient", "WinDefend", "Winmgmt", "WlanSvc", "wlidsvc", "wscsvc", "WSearch",
+    "wuauserv", "XblAuthManager", "XblGameSave"
+  ],
+  "scheduled_tasks": [
+    "\\Microsoft\\Windows\\UpdateOrchestrator\\Schedule Scan",
+    "\\Microsoft\\Windows\\WindowsUpdate\\Scheduled Start",
+    "\\Microsoft\\Windows\\Defrag\\ScheduledDefrag",
+    "\\Microsoft\\Windows\\DiskCleanup\\SilentCleanup",
+    "\\Microsoft\\Windows\\Maintenance\\WinSAT",
+    "\\Microsoft\\Windows\\Time Synchronization\\SynchronizeTime",
+    "\\Microsoft\\Windows\\TaskScheduler\\Regular Maintenance",
+    "\\Microsoft\\Windows\\TaskScheduler\\Idle Maintenance",
+    "\\Microsoft\\Windows\\SystemRestore\\SR",
+    "\\Microsoft\\Windows\\Shell\\CreateObjectTask",
+    "\\Microsoft\\Windows\\Chkdsk\\ProactiveScan"
+  ],
+  "startup_items": [],
+  "users": [
+    "Administrator", "DefaultAccount", "Guest", "WDAGUtilityAccount", "SYSTEM",
+    "LOCAL SERVICE", "NETWORK SERVICE"
+  ],
+  "notes": [
+    "This list is intentionally small. Pair baseline_diff with a reference_case_id for any serious triage.",
+    "Many legitimate third-party services/tasks are NOT here — the diff will flag them. Review the output before treating any entry as suspicious."
+  ]
+}

@@ -891,6 +891,45 @@ def _coerce_pack_args(name: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def baseline_diff(
+    reference_case_id: str = "",
+    categories: str = "",
+) -> dict:
+    """Compare the active case against a known-good baseline.
+
+    Returns net-new services / scheduled_tasks / startup_items / users — items
+    present in the active case but not in the reference. Use this to cut
+    triage noise ("what is NEW on this host?").
+
+    Args:
+        reference_case_id: Case id of another loaded case to diff against
+            (e.g. a golden-image KAPE case). Leave empty to use the built-in
+            Windows baseline JSON.
+        categories: Optional comma-separated subset of
+            services, scheduled_tasks, startup_items, users.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.baseline_diff import baseline_diff as _diff
+        active = _get_axiom()
+        ref_aq = None
+        if reference_case_id.strip():
+            key = f"axiom:{reference_case_id.strip()}"
+            ref = app_state._connectors.get(key)
+            if ref is None or not ref.is_connected():
+                return {"ok": False,
+                        "error": f"Reference case not found or not connected: {reference_case_id}"}
+            ref_aq = ref.artifact_queries
+        cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
+        return _mask(_diff(active.artifact_queries, reference_aq=ref_aq, categories=cats))
+    return await _traced(
+        "baseline_diff",
+        {"reference_case_id": reference_case_id, "categories": categories},
+        fn, timeout_seconds=TIMEOUT_MEDIUM,
+    )
+
+
+@mcp.tool()
 async def list_hunt_packs() -> dict:
     """List every available hunt pack (built-in + local)."""
     def fn():

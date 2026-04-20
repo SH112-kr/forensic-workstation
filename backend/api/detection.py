@@ -58,6 +58,28 @@ async def suppressions_remove(rule_id: str):
     return remove_suppression(rule_id=rule_id)
 
 
+@router.get("/baseline-diff")
+async def baseline_diff_get(reference_case_id: str = "", categories: str = ""):
+    from state import app_state
+    from core.analysis.baseline_diff import baseline_diff as _diff
+    try:
+        active = app_state.get_axiom()
+        ref_aq = None
+        if reference_case_id.strip():
+            key = f"axiom:{reference_case_id.strip()}"
+            ref = app_state._connectors.get(key)
+            if ref is None or not ref.is_connected():
+                raise HTTPException(status_code=400,
+                    detail=f"Reference case not loaded: {reference_case_id}")
+            ref_aq = ref.artifact_queries
+        cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
+        return _diff(active.artifact_queries, reference_aq=ref_aq, categories=cats)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/hunt-packs")
 async def hunt_packs_list():
     from core.analysis.hunt_packs import list_packs
