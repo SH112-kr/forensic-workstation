@@ -414,6 +414,7 @@ async def pivot_across_cases(
     entity_value: str,
     window_minutes: int = 60,
     limit_per_case: int = 100,
+    match_key: str = "raw",
 ) -> dict:
     """Pivot on an entity across every loaded case.
 
@@ -425,6 +426,15 @@ async def pivot_across_cases(
         window_minutes: Reserved for future temporal clustering; v1 returns
             raw merged hits.
         limit_per_case: Max hits to pull from each case before merging.
+        match_key: Normalization mode for result comparison.
+            - ``raw`` (default): no normalization; pure string match from
+              the connector side. Safest.
+            - ``strict``: Tier-1 cosmetic normalization only (case +
+              whitespace); does NOT collapse DOMAIN / realm / FQDN labels.
+            - ``loose``: Tier-2 aggressive canonicalization (user_bare,
+              host_first_label, path_basename). CAN collapse distinct
+              identities (e.g. svc@a.local and svc@b.local become the
+              same); each affected hit carries an explicit warning string.
 
     Returns per-case counts, merged hits with full provenance, and
     first/last-seen markers so you can see which case carried the entity
@@ -434,10 +444,15 @@ async def pivot_across_cases(
         from state import app_state
         from core.analysis.case_aggregator import pivot_across_cases as _pivot
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-        return _mask(_pivot(axiom_conns, entity_type, entity_value, window_minutes, limit_per_case))
+        return _mask(_pivot(
+            axiom_conns, entity_type, entity_value,
+            window_minutes=window_minutes, limit_per_case=limit_per_case,
+            match_key=match_key,
+        ))
     return await _traced(
         "pivot_across_cases",
-        {"entity_type": entity_type, "entity_value": entity_value[:100], "limit_per_case": limit_per_case},
+        {"entity_type": entity_type, "entity_value": entity_value[:100],
+         "limit_per_case": limit_per_case, "match_key": match_key},
         fn,
         timeout_seconds=TIMEOUT_MEDIUM,
     )

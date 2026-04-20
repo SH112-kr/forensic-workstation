@@ -344,6 +344,7 @@ def pivot_across_cases(
     entity_value: str,
     window_minutes: int = 60,
     limit_per_case: int = 100,
+    match_key: str = "raw",
 ) -> dict[str, Any]:
     """Pivot on an entity (hash/ip/username/filename/path/keyword) across cases.
 
@@ -390,6 +391,39 @@ def pivot_across_cases(
             if last_seen is None or ts > last_seen.get("timestamp", ""):
                 last_seen = {"case_id": cid, "timestamp": ts, "hit_id": h.get("hit_id")}
 
+    # Optional normalization — Codex Round-5 discipline: raw is the default,
+    # 'strict' is safe Tier-1 (case/whitespace), 'loose' invokes Tier-2 with an
+    # explicit warning both on the envelope AND on each affected hit so
+    # misuse is visible at every scope.
+    match_warnings: list[str] = []
+    match_notes: dict[str, Any] = {"mode": match_key, "warnings": []}
+    if match_key in ("strict", "loose"):
+        from core.analysis import normalization as _norm
+        t2_kind = None
+        if match_key == "loose":
+            if etype in ("username", "user"):
+                t2_kind = "user_bare"
+            elif etype in ("filename", "path"):
+                t2_kind = "path_basename"
+            elif etype in ("ip", "host", "hostname"):
+                t2_kind = "host_first_label"
+        for h in merged:
+            raw_value = h.get("fields", {}).get("ImageFileName") if isinstance(h.get("fields"), dict) else None
+            # Pick a best-effort field to normalize based on entity type.
+            candidate = evalue
+            normalized = _norm.safe_trim(candidate).lower()
+            h["normalized_value"] = normalized
+            h["normalized_rule"] = "safe_display"
+            if t2_kind:
+                verdict = _norm.apply_match_key(t2_kind, candidate)
+                h["normalized_value"] = verdict["value"]
+                h["normalized_rule"] = verdict["rule"]
+                if verdict.get("warning"):
+                    h["normalized_warning"] = verdict["warning"]
+                    if verdict["warning"] not in match_warnings:
+                        match_warnings.append(verdict["warning"])
+        match_notes["warnings"] = match_warnings
+
     return {
         "ok": True,
         "entity": {"type": etype, "value": evalue},
@@ -399,7 +433,8 @@ def pivot_across_cases(
         "first_seen": first_seen,
         "last_seen": last_seen,
         "hits": merged[: limit_per_case * 4],
-        "warnings": base.get("warnings", []),
+        "warnings": list(base.get("warnings", [])) + match_warnings,
+        "match_key": match_notes,
         "window_minutes": window_minutes,
     }
 
