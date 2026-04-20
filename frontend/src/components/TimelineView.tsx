@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import ZeroResultsHint from './ZeroResultsHint';
 
 export default function TimelineView() {
   const { caseInfo, setActiveView } = useStore();
@@ -138,23 +139,18 @@ export default function TimelineView() {
       {/* Timeline list */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 && !loading && (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
-            <div style={{ marginBottom: 12 }}>
+          <>
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
               {entries.length === 0 ? 'No timeline events found. Adjust the date range and try again.' : 'No events match the filter.'}
             </div>
             {entries.length === 0 && (
-              <button
-                onClick={() => setActiveView('coverage')}
-                style={{
-                  padding: '6px 14px', borderRadius: 6, background: 'transparent',
-                  border: '1px solid var(--border)', color: 'var(--accent)',
-                  cursor: 'pointer', fontSize: 12, fontWeight: 600,
-                }}
-              >
-                Why 0 events? → Check coverage
-              </button>
+              <ZeroResultsHint
+                toolName="build_timeline"
+                params={{ start_date: startDate, end_date: endDate, all_cases: allCases }}
+                message="build_timeline returned 0 events — diagnostic below"
+              />
             )}
-          </div>
+          </>
         )}
         {loading && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>

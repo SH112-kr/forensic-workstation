@@ -3,6 +3,7 @@ import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, type ColDef } from 'ag-grid-community';
 import { post, get } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import ZeroResultsHint from './ZeroResultsHint';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -209,26 +210,26 @@ export default function ArtifactBrowser() {
             </div>
           )}
           {rows.length === 0 && !loading && (
-            <div
-              style={{
-                padding: '14px 16px', background: 'var(--surface)',
-                borderBottom: '1px solid var(--border-light)',
-                fontSize: 12, color: 'var(--text-dim)',
-                display: 'flex', alignItems: 'center', gap: 10,
-              }}
-            >
-              <span>No artifacts match the current filter.</span>
-              <button
-                onClick={() => setActiveView('coverage')}
+            <>
+              <div
                 style={{
-                  padding: '4px 10px', borderRadius: 4, background: 'transparent',
-                  border: '1px solid var(--border)', color: 'var(--accent)',
-                  cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                  padding: '14px 16px', background: 'var(--surface)',
+                  borderBottom: '1px solid var(--border-light)',
+                  fontSize: 12, color: 'var(--text-dim)',
                 }}
               >
-                Why 0 results? → Check coverage
-              </button>
-            </div>
+                No artifacts match the current filter.
+              </div>
+              <ZeroResultsHint
+                toolName="search_artifacts"
+                params={{
+                  keyword: searchKeyword, artifact_type: artifactType,
+                  start_date: startDate, end_date: endDate,
+                  all_cases: allCases,
+                }}
+                message="search_artifacts returned 0 rows — diagnostic below"
+              />
+            </>
           )}
           <div style={{ flex: 1 }}>
             <AgGridReact
