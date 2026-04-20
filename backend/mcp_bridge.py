@@ -906,6 +906,34 @@ def _coerce_pack_args(name: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def case_health() -> dict:
+    """Can the analyst trust the substrate of this investigation?
+
+    Runs a deterministic health suite over every loaded case and returns one
+    envelope with overall_status (blocked/degraded/healthy_with_notes/healthy)
+    plus per-check records. Each check publishes its thresholds and metrics
+    so an analyst can audit why a check passed or failed.
+
+    v1 checks:
+      - case_loaded                        critical
+      - case_date_range                    medium
+      - high_value_families_empty          high
+      - kape_module_failures               high
+      - evtx_row_thinness                  medium
+      - duplicate_source_paths             medium
+      - timezone_drift                     low
+      - allowlist_integrity                info
+
+    Fully offline. No detection logic, no incident-specific heuristics.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.case_health import case_health as _health
+        return _mask(_health(app_state._connectors))
+    return await _traced("case_health", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
 async def build_entity_graph(
     entity_types: str = "",
     edge_types: str = "",

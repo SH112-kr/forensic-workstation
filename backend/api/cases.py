@@ -243,6 +243,18 @@ async def post_explain_zero(req: ExplainZeroRequest):
     return _explain(axiom_conns, tool_name=req.tool_name, params=req.params)
 
 
+@router.get("/health")
+async def get_case_health():
+    """Deterministic health suite over every loaded case.
+
+    Returns overall_status + per-check records. Offline only — reads
+    connector metadata and artifact type counts, no external calls.
+    """
+    from state import app_state
+    from core.analysis.case_health import case_health as _health
+    return _health(app_state._connectors)
+
+
 @router.get("/coverage")
 async def get_coverage(artifact_types: str = ""):
     """Report searchable vs structurally unavailable artifact families.
