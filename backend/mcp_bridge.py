@@ -1028,11 +1028,15 @@ async def build_entity_graph(
 
         ets = [t.strip() for t in entity_types.split(",") if t.strip()] or None
         edts = [t.strip() for t in edge_types.split(",") if t.strip()] or None
+        # Bucket hit_ids are applied BEFORE construction inside the builder
+        # (Codex Round-9c): per-type caps count only bucket hits, so a
+        # bucket graph can never be starved by off-bucket entities.
         if all_cases:
             result = _build(
                 app_state._connectors,
                 entity_types=ets, edge_types=edts,
                 match_key=match_key, limit_per_node_type=limit_per_node_type,
+                hit_id_filter=bucket_hit_ids,
             )
         else:
             axiom = _get_axiom()
@@ -1041,20 +1045,10 @@ async def build_entity_graph(
                 axiom_cases=[("active", axiom)],
                 entity_types=ets, edge_types=edts,
                 match_key=match_key, limit_per_node_type=limit_per_node_type,
+                hit_id_filter=bucket_hit_ids,
             )
 
-        # Bucket post-filter: keep only nodes whose collapsed_from references
-        # a hit_id in the bucket set. Drop edges orphaned by the filter.
-        if bucket_hit_ids is not None and result.get("ok"):
-            kept_node_ids = {
-                n["id"] for n in result.get("nodes", [])
-                if any(c.get("source_hit_id") in bucket_hit_ids for c in n.get("collapsed_from", []))
-            }
-            result["nodes"] = [n for n in result["nodes"] if n["id"] in kept_node_ids]
-            result["edges"] = [
-                e for e in result["edges"]
-                if e["source"] in kept_node_ids and e["target"] in kept_node_ids
-            ]
+        if bucket_info is not None and result.get("ok"):
             result["bucket_filter"] = bucket_info
 
         return _mask(result)

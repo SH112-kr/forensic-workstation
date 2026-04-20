@@ -245,6 +245,44 @@ def test_unknown_edge_type_rejected():
     assert "edge_types" in r["error"] or "Unknown" in r["error"]
 
 
+def test_hit_id_filter_survives_truncation_pressure():
+    """Codex Round-9c: bucket entities must still appear even when
+    off-bucket hits would have exhausted the per-type cap under a
+    post-construction filter. Pre-filtering inside the builder means
+    off-bucket hits never consume the cap in the first place."""
+    # 20 off-bucket users (hit_ids 0..19) + 1 in-bucket user (hit_id 99)
+    events = []
+    for i in range(20):
+        events.append(_mkhit(
+            i,
+            f'<Data Name="TargetUserName">noise{i}</Data>'
+            f'<Data Name="TargetDomainName">DOM</Data>',
+            computer="HOST1",
+        ))
+    events.append(_mkhit(
+        99,
+        '<Data Name="TargetUserName">SignalUser</Data>'
+        '<Data Name="TargetDomainName">DOM</Data>',
+        computer="HOST1",
+    ))
+    aq = _FakeAQ(evtx_by_eid={4624: events})
+
+    # limit_per_node_type=5 would starve the in-bucket user under a
+    # post-construction filter — the 20 noise users would fill the
+    # budget before the signal user was seen.
+    g = build_entity_graph(
+        axiom_cases=[("a", aq)], limit_per_node_type=5,
+        hit_id_filter={99},
+    )
+    user_nodes = [n for n in g["nodes"] if n["type"] == "user"]
+    normalized = {n["normalized_value"] for n in user_nodes}
+    # SignalUser must be present; no noise users should appear.
+    assert any("signaluser" in n for n in normalized), f"Bucket user missing: {normalized}"
+    assert not any(n.startswith("dom\\noise") for n in normalized)
+    # Graph should NOT be flagged truncated — the noise never entered.
+    assert g["graph_is_complete"] is True
+
+
 def test_unknown_entity_type_rejected():
     r = build_entity_graph(axiom_cases=[], entity_types=["not_a_real_entity"])
     assert r["ok"] is False

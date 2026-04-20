@@ -172,9 +172,11 @@ def _normalize_entity(entity_type: str, raw: str, match_key: str) -> dict[str, A
 # ── Node / edge accumulators ───────────────────────────────────────────────
 
 class _GraphBuilder:
-    def __init__(self, match_key: str, limit_per_node_type: int):
+    def __init__(self, match_key: str, limit_per_node_type: int,
+                 hit_id_filter: set[int] | None = None):
         self.match_key = match_key
         self.limit = limit_per_node_type
+        self.hit_id_filter = hit_id_filter
         self.nodes: dict[str, dict[str, Any]] = {}
         self.edges: dict[str, dict[str, Any]] = {}
         self.warnings: list[str] = []
@@ -187,6 +189,12 @@ class _GraphBuilder:
         input_field: str = "",
     ) -> str | None:
         if not raw_value:
+            return None
+        # Pre-construction bucket gating (Codex Round-9c fix): when a caller
+        # constrains the graph to a bucket's hit_ids, off-bucket hits never
+        # count against the per-type cap, so in-bucket entities cannot be
+        # silently starved by truncation pressure from unrelated data.
+        if self.hit_id_filter is not None and source_hit_id not in self.hit_id_filter:
             return None
         verdict = _normalize_entity(node_type, raw_value, self.match_key)
         normalized = verdict["normalized"]
@@ -436,11 +444,18 @@ def build_entity_graph(
     edge_types: list[str] | None = None,
     match_key: str = "raw",
     limit_per_node_type: int = 200,
+    hit_id_filter: set[int] | None = None,
 ) -> dict[str, Any]:
     """Construct a typed graph over one or more AXIOM-style cases.
 
     Callers pass either a full ``connectors`` dict (axiom:* keys) or an
     explicit list of ``(case_id, connector)`` tuples (used by tests).
+
+    ``hit_id_filter`` (optional): when provided, only artifact rows whose
+    ``hit_id`` is in this set produce nodes/edges. The filter is applied
+    BEFORE construction so per-type truncation budgets count only bucket
+    hits — a bucket graph can never be silently starved by off-bucket
+    hits consuming the cap first (Codex Round-9c fix).
     """
     if axiom_cases is None:
         axiom_cases = []
@@ -481,7 +496,8 @@ def build_entity_graph(
     wanted_edges = req_edges
     wanted_entities = req_entities
 
-    b = _GraphBuilder(match_key=match_key, limit_per_node_type=limit_per_node_type)
+    b = _GraphBuilder(match_key=match_key, limit_per_node_type=limit_per_node_type,
+                       hit_id_filter=hit_id_filter)
 
     for case_id, c in axiom_cases:
         aq = getattr(c, "artifact_queries", c)

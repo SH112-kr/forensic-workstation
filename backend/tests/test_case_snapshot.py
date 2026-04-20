@@ -143,6 +143,26 @@ def test_resolve_bucket_hit_ids_raises_on_typo(tmp_path, monkeypatch, mfdb_case)
         cs.resolve_bucket_hit_ids("case_w", "exfill")
 
 
+def test_bucket_slug_collision_warns(tmp_path, monkeypatch, mfdb_case):
+    """Codex Round-9c: two distinct labels that sanitize to the same slug
+    merge intentionally, but the collision must be visible so an analyst
+    who didn't mean the merge can rename."""
+    monkeypatch.setattr(cs, "_STATE_DIR", str(tmp_path))
+    conns = {"axiom:a": mfdb_case, "axiom": mfdb_case}
+    cs.save_snapshot(conns, name="Case C")
+
+    first = cs.add_hits_to_bucket("case_c", "Payload Files", [1, 2])
+    assert first["ok"] is True
+    assert "collision_warning" not in first
+
+    second = cs.add_hits_to_bucket("case_c", "payload files!", [3])  # same slug
+    assert second["ok"] is True
+    assert "collision_warning" in second
+    assert "payload_files" in second["collision_warning"]
+    # Both hit sets merged under one slug
+    assert second["hit_count"] == 3
+
+
 def test_tagged_hits_aggregate_untouched_by_buckets(tmp_path, monkeypatch, mfdb_case):
     """Bucket edits must not modify the flat tagged_hits legacy field."""
     monkeypatch.setattr(cs, "_STATE_DIR", str(tmp_path))

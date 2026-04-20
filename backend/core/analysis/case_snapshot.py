@@ -117,6 +117,7 @@ def _normalize_loaded(data: dict[str, Any]) -> dict[str, Any]:
     """
     data.setdefault("tagged_hits_by_bucket", {})
     data.setdefault("bucket_hypotheses", {})
+    data.setdefault("bucket_display_names", {})
     data.setdefault("schema", "fw.case_snapshot.v1")
     data["schema_version_normalized"] = SCHEMA_VERSION_V2
     return data
@@ -198,28 +199,57 @@ def add_hits_to_bucket(
     hypothesis: str = "",
 ) -> dict[str, Any]:
     """Append hit_ids to a named bucket; dedup + sort. Creates the bucket
-    on first call and records the hypothesis string if provided."""
+    on first call and records the hypothesis string if provided.
+
+    Codex Round-9c: record the caller's first-seen display name under
+    ``bucket_display_names`` so downstream callers can tell when two
+    distinct bucket labels collapsed to the same slug (e.g. 'Payload Files'
+    and 'payload files!' both → 'payload_files'). A mismatch on a later
+    add returns a warning on the response, not a hard error — the merge
+    is intentional (same slug = same bucket) but must be visible.
+    """
     try:
         path, data = _read_snapshot_raw(snapshot_slug)
     except SnapshotNotFoundError as e:
         return {"ok": False, "error": str(e)}
+    raw_name = (bucket_name or "").strip()
     b_slug = _slug(bucket_name)
     if not b_slug:
         return {"ok": False, "error": "bucket_name is empty after sanitization"}
+
     buckets = data.setdefault("tagged_hits_by_bucket", {})
+    display_names = data.setdefault("bucket_display_names", {})
+
+    collision_warning: str | None = None
+    prior_display = display_names.get(b_slug)
+    if prior_display is None:
+        # First time we see this slug — record the original label.
+        display_names[b_slug] = raw_name
+    elif prior_display != raw_name:
+        collision_warning = (
+            f"bucket slug {b_slug!r} was previously created as "
+            f"{prior_display!r}; this call used {raw_name!r}. Hits are merged "
+            "into a single bucket; rename one label if the merge is unintentional."
+        )
+
     current = set(int(h) for h in buckets.get(b_slug, []) if h is not None)
     current.update(int(h) for h in hit_ids if h is not None)
     buckets[b_slug] = sorted(current)
     if hypothesis.strip():
         data.setdefault("bucket_hypotheses", {})[b_slug] = hypothesis.strip()
     _write_snapshot_raw(path, data)
-    return {
+
+    out = {
         "ok": True,
         "snapshot_slug": data["slug"],
         "bucket": b_slug,
+        "display_name": display_names[b_slug],
         "hit_count": len(buckets[b_slug]),
         "hypothesis": data.get("bucket_hypotheses", {}).get(b_slug, ""),
     }
+    if collision_warning:
+        out["collision_warning"] = collision_warning
+    return out
 
 
 def remove_hits_from_bucket(
