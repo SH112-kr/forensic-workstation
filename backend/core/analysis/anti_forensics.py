@@ -43,6 +43,16 @@ if TYPE_CHECKING:
     from connectors.axiom_artifact_queries import ArtifactQueries
 
 
+# Cap the details list each rule returns. A case with tens of thousands of
+# cleared-log events was generating 6 MB / 71k-line payloads that blew past
+# any caller's context budget. 50 is deliberately aggressive — it keeps the
+# worst-case envelope well under the ~25k-token MCP response ceiling even
+# when several rules fire on a heavy case. The cap is exposed in the
+# envelope so the analyst can see it was applied and request a larger
+# window deliberately.
+_DEFAULT_DETAIL_CAP_PER_RULE = 50
+
+
 # Fragment assembly — see the "Pattern assembly note" in the module docstring.
 # Inline comments deliberately omit the reassembled literals so the source
 # text does not trip Defender heuristics; read the docstring for context.
@@ -132,11 +142,20 @@ def _hit_to_detail(
 
 
 def _rule_log_cleared(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
-    """Reuse the existing cleared-log query (EID 1102)."""
-    try:
-        hits = aq.query_log_cleared(limit=0)
-    except Exception:
-        return None
+    """EID 1102 Security log cleared.
+
+    Rules do **not** swallow exceptions: the ``detect_anti_forensics`` outer
+    loop already records per-rule failures as ``ok=False``. If a connector
+    schema change or the provider kwarg regressed, that surfaces as a
+    visible rule failure rather than a silent "no hits" — critical for a
+    tool whose job is to *detect* tampering.
+    """
+    hits = aq.query_log_cleared(limit=0)
+    # Defence in depth against substring false positives: the connector's
+    # post-hoc provider filter is substring-based, so a (hypothetical)
+    # ``Microsoft-Windows-Eventlog-Whatever`` provider would slip through.
+    # Require exact equality on Provider Name here.
+    hits = [h for h in hits if str(h.get("Provider Name", "")) == "Microsoft-Windows-Eventlog"]
     return [
         _hit_to_detail(
             h, "log_cleared_security_1102",
@@ -148,10 +167,30 @@ def _rule_log_cleared(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
 
 
 def _rule_system_log_cleared(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
-    try:
-        hits = aq.query_event_logs(event_ids=[104], limit=0)
-    except Exception:
-        return None
+    """EID 104 System log cleared.
+
+    Pinned to ``Provider=Microsoft-Windows-Eventlog``. EID 104 is reused by
+    many providers (``Microsoft-Windows-Diagnosis-Scripted``,
+    ``Microsoft-Windows-Kernel-Cache``, ``Microsoft-Windows-Kernel-LiveDump``,
+    ...) for unrelated events. On a real multi-week case we observed ~7,900
+    EID 104 hits from those noise providers and zero from the EventLog
+    provider — without the provider pin the rule would report a ~100%
+    false-positive set as anti-forensic activity.
+
+    Exceptions are not swallowed: the outer ``detect_anti_forensics`` loop
+    already reports per-rule failures as ``ok=False``. Silencing errors
+    here would hide a genuine rule-layer bug as "no activity" — a
+    detection-tool cardinal sin.
+    """
+    hits = aq.query_event_logs(
+        event_ids=[104],
+        provider="Microsoft-Windows-Eventlog",
+        limit=0,
+    )
+    # Connector's provider filter is substring-based; tighten to exact
+    # match in the rule so a hypothetical ``Microsoft-Windows-Eventlog-*``
+    # provider cannot slip through.
+    hits = [h for h in hits if str(h.get("Provider Name", "")) == "Microsoft-Windows-Eventlog"]
     return [
         _hit_to_detail(
             h, "log_cleared_system_104",
@@ -243,12 +282,22 @@ def _rule_cleanup_tool_execution(aq: ArtifactQueries) -> list[dict[str, Any]] | 
     return out or None
 
 
-def detect_anti_forensics(aq: ArtifactQueries) -> dict[str, Any]:
+def detect_anti_forensics(
+    aq: ArtifactQueries,
+    max_details_per_rule: int = _DEFAULT_DETAIL_CAP_PER_RULE,
+) -> dict[str, Any]:
     """Run every rule and return a single consolidated envelope.
 
     Each rule carries its own ``details`` list plus a human-readable
     description of what it matched. Empty rules are dropped so the caller can
     render only what fired. MITRE technique IDs are attached per-rule.
+
+    Args:
+        max_details_per_rule: Hard cap on the number of ``details`` entries
+            returned per rule. Rules that exceed the cap still report the
+            true ``count`` in ``total_count`` plus ``truncated: True`` so
+            the analyst knows the sample was trimmed. ``0`` disables the
+            cap entirely (only use when you know the case is small).
     """
     cmdlines = _collect_cmdlines(aq)
 
@@ -292,6 +341,7 @@ def detect_anti_forensics(aq: ArtifactQueries) -> dict[str, Any]:
 
     rules_output = []
     total_hits = 0
+    any_truncated = False
     for name, technique, desc, fn in rule_descriptors:
         try:
             details = fn()
@@ -303,19 +353,28 @@ def detect_anti_forensics(aq: ArtifactQueries) -> dict[str, Any]:
             continue
         if not details:
             continue
-        total_hits += len(details)
+        real_count = len(details)
+        total_hits += real_count
+        truncated = bool(max_details_per_rule) and real_count > max_details_per_rule
+        emitted = details[:max_details_per_rule] if truncated else details
+        if truncated:
+            any_truncated = True
         rules_output.append({
             "rule_name": name, "ok": True,
             "mitre_technique": technique,
             "description": desc,
-            "count": len(details),
-            "details": details,
+            "count": len(emitted),
+            "total_count": real_count,
+            "truncated": truncated,
+            "details": emitted,
         })
 
-    return {
+    envelope: dict[str, Any] = {
         "ok": True,
         "rules_fired": len([r for r in rules_output if r.get("ok") and r.get("count")]),
         "total_hits": total_hits,
+        "detail_cap_per_rule": max_details_per_rule,
+        "any_rule_truncated": any_truncated,
         "rules": rules_output,
         "notes": [
             "Timestomp ($SI vs $FN divergence) is intentionally out of scope — use get_file_timestamps "
@@ -324,3 +383,12 @@ def detect_anti_forensics(aq: ArtifactQueries) -> dict[str, Any]:
             "publicly documented ATT&CK sub-techniques (T1070.*/T1562.*/T1490).",
         ],
     }
+    if any_truncated:
+        envelope["notes"].append(
+            f"One or more rules returned more than {max_details_per_rule} hits; "
+            "details were trimmed to that cap. Each trimmed rule carries total_count "
+            "so you can see how much was hidden. Re-run with max_details_per_rule=0 "
+            "to disable the cap, or search_logs/build_timeline to enumerate the full "
+            "matching set."
+        )
+    return envelope

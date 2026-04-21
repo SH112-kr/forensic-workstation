@@ -11,6 +11,19 @@ from connectors.base import BaseConnector
 from sql import axiom_queries as Q
 
 
+# SQLite's SQLITE_MAX_VARIABLE_NUMBER defaults to 999 on older builds (bumped
+# to 32k on 3.32+, but .mfdb files ship with unknown build targets). Keeping
+# the IN-clause fan-out below that ceiling turns "too many SQL variables" —
+# previously crashed find_suspicious on large EVTX-heavy cases — into a
+# transparent batch loop.
+_SQLITE_PARAM_BATCH = 900
+
+
+def _chunk(seq: list, size: int = _SQLITE_PARAM_BATCH):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 class AxiomMfdbConnector(BaseConnector):
 
     def __init__(self) -> None:
@@ -240,69 +253,78 @@ class AxiomMfdbConnector(BaseConnector):
         return cur.fetchone()[0]
 
     def _hydrate_hits(self, hit_ids: list[int]) -> list[dict]:
-        """Reconstruct hits from fragment tables."""
+        """Reconstruct hits from fragment tables.
+
+        hit_ids are batched through every IN-clause query so the call stays
+        below SQLite's SQLITE_MAX_VARIABLE_NUMBER (default 999). Unbatched
+        calls used to crash with "too many SQL variables" once a case
+        surfaced more than ~999 hits — trivially reachable on KAPE imports
+        with 188k EVTX rows.
+        """
         if not hit_ids:
             return []
 
-        placeholders = ",".join("?" * len(hit_ids))
         cur = self._cursor()
 
         # Initialize hit dicts
         hits: dict[int, dict] = {hid: {"hit_id": hid, "fields": {}, "timestamps": {}} for hid in hit_ids}
 
-        # String fragments
-        cur.execute(Q.HYDRATE_STRINGS.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
-            if hid in hits:
-                hits[hid]["fields"][fname] = row["value"]
+        for batch in _chunk(hit_ids):
+            placeholders = ",".join("?" * len(batch))
 
-        # Date fragments
-        cur.execute(Q.HYDRATE_DATES.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
-            if hid in hits:
-                hits[hid]["timestamps"][fname] = row["formatted_value"]
+            # String fragments
+            cur.execute(Q.HYDRATE_STRINGS.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
+                if hid in hits:
+                    hits[hid]["fields"][fname] = row["value"]
 
-        # Int fragments
-        cur.execute(Q.HYDRATE_INTS.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
-            if hid in hits:
-                hits[hid]["fields"][fname] = row["value"]
+            # Date fragments
+            cur.execute(Q.HYDRATE_DATES.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
+                if hid in hits:
+                    hits[hid]["timestamps"][fname] = row["formatted_value"]
 
-        # Float fragments
-        cur.execute(Q.HYDRATE_FLOATS.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
-            if hid in hits:
-                hits[hid]["fields"][fname] = row["value"]
+            # Int fragments
+            cur.execute(Q.HYDRATE_INTS.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
+                if hid in hits:
+                    hits[hid]["fields"][fname] = row["value"]
 
-        # Artifact types
-        cur.execute(Q.HIT_ARTIFACT_TYPES.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            if hid in hits:
-                hits[hid]["artifact_type"] = row["artifact_name"]
+            # Float fragments
+            cur.execute(Q.HYDRATE_FLOATS.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                fname = self._frag_defs.get(str(row["fragment_definition_id"]), "unknown")
+                if hid in hits:
+                    hits[hid]["fields"][fname] = row["value"]
 
-        # Locations (first only)
-        cur.execute(Q.HIT_LOCATIONS.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            if hid in hits:
-                hits[hid]["location"] = row["location_value"] or ""
-                hits[hid]["source_path"] = row["source_path"] or ""
+            # Artifact types
+            cur.execute(Q.HIT_ARTIFACT_TYPES.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                if hid in hits:
+                    hits[hid]["artifact_type"] = row["artifact_name"]
 
-        # Hashes
-        cur.execute(Q.HIT_HASHES.format(placeholders=placeholders), hit_ids)
-        for row in cur.fetchall():
-            hid = row["hit_id"]
-            if hid in hits:
-                hits[hid]["hash"] = row["hash"] or ""
+            # Locations (first only)
+            cur.execute(Q.HIT_LOCATIONS.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                if hid in hits:
+                    hits[hid]["location"] = row["location_value"] or ""
+                    hits[hid]["source_path"] = row["source_path"] or ""
+
+            # Hashes
+            cur.execute(Q.HIT_HASHES.format(placeholders=placeholders), batch)
+            for row in cur.fetchall():
+                hid = row["hit_id"]
+                if hid in hits:
+                    hits[hid]["hash"] = row["hash"] or ""
 
         return [hits[hid] for hid in hit_ids]
 

@@ -39,7 +39,7 @@ from core.connectors.volatility_connector import VolatilityConnector
 from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
 from core.config import config
-from state import build_not_allowed_message, is_path_allowed
+from state import app_state, build_not_allowed_message, is_path_allowed
 
 mcp = FastMCP(
     name="forensic-workstation",
@@ -51,8 +51,12 @@ mcp = FastMCP(
     ),
 )
 
-# Shared state
-_connectors: dict[str, Any] = {}
+# Shared state — aliased to app_state._connectors so MCP tools and every
+# analysis module (case_health, coverage_explainer, pivot_across_cases,
+# investigation_gap_report, ...) read from the SAME dict object. Without the
+# alias, open_case populated mcp_bridge._connectors while case_health read
+# app_state._connectors (empty) and silently reported case_count=0.
+_connectors: dict[str, Any] = app_state._connectors
 _masker = DataMasker()
 _event_log: list[dict] = []  # Recent events for web UI polling
 
@@ -212,70 +216,108 @@ def _localize_timestamps(data: Any, _depth: int = 0) -> Any:
 
 
 def _load_case_from_path(path: str, case_id: str = "") -> Any:
-    """Load a single case source by path and register it."""
+    """Load a single case source by path and register it under the
+    ``axiom:{case_id}`` prefix so iter_axiom_cases / case_health / coverage
+    can see it."""
     if not is_path_allowed(path):
         raise RuntimeError(build_not_allowed_message(path))
     if os.path.isdir(path):
         c = KapeCsvConnector()
     else:
         c = AxiomMfdbConnector()
-    c.connect(path)
-    if case_id:
-        _connectors[f"axiom:{case_id}"] = c
+    meta = c.connect(path)
+    resolved = case_id or meta.get("case_number") or meta.get("case_name") or (
+        os.path.basename(os.path.dirname(path) if not os.path.isdir(path) else path)
+    )
+    if resolved:
+        _connectors[f"axiom:{resolved}"] = c
     return c
+
+
+def _ensure_cases_hydrated() -> None:
+    """Populate ``_connectors`` from ``.active_case.json`` when it is empty.
+
+    The FastAPI server (main.py, port 8001) and the MCP server (this file)
+    run as two separate Python processes. Each process owns its own
+    ``app_state`` instance even though both import from ``state``, so when
+    the web UI opens a case only its own process's ``_connectors`` is
+    populated. Cross-process sync lives entirely in ``.active_case.json``:
+    the web UI writes it via ``_write_active_case``, and MCP reads it here.
+
+    ``_get_axiom`` already triggered rehydration when analysts went through
+    a single-active-case path, but cross-case tools (case_health,
+    coverage_explainer, investigation_gap_report, pivot_across_cases,
+    compare_cases, save_case_snapshot, ...) read ``_connectors`` directly
+    and therefore would silently see an empty dict. Calling this helper at
+    the top of those tools closes the gap.
+
+    Idempotent: early-exits when at least one connected ``axiom:*`` case
+    already sits in ``_connectors``.
+    """
+    has_loaded = any(
+        name.startswith("axiom:") and getattr(c, "is_connected", lambda: False)()
+        for name, c in _connectors.items()
+    )
+    if has_loaded:
+        return
+    state_file = os.path.join(os.path.dirname(__file__), ".active_case.json")
+    if not os.path.exists(state_file):
+        return
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            info = json.load(f)
+    except Exception:
+        return
+    all_cases = info.get("all_cases", [])
+    targets = [
+        (case.get("path", ""), case.get("case_id", ""))
+        for case in all_cases
+        if case.get("path") and os.path.exists(case.get("path", ""))
+    ]
+    if targets:
+        # Parse each case in parallel — KAPE directories can each take tens
+        # of seconds, so a sequential load blocks the first MCP tool call
+        # for N × (per-case time) on multi-case projects.
+        from concurrent.futures import ThreadPoolExecutor
+        primary_path = info.get("path", "")
+        last_c = None
+        primary_c = None
+        with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
+            futures = {
+                ex.submit(_load_case_from_path, p, cid): (p, cid)
+                for p, cid in targets
+            }
+            for fut in futures:
+                p, _cid = futures[fut]
+                try:
+                    loaded = fut.result()
+                except Exception:
+                    continue
+                last_c = loaded
+                if p == primary_path:
+                    primary_c = loaded
+        chosen = primary_c or last_c
+        if chosen and "axiom" not in _connectors:
+            _connectors["axiom"] = chosen
+        return
+    # Fallback: single-path info (older layouts).
+    path = info.get("path", "")
+    if path and os.path.exists(path):
+        try:
+            c = _load_case_from_path(path)
+            _connectors["axiom"] = c
+        except Exception:
+            pass
 
 
 def _get_axiom() -> AxiomMfdbConnector:
     c = _connectors.get("axiom")
     if c and c.is_connected():
         return c
-    # Try auto-connect from web UI's active case
-    state_file = os.path.join(os.path.dirname(__file__), ".active_case.json")
-    if os.path.exists(state_file):
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                info = json.load(f)
-            all_cases = info.get("all_cases", [])
-            if all_cases:
-                # Parse each case in parallel — KAPE directories can each take
-                # tens of seconds, so a sequential load blocks the first MCP
-                # tool call for N × (per-case time) on multi-case projects.
-                from concurrent.futures import ThreadPoolExecutor
-                targets = [
-                    (case.get("path", ""), case.get("case_id", ""))
-                    for case in all_cases
-                    if case.get("path") and os.path.exists(case.get("path", ""))
-                ]
-                if targets:
-                    primary_path = info.get("path", "")
-                    last_c = None
-                    primary_c = None
-                    with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
-                        futures = {
-                            ex.submit(_load_case_from_path, p, cid): (p, cid)
-                            for p, cid in targets
-                        }
-                        for fut in futures:
-                            p, cid = futures[fut]
-                            try:
-                                loaded = fut.result()
-                            except Exception:
-                                continue
-                            last_c = loaded
-                            if p == primary_path:
-                                primary_c = loaded
-                    chosen = primary_c or last_c
-                    if chosen:
-                        _connectors["axiom"] = chosen
-                        return chosen
-            # Fallback: single path
-            path = info.get("path", "")
-            if path and os.path.exists(path):
-                c = _load_case_from_path(path)
-                _connectors["axiom"] = c
-                return c
-        except Exception:
-            pass
+    _ensure_cases_hydrated()
+    c = _connectors.get("axiom")
+    if c and c.is_connected():
+        return c
     raise RuntimeError("케이스가 열려있지 않습니다. open_case를 먼저 실행하세요.")
 
 
@@ -388,7 +430,21 @@ async def open_case(path: str, case_name: str = "") -> dict:
         meta = c.connect(path)
         if case_name:
             meta["case_name"] = case_name
-        _connectors["axiom"] = c  # same key for backward compatibility
+        # Register under BOTH keys:
+        #   - "axiom"              : active-case alias (_get_axiom resolves this)
+        #   - "axiom:{case_id}"    : iteration prefix used by iter_axiom_cases,
+        #                             case_health, coverage_explainer, pivots,
+        #                             investigation_gap_report, etc.
+        # Prior bug: only "axiom" was set, so every multi-case aggregator and
+        # every check driven by iter_axiom_cases silently saw zero cases.
+        resolved_case_id = (
+            case_name
+            or meta.get("case_number")
+            or meta.get("case_name")
+            or os.path.basename(os.path.dirname(path) if not os.path.isdir(path) else path)
+        )
+        _connectors["axiom"] = c
+        _connectors[f"axiom:{resolved_case_id}"] = c
         return _mask({"status": "success", **meta})
     return await _traced("open_case", {"path": path, "case_name": case_name}, fn)
 
@@ -443,6 +499,7 @@ async def pivot_across_cases(
     def fn():
         from state import app_state
         from core.analysis.case_aggregator import pivot_across_cases as _pivot
+        _ensure_cases_hydrated()
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
         return _mask(_pivot(
             axiom_conns, entity_type, entity_value,
@@ -470,6 +527,7 @@ async def compare_cases() -> dict:
     def fn():
         from state import app_state
         from core.analysis.case_aggregator import compare_cases as _compare
+        _ensure_cases_hydrated()
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
         return _mask(_compare(axiom_conns))
     return await _traced("compare_cases", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
@@ -502,6 +560,7 @@ async def explain_zero_results(
             return {"error": f"params_json must be valid JSON, got: {params_json[:120]}"}
         from state import app_state
         from core.analysis.zero_results import explain_zero_results as _explain
+        _ensure_cases_hydrated()
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
         return _mask(_explain(axiom_conns, tool_name=tool_name, params=params))
     return await _traced(
@@ -535,6 +594,7 @@ async def coverage_explainer(artifact_types: str = "") -> dict:
     def fn():
         from state import app_state
         from core.analysis.coverage import build_coverage_report
+        _ensure_cases_hydrated()
         requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
         # Pass only the axiom:* connectors — coverage never touches E01/Vol/Ghidra.
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
@@ -579,6 +639,7 @@ async def search_artifacts(
         if all_cases:
             from state import app_state
             from core.analysis.case_aggregator import search_across_cases
+            _ensure_cases_hydrated()
             axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             cap = min(limit, config.search_max_limit)
             return _mask(search_across_cases(
@@ -687,6 +748,7 @@ async def build_timeline(
             # happened between date X and Y?" workflow.
             from state import app_state
             from core.analysis.case_aggregator import timeline_across_cases
+            _ensure_cases_hydrated()
             axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             return _mask(timeline_across_cases(
                 axiom_conns,
@@ -782,6 +844,7 @@ async def slice_timeline(
         if all_cases:
             from state import app_state
             from core.analysis.case_aggregator import timeline_across_cases
+            _ensure_cases_hydrated()
             axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             base = timeline_across_cases(
                 axiom_conns, start_date=start_date, end_date=end_date,
@@ -961,6 +1024,7 @@ async def case_health() -> dict:
     def fn():
         from state import app_state
         from core.analysis.case_health import case_health as _health
+        _ensure_cases_hydrated()
         return _mask(_health(app_state._connectors))
     return await _traced("case_health", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
@@ -1032,6 +1096,7 @@ async def build_entity_graph(
         # (Codex Round-9c): per-type caps count only bucket hits, so a
         # bucket graph can never be starved by off-bucket entities.
         if all_cases:
+            _ensure_cases_hydrated()
             result = _build(
                 app_state._connectors,
                 entity_types=ets, edge_types=edts,
@@ -1221,6 +1286,7 @@ async def save_case_snapshot(
         import json as _json
         from state import app_state
         from core.analysis.case_snapshot import save_snapshot
+        _ensure_cases_hydrated()
         try:
             filters = _json.loads(filters_json) if filters_json else {}
         except Exception:
@@ -1356,7 +1422,7 @@ async def hunt_evtx_rules(
 
 
 @mcp.tool()
-async def detect_anti_forensics() -> dict:
+async def detect_anti_forensics(max_details_per_rule: int = 50) -> dict:
     """Detect publicly-documented anti-forensic activity in the active case.
 
     Scans for a small, transparent rule set — every match is accompanied by
@@ -1370,11 +1436,28 @@ async def detect_anti_forensics() -> dict:
 
     Fully offline. Timestomp detection ($SI/$FN divergence) is explicitly out
     of scope — use ``get_file_timestamps`` on suspect files instead.
+
+    Args:
+        max_details_per_rule: Hard cap on the ``details`` entries per rule.
+            Rules that exceed the cap report the true ``total_count`` and
+            ``truncated: True`` so the analyst sees the sample was trimmed.
+            Default 50 keeps the payload within MCP's ~25k-token response
+            ceiling even when several rules fire on an EVTX-heavy case.
+            Set to 0 to disable the cap, or raise it explicitly when you
+            need a bigger sample (investigation_gap_report will still see
+            the true ``total_count``).
     """
     def fn():
         from core.analysis.anti_forensics import detect_anti_forensics as _run
-        return _mask(_run(_get_axiom().artifact_queries))
-    return await _traced("detect_anti_forensics", {}, fn, timeout_seconds=TIMEOUT_HEAVY)
+        return _mask(_run(
+            _get_axiom().artifact_queries,
+            max_details_per_rule=max_details_per_rule,
+        ))
+    return await _traced(
+        "detect_anti_forensics",
+        {"max_details_per_rule": max_details_per_rule},
+        fn, timeout_seconds=TIMEOUT_HEAVY,
+    )
 
 
 @mcp.tool()
@@ -1413,6 +1496,144 @@ async def assess_evidence_strength(findings_json: str = "") -> dict:
         {"findings_json": (findings_json[:200] + "…") if len(findings_json) > 200 else findings_json},
         fn,
         timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+@mcp.tool()
+async def investigation_gap_report(
+    findings_json: str = "",
+    snapshot_slug: str = "",
+) -> dict:
+    """Compose what's missing in this investigation so far.
+
+    Pure composition — runs ``case_health``, ``build_coverage_report`` and
+    ``detect_anti_forensics`` inline, optionally consumes a ``find_suspicious``
+    payload, and returns one envelope categorising gaps. Does not fire any
+    new detection rules.
+
+    Output sections:
+      - substrate_gaps:         failing case_health checks.
+      - detection_gaps:         unevaluable_rules from find_suspicious (if
+                                findings_json supplied).
+      - corroboration_gaps:     findings below ``confirmed`` strength.
+      - pivots_not_attempted:   for each fired rule that maps to a canonical
+                                next tool, the pivot is listed — except for
+                                rules whose strength is ``weak`` (pivoting on
+                                weak signals invites confirmation bias).
+      - bucket_gaps:            if ``snapshot_slug`` is supplied, flags
+                                bucketed hit_ids that no longer exist in any
+                                loaded case.
+      - recommended_next_queries: deterministic top-N list of tool calls to
+                                  consider next (substrate gaps first).
+
+    When ``findings_json`` is empty the detection / corroboration / pivot
+    sections are reported as ``skipped_sections`` (not silently empty) so
+    the caller cannot mistake "not checked" for "nothing to do".
+
+    Args:
+        findings_json: Optional JSON string of a find_suspicious response.
+                        Empty string skips findings-dependent sections.
+        snapshot_slug: Optional case_snapshot slug. When supplied, bucket
+                        references are reconciled against loaded cases.
+    """
+    def fn():
+        from state import app_state
+        from core.analysis.investigation_gap import (
+            investigation_gap_report as _run,
+        )
+        _ensure_cases_hydrated()
+        axiom_conns = {
+            k: v for k, v in (app_state._connectors or {}).items()
+            if k.startswith("axiom:")
+        }
+        return _mask(_run(
+            axiom_conns,
+            findings_payload=findings_json or None,
+            snapshot_slug=snapshot_slug,
+        ))
+    return await _traced(
+        "investigation_gap_report",
+        {
+            "findings_json": ("<json>" if findings_json else ""),
+            "snapshot_slug": snapshot_slug,
+        },
+        fn, timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
+async def behavioral_delta_pack(
+    entity_value: str,
+    baseline_start: str,
+    baseline_end: str,
+    incident_start: str,
+    incident_end: str,
+    seed_keywords: str = "",
+    window_minutes: int = 60,
+    limit_per_keyword: int = 500,
+) -> dict:
+    """Observe behavioural change for an entity between baseline and incident.
+
+    Composition tool — runs ``correlate_keywords`` twice (baseline + incident)
+    and reports structural differences: dormant gaps, volume shifts, new
+    co-occurrence combinations, net-new or went-silent entities. Every
+    reported claim carries ``derived_from`` pointers so the analyst can
+    jump to the raw evidence behind each statement.
+
+    Intentionally framed as OBSERVED CHANGE, not anomaly detection — the
+    output gives you evidence to interpret, not a verdict.
+
+    Args:
+        entity_value: Primary keyword, the entity under investigation
+            (e.g. ``"bomgar-pec"``). Always searched as the first seed.
+        baseline_start / baseline_end: ISO date range defining "normal" for
+            this entity (e.g. ``"2026-01-08"`` to ``"2026-04-10"``).
+        incident_start / incident_end: ISO date range being scrutinised
+            (e.g. ``"2026-04-11"`` to ``"2026-04-16"``).
+        seed_keywords: Comma-separated extra keywords to correlate with the
+            entity — e.g. ``"4648,7045"`` to surface co-occurrence with
+            explicit-credential-use or new-service activity. Empty = just
+            the entity.
+        window_minutes: Co-occurrence window size (default 60 minutes,
+            matching the usual correlate default for incident-scale
+            analysis).
+        limit_per_keyword: Per-keyword search cap inside each period
+            (default 500). Volume ratios use true totals from
+            axiom.search, so truncation never distorts the ratio; only
+            the returned sample feeds first/last timestamps and
+            top_windows (flagged under ``truncation_warnings``).
+
+    Returns an envelope with ``claims`` each tagged ``kind`` ∈
+    {no_activity_in_either_period, entity_net_new_in_incident,
+     entity_went_silent_in_incident, entity_dormant_then_active,
+     observed_volume_change, observed_cooccurrence_change}.
+    """
+    def fn():
+        from core.analysis.behavioral_delta import behavioral_delta as _delta
+        axiom = _get_axiom()
+        seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
+        return _mask(_delta(
+            axiom,
+            entity_value=entity_value,
+            baseline_start=baseline_start,
+            baseline_end=baseline_end,
+            incident_start=incident_start,
+            incident_end=incident_end,
+            seed_keywords=seeds,
+            window_minutes=window_minutes,
+            limit_per_keyword=limit_per_keyword,
+        ))
+    return await _traced(
+        "behavioral_delta_pack",
+        {
+            "entity_value": entity_value,
+            "baseline_start": baseline_start, "baseline_end": baseline_end,
+            "incident_start": incident_start, "incident_end": incident_end,
+            "seed_keywords": seed_keywords,
+            "window_minutes": window_minutes,
+            "limit_per_keyword": limit_per_keyword,
+        },
+        fn, timeout_seconds=TIMEOUT_HEAVY,
     )
 
 
@@ -1518,92 +1739,20 @@ async def correlate(
 
 
 def _correlate_keywords(axiom, kw_list, start_date, end_date, window_minutes, limit, offset=0):
-    """Multi-keyword correlation: find where keywords co-occur in time."""
-    per_keyword = {}
-    all_events = []
+    """Thin wrapper around ``core.analysis.correlator.correlate_keywords``.
 
-    for kw in kw_list:
-        cap = min(limit, config.correlate_max_limit)
-        result = axiom.search(
-            keyword=kw,
-            filters={"start_date": start_date, "end_date": end_date},
-            limit=cap, offset=offset,
-        )
-        hits = result.get("hits", [])
-        true_total = result.get("total", len(hits))
-
-        # Extract timestamps for each hit
-        events = []
-        for h in hits:
-            ts_fields = h.get("timestamps", {})
-            for ts_name, ts_val in ts_fields.items():
-                ms = axiom._iso_to_ms(ts_val) if ts_val else None
-                if ms:
-                    events.append({
-                        "keyword": kw,
-                        "hit_id": h.get("hit_id"),
-                        "timestamp": ts_val,
-                        "timestamp_ms": ms,
-                        "time_field": ts_name,
-                        "artifact_type": h.get("artifact_type", ""),
-                    })
-
-        per_keyword[kw] = {
-            "total_hits": true_total,
-            "returned_hits": len(hits),
-            "truncated": true_total > len(hits),
-            "events_with_timestamps": len(events),
-            "artifact_types": {},
-        }
-        for h in hits:
-            at = h.get("artifact_type", "unknown")
-            per_keyword[kw]["artifact_types"][at] = per_keyword[kw]["artifact_types"].get(at, 0) + 1
-
-        all_events.extend(events)
-
-    # Sort all events chronologically
-    all_events.sort(key=lambda e: e.get("timestamp_ms", 0))
-
-    # Find co-occurrence windows: time windows where 2+ different keywords appear
-    window_ms = window_minutes * 60 * 1000
-    co_occurrences = []
-    for i, ev in enumerate(all_events):
-        window_kws = {ev["keyword"]}
-        window_events = [ev]
-        for j in range(i + 1, len(all_events)):
-            if all_events[j]["timestamp_ms"] - ev["timestamp_ms"] <= window_ms:
-                window_kws.add(all_events[j]["keyword"])
-                window_events.append(all_events[j])
-            else:
-                break
-        if len(window_kws) >= 2:
-            co_occurrences.append({
-                "start": ev["timestamp"],
-                "keywords_present": sorted(window_kws),
-                "event_count": len(window_events),
-            })
-
-    # Deduplicate overlapping windows
-    deduped = []
-    seen_starts = set()
-    for co in co_occurrences:
-        key = (co["start"], tuple(co["keywords_present"]))
-        if key not in seen_starts:
-            seen_starts.add(key)
-            deduped.append(co)
-
-    total_events = len(all_events)
-    return {
-        "mode": "multi_keyword_correlation",
-        "keywords": kw_list,
-        "per_keyword": per_keyword,
-        "co_occurrence_windows": deduped[:50],
-        "total_co_occurrences": len(deduped),
-        "window_minutes": window_minutes,
-        "chronological_events": all_events[:limit],
-        "total_chronological_events": total_events,
-        "truncated": total_events > limit,
-    }
+    Kept so the MCP ``correlate`` tool keeps its original call site + limit
+    policy (``config.correlate_max_limit``). Shared algorithm lives in the
+    core module so composition tools (``behavioral_delta``) see identical
+    window counts — Codex pre-review blocker.
+    """
+    from core.analysis.correlator import correlate_keywords as _corr_kw
+    return _corr_kw(
+        axiom, kw_list,
+        start_date=start_date, end_date=end_date,
+        window_minutes=window_minutes, limit=limit, offset=offset,
+        max_limit=config.correlate_max_limit,
+    )
 
 
 @mcp.tool()

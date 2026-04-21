@@ -10,6 +10,16 @@ import sqlite3
 from typing import Any
 
 
+# See axiom_mfdb._SQLITE_PARAM_BATCH for rationale — every IN-clause
+# fan-out over hit_ids must stay below the 999 default limit.
+_SQLITE_PARAM_BATCH = 900
+
+
+def _chunk(seq: list, size: int = _SQLITE_PARAM_BATCH):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 class ArtifactQueries:
     """Structured queries against specific AXIOM artifact types."""
 
@@ -100,8 +110,19 @@ class ArtifactQueries:
         return self.query_event_logs(event_ids=[4104], limit=limit)
 
     def query_log_cleared(self, limit: int = 50) -> list[dict]:
-        """Query audit log cleared events (Event ID 1102)."""
-        return self.query_event_logs(event_ids=[1102], limit=limit)
+        """Query audit log cleared events (Event ID 1102).
+
+        Pins Provider to ``Microsoft-Windows-Eventlog`` because EID 1102 is
+        only "the audit log was cleared" under that provider/channel (Security
+        channel, per Microsoft Learn event-1102). Without the provider filter
+        the query would also surface unrelated 1102 events from other
+        providers on heavy cases.
+        """
+        return self.query_event_logs(
+            event_ids=[1102],
+            provider="Microsoft-Windows-Eventlog",
+            limit=limit,
+        )
 
     def query_scheduled_task_events(self, limit: int = 100) -> list[dict]:
         """Query scheduled task creation/modification (Event IDs 4698, 4702)."""
@@ -276,37 +297,44 @@ class ArtifactQueries:
         self, artifact_name: str, hit_ids: list[int],
         provider_filter: str = "", data_filter: str = "",
     ) -> list[dict]:
-        """Hydrate hit_ids into structured dicts with all fields for this artifact type."""
+        """Hydrate hit_ids into structured dicts with all fields for this artifact type.
+
+        Batches hit_ids through each IN-clause so calls with >999 hits do
+        not trip SQLite's SQLITE_MAX_VARIABLE_NUMBER (the original crash
+        path for find_suspicious on EVTX-heavy .mfdb cases).
+        """
         if not hit_ids:
             return []
 
-        placeholders = ",".join("?" * len(hit_ids))
         cur = self._conn.cursor()
         hits: dict[int, dict] = {hid: {"hit_id": hid, "artifact_type": artifact_name} for hid in hit_ids}
 
-        # String fields
-        cur.execute(f"SELECT hit_id, fragment_definition_id, value FROM hit_fragment_string WHERE hit_id IN ({placeholders})", hit_ids)
-        for hid, frag_id, value in cur.fetchall():
-            if hid in hits:
-                fname = self._resolve_field_name(artifact_name, frag_id)
-                if fname:
-                    hits[hid][fname] = value
+        for batch in _chunk(hit_ids):
+            placeholders = ",".join("?" * len(batch))
 
-        # Int fields
-        cur.execute(f"SELECT hit_id, fragment_definition_id, value FROM hit_fragment_int WHERE hit_id IN ({placeholders})", hit_ids)
-        for hid, frag_id, value in cur.fetchall():
-            if hid in hits:
-                fname = self._resolve_field_name(artifact_name, frag_id)
-                if fname:
-                    hits[hid][fname] = value
+            # String fields
+            cur.execute(f"SELECT hit_id, fragment_definition_id, value FROM hit_fragment_string WHERE hit_id IN ({placeholders})", batch)
+            for hid, frag_id, value in cur.fetchall():
+                if hid in hits:
+                    fname = self._resolve_field_name(artifact_name, frag_id)
+                    if fname:
+                        hits[hid][fname] = value
 
-        # Date fields
-        cur.execute(f"SELECT hit_id, fragment_definition_id, formatted_value FROM hit_fragment_date WHERE hit_id IN ({placeholders})", hit_ids)
-        for hid, frag_id, value in cur.fetchall():
-            if hid in hits:
-                fname = self._resolve_field_name(artifact_name, frag_id)
-                if fname:
-                    hits[hid][fname] = value
+            # Int fields
+            cur.execute(f"SELECT hit_id, fragment_definition_id, value FROM hit_fragment_int WHERE hit_id IN ({placeholders})", batch)
+            for hid, frag_id, value in cur.fetchall():
+                if hid in hits:
+                    fname = self._resolve_field_name(artifact_name, frag_id)
+                    if fname:
+                        hits[hid][fname] = value
+
+            # Date fields
+            cur.execute(f"SELECT hit_id, fragment_definition_id, formatted_value FROM hit_fragment_date WHERE hit_id IN ({placeholders})", batch)
+            for hid, frag_id, value in cur.fetchall():
+                if hid in hits:
+                    fname = self._resolve_field_name(artifact_name, frag_id)
+                    if fname:
+                        hits[hid][fname] = value
 
         result = list(hits.values())
 
