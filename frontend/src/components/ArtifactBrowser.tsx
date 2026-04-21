@@ -29,14 +29,23 @@ export default function ArtifactBrowser() {
     get('/api/cases/list').then((d) => setCaseCount((d.cases || []).length)).catch(() => {});
   }, []);
 
-  const fetchRows = useCallback(async (newOffset: number, keyword?: string, type?: string) => {
+  const fetchRows = useCallback(async (
+    newOffset: number,
+    keyword?: string,
+    type?: string,
+    startOverride?: string,
+    endOverride?: string,
+  ) => {
+    // Codex Round-12b fix: preset and retry paths pass explicit date
+    // overrides so a stale closure from setState + setTimeout cannot
+    // re-run the same bounded query after the user cleared the range.
     setLoading(true);
     try {
       const result = await post('/api/artifacts/search', {
         keyword: keyword ?? searchKeyword,
         artifact_type: type ?? artifactType,
-        start_date: startDate,
-        end_date: endDate,
+        start_date: startOverride !== undefined ? startOverride : startDate,
+        end_date: endOverride !== undefined ? endOverride : endDate,
         offset: newOffset,
         limit: PAGE_SIZE,
         all_cases: allCases,
@@ -176,7 +185,10 @@ export default function ArtifactBrowser() {
           const applyRange = (s: string, e: string) => {
             setStartDate(s);
             setEndDate(e);
-            setTimeout(() => fetchRows(0), 0);
+            // Pass explicit overrides so the in-flight fetch uses the new
+            // values directly rather than the stale closure captured when
+            // this callback was created.
+            fetchRows(0, undefined, undefined, s, e);
           };
           const today = new Date().toISOString().slice(0, 10);
           const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
@@ -261,7 +273,7 @@ export default function ArtifactBrowser() {
                 onRetryFullRange={() => {
                   setStartDate("");
                   setEndDate("");
-                  setTimeout(() => fetchRows(0), 0);
+                  fetchRows(0, undefined, undefined, "", "");
                 }}
               />
             </>
