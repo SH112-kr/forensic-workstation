@@ -24,6 +24,10 @@ interface ZeroResultsHintProps {
   icon?: string;
   /** Extra note shown above the causes list. */
   message?: string;
+  /** Optional one-click retry that the caller controls. When provided and
+   *  the diagnosis includes a date-range cause, a "Retry with full range"
+   *  button fires this callback with the same params minus start_date/end_date. */
+  onRetryFullRange?: (paramsSansDates: Record<string, any>) => void;
 }
 
 const CONFIDENCE_COLOR: Record<string, string> = {
@@ -37,6 +41,7 @@ export default function ZeroResultsHint({
   params,
   icon = '💡',
   message,
+  onRetryFullRange,
 }: ZeroResultsHintProps) {
   const { setActiveView } = useStore();
   const [loading, setLoading] = useState(false);
@@ -113,6 +118,25 @@ export default function ZeroResultsHint({
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {!loading && !error && onRetryFullRange && causes.some(c =>
+          c.cause === 'date_range_after_case' || c.cause === 'date_range_before_case') && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              const clean = { ...params };
+              delete clean.start_date;
+              delete clean.end_date;
+              onRetryFullRange(clean);
+            }}>
+            ⟳ 전체 범위로 재검색
+          </button>
+          <span className="help-text" style={{ marginLeft: 8 }}>
+            기존 필터 유지, 날짜 필터만 제거하고 다시 실행
+          </span>
         </div>
       )}
 

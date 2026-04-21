@@ -148,6 +148,11 @@ export default function TimelineView() {
                 toolName="build_timeline"
                 params={{ start_date: startDate, end_date: endDate, all_cases: allCases }}
                 message="build_timeline returned 0 events — diagnostic below"
+                onRetryFullRange={() => {
+                  setStartDate("");
+                  setEndDate("");
+                  setTimeout(() => load("", ""), 0);
+                }}
               />
             )}
           </>

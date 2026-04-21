@@ -7,6 +7,11 @@ export default function Dashboard() {
   const [topTypes, setTopTypes] = useState<any[]>([]);
   const [coverageSummary, setCoverageSummary] = useState<{ searched: number; available_not_loaded: number; structurally_unavailable: number; case_format: string } | null>(null);
   const [antiForensics, setAntiForensics] = useState<any>(null);
+  const [caseCount, setCaseCount] = useState(1);
+
+  useEffect(() => {
+    get('/api/cases/list').then((d) => setCaseCount((d.cases || []).length || 1)).catch(() => {});
+  }, [caseInfo]);
 
   useEffect(() => {
     // Only fetch if not already cached
@@ -78,6 +83,49 @@ export default function Dashboard() {
 
   const clickableCardStyle: React.CSSProperties = { cursor: 'pointer', transition: 'transform 0.1s' };
 
+  // "Next steps" nudges — conditional suggestions driven by existing
+  // endpoints only. Each condition is deterministic and visible to the
+  // analyst (no hidden heuristics). Rendered after the critical anti-
+  // forensics alert so the alert always stays first.
+  const criticalCount = (detection?.findings || []).filter((f: any) => f.severity === 'critical').length;
+  const nextSteps: { icon: string; text: string; cta: string; onClick: () => void }[] = [];
+  if (criticalCount > 0) {
+    nextSteps.push({
+      icon: '🔴',
+      text: `Detection 탭에서 critical ${criticalCount}건 먼저 검토`,
+      cta: 'Detection',
+      onClick: () => setActiveView('detection'),
+    });
+  }
+  if (coverageSummary && coverageSummary.structurally_unavailable > 0) {
+    nextSteps.push({
+      icon: '🧾',
+      text: `구조적으로 제공 불가한 아티팩트 ${coverageSummary.structurally_unavailable}종 — 무엇을 못 보는지 확인`,
+      cta: 'Coverage',
+      onClick: () => setActiveView('coverage'),
+    });
+  }
+  if (antiForensics && antiForensics.rules_fired > 0) {
+    const firedNames = (antiForensics.rules || [])
+      .filter((r: any) => r.ok && r.count).map((r: any) => r.rule_name).slice(0, 3).join(', ');
+    nextSteps.push({
+      icon: '⚠',
+      text: `로그 변조 의심: ${firedNames}`,
+      cta: 'Detection',
+      onClick: () => setActiveView('detection'),
+    });
+  }
+  // Clean-state CTA: only meaningful when multiple cases are loaded, otherwise
+  // pivot_across_cases is useless. Codex Round-12 guard.
+  if (nextSteps.length === 0 && caseCount >= 2) {
+    nextSteps.push({
+      icon: '🎯',
+      text: '중요 신호 없음. pivot_across_cases로 교차 검증 시작 추천',
+      cta: 'Pivot',
+      onClick: () => setActiveView('pivot'),
+    });
+  }
+
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
       {/* Anti-forensics alert — renders first so log tamper / snapshot
@@ -104,6 +152,33 @@ export default function Dashboard() {
             </div>
           </div>
           <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review →</span>
+        </div>
+      )}
+
+      {/* Next-steps nudges — transparent, condition-driven. Never shows
+          opinionated urgency that the analyst didn't already have evidence
+          for. Hidden when nothing is actionable. */}
+      {nextSteps.length > 0 && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 10, marginBottom: 12,
+          background: 'var(--surface)', border: '1px solid var(--border)',
+        }}>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+            제안된 다음 단계
+          </div>
+          {nextSteps.map((s, i) => (
+            <div key={i}
+              onClick={s.onClick}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0',
+                cursor: 'pointer', fontSize: 12,
+                borderTop: i > 0 ? '1px solid var(--border-light)' : 'none',
+              }}>
+              <span style={{ fontSize: 14 }}>{s.icon}</span>
+              <span style={{ flex: 1 }}>{s.text}</span>
+              <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>{s.cta} →</span>
+            </div>
+          ))}
         </div>
       )}
 

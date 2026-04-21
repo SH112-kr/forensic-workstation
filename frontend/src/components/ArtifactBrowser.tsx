@@ -10,7 +10,7 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 const PAGE_SIZE = 100;
 
 export default function ArtifactBrowser() {
-  const { setActiveView } = useStore();
+  const { setActiveView, caseInfo } = useStore();
   const gridRef = useRef<AgGridReact>(null);
   const [detail, setDetail] = useState<any>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -168,6 +168,36 @@ export default function ArtifactBrowser() {
           }}
         />
         <button className="btn btn-sm" onClick={search}>Search</button>
+
+        {/* Date range presets — smart defaults so analysts don't guess
+            numbers. Case-window button only renders when caseInfo exposes
+            both bounds (Codex Round-12 guard). */}
+        {(() => {
+          const applyRange = (s: string, e: string) => {
+            setStartDate(s);
+            setEndDate(e);
+            setTimeout(() => fetchRows(0), 0);
+          };
+          const today = new Date().toISOString().slice(0, 10);
+          const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
+          const caseStart = (caseInfo?.date_range_start || "").slice(0, 10);
+          const caseEnd = (caseInfo?.date_range_end || "").slice(0, 10);
+          return (
+            <span style={{ display: 'flex', gap: 4, alignItems: 'center', marginLeft: 6 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Preset:</span>
+              <button className="btn btn-sm" onClick={() => applyRange(weekAgo, today)}
+                style={{ fontSize: 10, padding: '3px 8px' }}>지난 7일</button>
+              {caseStart && caseEnd && (
+                <button className="btn btn-sm" onClick={() => applyRange(caseStart, caseEnd)}
+                  style={{ fontSize: 10, padding: '3px 8px' }} title={`${caseStart} ~ ${caseEnd}`}>
+                  사건 기간
+                </button>
+              )}
+              <button className="btn btn-sm" onClick={() => applyRange("", "")}
+                style={{ fontSize: 10, padding: '3px 8px' }}>전체</button>
+            </span>
+          );
+        })()}
         {caseCount >= 2 && (
           <label
             style={{
@@ -228,6 +258,11 @@ export default function ArtifactBrowser() {
                   all_cases: allCases,
                 }}
                 message="search_artifacts returned 0 rows — diagnostic below"
+                onRetryFullRange={() => {
+                  setStartDate("");
+                  setEndDate("");
+                  setTimeout(() => fetchRows(0), 0);
+                }}
               />
             </>
           )}
