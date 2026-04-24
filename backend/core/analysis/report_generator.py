@@ -284,6 +284,8 @@ footer { padding:20px 32px; border-top:1px solid var(--border); color:var(--text
   <h2>Evidence Strength</h2>
   <div id="strength-rollup" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px"></div>
 
+  {{lane_evidence_summary_html}}
+
   <h2>Key Findings</h2>
   <div id="key-findings"></div>
 
@@ -304,7 +306,7 @@ footer { padding:20px 32px; border-top:1px solid var(--border); color:var(--text
   <div class="mitre" id="mitre-matrix"></div>
 
   <h2>All Findings</h2>
-  <table><thead><tr><th>Severity</th><th>Strength</th><th>Rule</th><th>MITRE</th><th>Hits</th><th>Description</th><th>Patterns</th></tr></thead>
+  <table><thead><tr><th>Rule</th><th>MITRE</th><th>Hits</th><th>Query Description</th><th>Patterns</th></tr></thead>
   <tbody id="findings-body"></tbody></table>
 
   <h2>Artifact Types</h2>
@@ -401,9 +403,11 @@ function renderKillChain() {
 
 function renderKeyFindings() {
   const el = document.getElementById('key-findings');
-  const findings = (DATA.findings||[]).filter(f=>f.severity==='critical'||f.severity==='high');
+  const findings = (DATA.alert_summary && DATA.alert_summary.key_findings && DATA.alert_summary.key_findings.length)
+    ? DATA.alert_summary.key_findings
+    : (DATA.findings||[]).filter(f=>f.severity==='critical'||f.severity==='high');
   if (!findings.length) { el.innerHTML='<div class="empty">No critical or high severity findings.</div>'; return; }
-  el.innerHTML = findings.map((f,fi) => {
+  el.innerHTML = findings.map((f) => {
     const patterns = Object.entries(f.matched_patterns||{}).sort((a,b)=>b[1]-a[1]).slice(0,8)
       .map(([p,c])=>`<span class="pattern-tag">${esc(p)}<span class="pattern-count">\u00d7${c}</span></span>`).join('');
     const details = (f.details||[]).filter(d=>d.matched_value).slice(0,3);
@@ -520,10 +524,8 @@ function renderAllFindings() {
   tbody.innerHTML = (DATA.findings||[]).map(f => {
     const pats = Object.entries(f.matched_patterns||{}).sort((a,b)=>b[1]-a[1]).slice(0,5)
       .map(([p,c])=>`<span class="pattern-tag">${esc(p)}<span class="pattern-count">\u00d7${c}</span></span>`).join('');
-    return `<tr><td><span class="badge badge-${f.severity}">${f.severity.toUpperCase()}</span></td>
-    <td>${strengthBadge(f.overall_strength)}</td>
-    <td>${f.rule_name}</td><td>${(f.mitre_techniques||[]).map(t=>'<span class="tag">'+t+'</span>').join(' ')}</td>
-    <td>${f.matching_count.toLocaleString()}</td><td>${f.description}</td><td>${pats}</td></tr>`;
+    return `<tr><td>${f.rule_name}</td><td>${(f.mitre_techniques||[]).map(t=>'<span class="tag">'+t+'</span>').join(' ')}</td>
+    <td>${f.matching_count.toLocaleString()}</td><td>${esc(f.query_description||f.description||'')}</td><td>${pats}</td></tr>`;
   }).join('');
 }
 
@@ -653,6 +655,10 @@ def generate_report(
     from analysis.evidence_strength import score_findings
     from analysis.anti_forensics import detect_anti_forensics as _anti_forensics
     from analysis.coverage import build_coverage_report
+    from analysis.bias_remediation import (
+        build_lane_evidence_summary_surface,
+        is_bias_remediation_enabled,
+    )
 
     metadata = axiom.get_metadata()
     types = axiom.get_artifact_type_counts()
@@ -673,7 +679,10 @@ def generate_report(
         coverage = build_coverage_report(connectors)
     except Exception:
         coverage = {"ok": False, "coverage": [], "summary": {}, "case_context": {}}
-
+    lane_evidence_summary: dict[str, Any] = {}
+    if is_bias_remediation_enabled():
+        lane_surface = build_lane_evidence_summary_surface(axiom)
+        lane_evidence_summary = lane_surface.get("lane_evidence_summary", {})
     json_data = {
         "findings": sus.get("findings", []),
         "strength_rollup": sus.get("strength_rollup", {}),
@@ -683,6 +692,7 @@ def generate_report(
         "artifact_types": types,
         "anti_forensics": anti,
         "coverage": coverage,
+        "lane_evidence_summary": lane_evidence_summary,
     }
 
     if masker and masker.enabled:
@@ -703,6 +713,8 @@ def generate_report(
             "Restore originals: <code>python demask.py report.html output.html</code></div>"
         )
 
+    lane_evidence_summary_html = _render_lane_evidence_summary_html(lane_evidence_summary)
+
     html = REPORT_TEMPLATE
     html = html.replace("{{case_name}}", _esc(case_name))
     html = html.replace("{{generated_at}}", now)
@@ -714,6 +726,7 @@ def generate_report(
     html = html.replace("{{total_iocs}}", str(iocs.get("total_iocs", 0)))
     html = html.replace("{{total_techniques}}", str(narrative.get("total_techniques", 0)))
     html = html.replace("{{masked_notice_bar}}", masked_notice_bar)
+    html = html.replace("{{lane_evidence_summary_html}}", lane_evidence_summary_html)
     html = html.replace("{{json_data}}", json.dumps(json_data, ensure_ascii=False, default=str))
 
     if not output_path:
@@ -732,6 +745,37 @@ def generate_report(
         "size_kb": round(os.path.getsize(output_path) / 1024, 1),
         "tabs": ["Executive Summary", "Detailed Analysis", "IOC & Timeline"],
     }
+
+
+def _render_lane_evidence_summary_html(lane_evidence_summary: dict[str, Any]) -> str:
+    if not lane_evidence_summary:
+        return ""
+
+    lane_labels = {
+        "ingress_access": "Ingress / Access",
+        "execution_impact": "Execution / Impact",
+        "persistence_cleanup": "Persistence / Cleanup",
+    }
+    rows = []
+    for lane in ("ingress_access", "execution_impact", "persistence_cleanup"):
+        entry = lane_evidence_summary.get(lane, {}) or {}
+        event_count = int(entry.get("event_count", 0) or 0)
+        families = ", ".join(_esc(str(f)) for f in entry.get("artifact_families_seen", [])[:4]) or "none"
+        rows.append(
+            '<div class="card">'
+            f'<div class="card-label">{_esc(lane_labels.get(lane, lane))}</div>'
+            f'<div class="card-value" style="font-size:18px">{event_count}</div>'
+            f'<div class="card-sub">events seen</div>'
+            f'<div class="card-sub" style="margin-top:4px">{families}</div>'
+            '</div>'
+        )
+
+    return (
+        '<div class="section">'
+        '<h2>Lane Evidence Summary</h2>'
+        '<div class="cards">' + "".join(rows) + '</div>'
+        '</div>'
+    )
 
 
 def _esc(s: str) -> str:

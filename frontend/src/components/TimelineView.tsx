@@ -4,7 +4,7 @@ import { useStore } from '../hooks/useStore';
 import ZeroResultsHint from './ZeroResultsHint';
 
 export default function TimelineView() {
-  const { caseInfo, setActiveView } = useStore();
+  const { caseInfo } = useStore();
   const [entries, setEntries] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);

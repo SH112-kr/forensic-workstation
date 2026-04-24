@@ -39,8 +39,10 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 _BUILTIN_DIR = os.path.join(_BASE_DIR, "hunt_packs", "builtin")
 _LOCAL_DIR = os.path.join(_BASE_DIR, "hunt_packs", "local")
 
-# Substitute ``{param_name}`` placeholders only; everything else is literal.
+# Substitute ``{param_name}`` placeholders plus explicit step-result refs.
 _PARAM_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_EXACT_PLACEHOLDER_RE = re.compile(r"^\{([^{}]+)\}$")
+_STEP_REF_RE = re.compile(r"^steps\.([a-zA-Z_][a-zA-Z0-9_]*)\.result(?:\.(.+))?$")
 
 
 def _ensure_dirs() -> None:
@@ -62,11 +64,24 @@ def _load_pack_file(path: str) -> dict[str, Any] | None:
         return None
     if not isinstance(pack.get("steps"), list):
         return None
+    seen_step_ids: set[str] = set()
     for step in pack["steps"]:
         if not isinstance(step, dict) or "tool" not in step:
             return None
         if not isinstance(step.get("args", {}), dict):
             return None
+        if "skip_if_empty_params" in step:
+            skip_params = step.get("skip_if_empty_params")
+            if not isinstance(skip_params, list) or not all(isinstance(x, str) for x in skip_params):
+                return None
+        step_id = step.get("id")
+        if step_id is None:
+            continue
+        if not isinstance(step_id, str) or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", step_id):
+            return None
+        if step_id in seen_step_ids:
+            return None
+        seen_step_ids.add(step_id)
     return pack
 
 
@@ -106,17 +121,58 @@ def _resolve_pack(name: str) -> dict[str, Any] | None:
     return None
 
 
-def _substitute(value: Any, params: dict[str, Any]) -> Any:
-    """Replace ``{name}`` placeholders in strings; deep-copy other types."""
+def _resolve_path(root: Any, path: str) -> Any:
+    current = root
+    if not path:
+        return current
+    for part in path.split("."):
+        if isinstance(current, list):
+            if not part.isdigit():
+                return ""
+            idx = int(part)
+            if idx < 0 or idx >= len(current):
+                return ""
+            current = current[idx]
+            continue
+        if isinstance(current, dict):
+            if part not in current:
+                return ""
+            current = current[part]
+            continue
+        return ""
+    return current
+
+
+def _resolve_placeholder(key: str, context: dict[str, Any]) -> Any:
+    match = _STEP_REF_RE.fullmatch(key)
+    if match:
+        step_id, path = match.groups()
+        step_root = (context.get("steps") or {}).get(step_id, {})
+        return _resolve_path(step_root.get("result", ""), path or "")
+    params = context.get("params", {})
+    return "" if key not in params else params[key]
+
+
+def _substitute(value: Any, context: dict[str, Any]) -> Any:
+    """Replace param placeholders and explicit step-result refs."""
     if isinstance(value, str):
+        exact = _EXACT_PLACEHOLDER_RE.fullmatch(value)
+        if exact:
+            return _resolve_placeholder(exact.group(1), context)
+
         def _repl(m):
             key = m.group(1)
-            return "" if key not in params else str(params[key])
-        return _PARAM_RE.sub(_repl, value)
+            return str(_resolve_placeholder(key, context))
+
+        def _repl_step(m):
+            return str(_resolve_placeholder(m.group(1), context))
+
+        expanded = re.sub(r"\{(steps\.[^{}]+)\}", _repl_step, value)
+        return _PARAM_RE.sub(_repl, expanded)
     if isinstance(value, list):
-        return [_substitute(v, params) for v in value]
+        return [_substitute(v, context) for v in value]
     if isinstance(value, dict):
-        return {k: _substitute(v, params) for k, v in value.items()}
+        return {k: _substitute(v, context) for k, v in value.items()}
     return value
 
 
@@ -130,6 +186,15 @@ def _summarize_output(result: Any) -> dict[str, Any]:
         if key in result:
             return {key: result[key]}
     return {"keys": sorted(list(result.keys()))[:6]}
+
+
+def _should_skip_step(step: dict[str, Any], resolved_args: dict[str, Any]) -> str | None:
+    required = step.get("skip_if_empty_params") or []
+    for key in required:
+        value = resolved_args.get(key)
+        if value in ("", None, [], {}):
+            return key
+    return None
 
 
 async def run_pack(
@@ -162,21 +227,36 @@ async def run_pack(
 
     run_id = f"hunt-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     steps_out: list[dict[str, Any]] = []
+    runtime_context: dict[str, Any] = {"params": params, "steps": {}}
     for idx, step in enumerate(pack.get("steps", [])):
         tool = step.get("tool")
+        step_id = step.get("id")
         raw_args = step.get("args", {}) or {}
-        resolved_args = _substitute(raw_args, params)
+        resolved_args = _substitute(raw_args, runtime_context)
         entry: dict[str, Any] = {
             "index": idx,
             "tool": tool,
             "resolved_args": resolved_args,
         }
+        if step_id:
+            entry["step_id"] = step_id
+        skipped_on = _should_skip_step(step, resolved_args)
+        if skipped_on:
+            entry["status"] = "skipped"
+            entry["reason"] = f"resolved arg '{skipped_on}' is empty"
+            steps_out.append(entry)
+            continue
         try:
             result = tool_dispatch(tool, resolved_args)
             if inspect.isawaitable(result):
                 result = await result
             entry["status"] = "ok"
             entry["summary"] = _summarize_output(result)
+            if step_id:
+                runtime_context["steps"][step_id] = {
+                    "tool": tool,
+                    "result": result,
+                }
         except Exception as e:  # noqa: BLE001 — pack failures are captured, never raised
             entry["status"] = "error"
             entry["error"] = str(e)
@@ -193,5 +273,6 @@ async def run_pack(
             "Hunt packs only call existing MCP tools; they do not run "
             "analyst-authored Python.",
             "Every step's resolved_args is preserved so the hunt is auditable.",
+            "Steps may reference earlier outputs via {steps.<step_id>.result...}.",
         ],
     }

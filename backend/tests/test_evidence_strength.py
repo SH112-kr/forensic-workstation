@@ -25,7 +25,7 @@ def test_classify_link_date_is_weak():
     assert classify_artifact("Link Date field (compile time)")["tier"] == "weak"
 
 
-def test_score_finding_overall_is_best_of_details():
+def test_score_finding_tags_per_detail_strength():
     finding = {
         "rule_name": "demo",
         "details": [
@@ -34,7 +34,7 @@ def test_score_finding_overall_is_best_of_details():
         ],
     }
     score_finding(finding)
-    assert finding["overall_strength"] == "strong"
+    assert "overall_strength" not in finding
     assert finding["details"][0]["strength"] == "weak"
     assert finding["details"][1]["strength"] == "strong"
 

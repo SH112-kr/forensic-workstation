@@ -32,62 +32,62 @@ from typing import Any
 # to name families that meaningfully corroborate, not every possible
 # adjacent artifact.
 CORROBORATION_MAP: dict[str, list[str]] = {
-    "lsass_access": [
+    "sysmon_eid10_lsass_handle_open": [
         "Windows Event Logs (EID 4688)",
         "SRUM",
         "Prefetch",
     ],
-    "suspicious_process_creation": [
+    "evtx_eid_4688_process_creation_events": [
         "SRUM",
         "Prefetch",
         "Sysmon Event Logs",
     ],
-    "service_installation": [
+    "evtx_eid_7045_service_installs": [
         "Prefetch",
         "Amcache",
         "System Services",
     ],
-    "scheduled_task_creation": [
+    "evtx_eid_4698_scheduled_task_events": [
         "Scheduled Tasks",
         "Prefetch",
     ],
-    "log_clearing": [
+    "evtx_eid_1102_audit_log_cleared": [
         "System Event Logs",
         "Security Event Logs",
     ],
-    "rdp_lateral_movement": [
+    "evtx_eid_4624_type10_rdp_logons": [
         "Prefetch",
         "Amcache",
         "Windows Event Logs (EID 4624)",
     ],
-    "explicit_credential_use": [
+    "evtx_eid_4648_explicit_credential_logons": [
         "Windows Event Logs (EID 4624)",
         "SRUM",
     ],
-    "suspicious_prefetch": [
+    "prefetch_pentest_tool_names": [
         "Windows Event Logs (EID 4688)",
         "SRUM",
         "Amcache",
     ],
-    "suspicious_service_paths": [
+    "services_nonstandard_binary_paths": [
         "Amcache",
         "Prefetch",
         "Windows Event Logs (EID 7045)",
     ],
-    "powershell_scriptblock": [
+    "evtx_eid_4104_scriptblock_logs": [
         "Windows Event Logs (EID 4688)",
         "SRUM",
     ],
-    "watering_hole_indicators": [
+    "prefetch_security_sw_werfault_correlation": [
         "WER Reports",
         "SRUM",
     ],
-    "suspicious_msi_install": [
+    "amcache_remote_access_tool_names": [
         "Amcache",
         "Prefetch",
         "Scheduled Tasks",
     ],
-    "ssh_activity": [
+    "openssh_artifacts": [
         "Windows Event Logs (EID 4624)",
         "Prefetch",
         "Amcache",

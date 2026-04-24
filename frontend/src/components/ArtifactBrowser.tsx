@@ -10,7 +10,7 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 const PAGE_SIZE = 100;
 
 export default function ArtifactBrowser() {
-  const { setActiveView, caseInfo } = useStore();
+  const { caseInfo } = useStore();
   const gridRef = useRef<AgGridReact>(null);
   const [detail, setDetail] = useState<any>(null);
   const [searchKeyword, setSearchKeyword] = useState('');

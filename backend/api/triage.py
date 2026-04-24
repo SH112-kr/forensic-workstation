@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/triage", tags=["triage"])
@@ -180,6 +180,38 @@ def _run_triage_background(req: TriageRequest, out_dir: str, collected_dir: str,
 
         axiom = app_state.get_axiom()
 
+        _triage_state["phase"] = "initial_triage"
+        _triage_state["progress"].append({"time": time.time(), "msg": "Running initial window-first triage..."})
+
+        initial_triage_summary: dict[str, Any] = {}
+        triage: dict[str, Any] | None = None
+        t2b = time.time()
+        try:
+            from core.analysis.initial_triage import initial_triage
+
+            triage = initial_triage(axiom, scope_mode="recent_14d")
+            initial_triage_summary = {
+                "incident_type": triage.get("classification", {}).get("incident_type", "unknown"),
+                "operator_style": triage.get("classification", {}).get("operator_style", "unknown"),
+                "top_window_count": len(triage.get("window_discovery", {}).get("top_windows", []) or []),
+                "precursor_status": triage.get("precursor_context", {}).get("status", "historical_context"),
+            }
+            steps.append({
+                "step": "initial_triage_pack",
+                "duration_s": round(time.time() - t2b, 1),
+                **initial_triage_summary,
+            })
+            _triage_state["progress"].append({
+                "time": time.time(),
+                "msg": (
+                    "Initial triage: "
+                    f"{initial_triage_summary.get('incident_type', 'unknown')} / "
+                    f"{initial_triage_summary.get('operator_style', 'unknown')}"
+                ),
+            })
+        except Exception as e:
+            steps.append({"step": "initial_triage_pack", "error": str(e)})
+
         # ── Phase 3: Find Suspicious ──
         _triage_state["phase"] = "analyzing"
         _triage_state["progress"].append({"time": time.time(), "msg": "Running threat detection..."})
@@ -246,10 +278,7 @@ def _run_triage_background(req: TriageRequest, out_dir: str, collected_dir: str,
                 "timeline_events": timeline_count,
                 "mitre_techniques": mitre_count,
             },
-            "top_findings": [
-                {"rule": f["rule_name"], "severity": f["severity"], "count": f["matching_count"]}
-                for f in sorted(findings, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.get("severity", "low"), 4))[:10]
-            ],
+            "initial_triage": initial_triage_summary,
             "steps": steps,
         }
 
@@ -484,6 +513,18 @@ async def stop_triage():
     _triage_state["phase"] = "stopped"
     _triage_state["progress"].append({"time": time.time(), "msg": "Triage stopped by user"})
     return {"status": "stop_requested"}
+
+
+@router.get("/lane-state")
+async def get_lane_state():
+    from state import app_state
+    from core.analysis.bias_remediation import build_lane_evidence_summary_surface
+
+    try:
+        axiom = app_state.get_axiom()
+        return build_lane_evidence_summary_surface(axiom)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/diagnostics")

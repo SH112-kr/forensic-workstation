@@ -45,28 +45,28 @@ def test_near_collision_does_not_match():
 
 
 def test_any_alternative_satisfies_group():
-    """ssh_activity: requires [Windows Event Logs | System Services | Prefetch | SSH Keys]."""
+    """openssh_artifacts: requires [Windows Event Logs | System Services | Prefetch | SSH Keys]."""
     counts = {"Prefetch Files - Windows 8/10/11": 100}
-    v = evaluate_rule_coverage("ssh_activity", counts)
+    v = evaluate_rule_coverage("openssh_artifacts", counts)
     assert v["coverage_status"] == "evaluated"
     assert "Prefetch" in v["present_families"]
 
 
 def test_all_groups_required():
-    """watering_hole_indicators: needs Prefetch AND Startup Items."""
+    """prefetch_security_sw_werfault_correlation: needs Prefetch AND Startup Items."""
     # Only Prefetch present -> one group unsatisfied -> not_evaluable
-    v = evaluate_rule_coverage("watering_hole_indicators", {"Prefetch": 500})
+    v = evaluate_rule_coverage("prefetch_security_sw_werfault_correlation", {"Prefetch": 500})
     assert v["coverage_status"] == "not_evaluable"
     assert len(v["unsatisfied_groups"]) == 1
 
     # Both required -> evaluated
-    v2 = evaluate_rule_coverage("watering_hole_indicators", {"Prefetch": 500, "Startup Items": 10})
+    v2 = evaluate_rule_coverage("prefetch_security_sw_werfault_correlation", {"Prefetch": 500, "Startup Items": 10})
     assert v2["coverage_status"] == "evaluated"
 
 
 def test_family_present_with_zero_records_is_not_evaluable():
     counts = {"Windows Event Logs": 0}  # parsed zero rows
-    v = evaluate_rule_coverage("lsass_access", counts)
+    v = evaluate_rule_coverage("sysmon_eid10_lsass_handle_open", counts)
     assert v["coverage_status"] == "not_evaluable"
     assert v["missing_families"] == ["Windows Event Logs"]
 
@@ -85,7 +85,7 @@ def test_attach_rule_coverage_marks_fired_and_unevaluable(mfdb_case):
     connectors = {"axiom:a": mfdb_case}
     payload = {
         "findings": [
-            {"rule_name": "suspicious_prefetch", "details": [{"artifact_type": "Prefetch", "hit_id": 1}]},
+            {"rule_name": "prefetch_pentest_tool_names", "details": [{"artifact_type": "Prefetch", "hit_id": 1}]},
         ],
     }
     attach_rule_coverage(payload, connectors)
@@ -97,21 +97,29 @@ def test_attach_rule_coverage_marks_fired_and_unevaluable(mfdb_case):
 
     # Event-log-dependent rules (not fired here) must be listed as unevaluable.
     unevaluable_ids = {u["rule_name"] for u in payload["unevaluable_rules"]}
-    assert "lsass_access" in unevaluable_ids
-    assert "log_clearing" in unevaluable_ids
-    # suspicious_prefetch already fired -> NOT in unevaluable list
-    assert "suspicious_prefetch" not in unevaluable_ids
+    assert "sysmon_eid10_lsass_handle_open" in unevaluable_ids
+    assert "evtx_eid_1102_audit_log_cleared" in unevaluable_ids
+    # prefetch_pentest_tool_names already fired -> NOT in unevaluable list
+    assert "prefetch_pentest_tool_names" not in unevaluable_ids
 
 
 def test_every_shipped_rule_has_requirements():
     """Guardrail: find_suspicious ships 13 rules. All must appear in
     RULE_REQUIREMENTS so adding a new rule forces an update here."""
     shipped = {
-        "lsass_access", "suspicious_process_creation", "service_installation",
-        "scheduled_task_creation", "log_clearing", "rdp_lateral_movement",
-        "explicit_credential_use", "suspicious_prefetch",
-        "suspicious_service_paths", "powershell_scriptblock",
-        "watering_hole_indicators", "suspicious_msi_install", "ssh_activity",
+        "sysmon_eid10_lsass_handle_open",
+        "evtx_eid_4688_process_creation_events",
+        "evtx_eid_7045_service_installs",
+        "evtx_eid_4698_scheduled_task_events",
+        "evtx_eid_1102_audit_log_cleared",
+        "evtx_eid_4624_type10_rdp_logons",
+        "evtx_eid_4648_explicit_credential_logons",
+        "prefetch_pentest_tool_names",
+        "services_nonstandard_binary_paths",
+        "evtx_eid_4104_scriptblock_logs",
+        "prefetch_security_sw_werfault_correlation",
+        "amcache_remote_access_tool_names",
+        "openssh_artifacts",
     }
     missing = shipped - set(RULE_REQUIREMENTS.keys())
     assert not missing, f"Missing RULE_REQUIREMENTS entries: {missing}"

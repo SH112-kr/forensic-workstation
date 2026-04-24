@@ -1,0 +1,33 @@
+{
+  "fixture_name": "case_ransomware_inc_like",
+  "case_description": "Hands-on-keyboard ransomware via remote session; clear execution + impact lanes; partial persistence via new scheduled task and service.",
+  "expected_verdict": {
+    "primary": "ransomware",
+    "acceptable_alternatives": ["ransomware-like impact", "destructive"]
+  },
+  "expected_confidence": "moderate",
+  "expected_lane_state_board": {
+    "ingress_access": ["confirmed", "suggested"],
+    "execution_impact": "confirmed",
+    "persistence_cleanup": ["confirmed", "suggested"]
+  },
+  "expected_allow_strong_conclusion": true,
+  "prohibited_phrases": [
+    "this is definitely",
+    "certainly ransomware",
+    "no investigation needed"
+  ],
+  "required_phrases": [
+    ["evidence suggests", "evidence indicates", "suggests that", "consistent with", "appears to"],
+    ["ransom note", "ransom-note", "INC-README"],
+    ["encrypted files", "extension churn", ".INC"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "get_file_timestamps",
+    "build_timeline"
+  ],
+  "forbidden_tool_shortcuts": [
+    "auto_triage alone without drill-down"
+  ]
+}

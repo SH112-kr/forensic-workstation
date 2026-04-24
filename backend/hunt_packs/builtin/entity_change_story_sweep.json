@@ -1,0 +1,80 @@
+{
+  "name": "entity_change_story_sweep",
+  "description": "Run substrate checks and baseline/context extraction. Optional explicit entity input can drive behavioural delta and story composition, but the pack does not auto-pivot on a suggested entity.",
+  "params_schema": {
+    "entity_value": {
+      "type": "string",
+      "description": "Optional explicit entity to analyze. When omitted, this pack stops at context extraction and does not auto-pivot on a suggested entity."
+    },
+    "seed_keywords": {
+      "type": "string",
+      "description": "Optional extra seed keywords to correlate with the explicit entity."
+    },
+    "baseline_start": {
+      "type": "string",
+      "description": "Start date for the baseline window."
+    },
+    "baseline_end": {
+      "type": "string",
+      "description": "End date for the baseline window."
+    },
+    "incident_start": {
+      "type": "string",
+      "description": "Start date for the incident window."
+    },
+    "incident_end": {
+      "type": "string",
+      "description": "End date for the incident window."
+    },
+    "match_mode": {
+      "type": "string",
+      "description": "Matching mode for basename/keyword seeds. Usually exact or substring."
+    }
+  },
+  "steps": [
+    {"tool": "case_health", "args": {}},
+    {"tool": "baseline_diff", "args": {}},
+    {
+      "id": "seed_catalog",
+      "tool": "auto_seed_entities_pack",
+      "args": {
+        "start_date": "{incident_start}",
+        "end_date": "{incident_end}",
+        "window_minutes": 60,
+        "limit_per_seed": 200,
+        "max_seeds": 12,
+        "match_mode": "exact"
+      }
+    },
+    {
+      "tool": "behavioral_delta_pack",
+      "skip_if_empty_params": ["entity_value"],
+      "args": {
+        "entity_value": "{entity_value}",
+        "baseline_start": "{baseline_start}",
+        "baseline_end": "{baseline_end}",
+        "incident_start": "{incident_start}",
+        "incident_end": "{incident_end}",
+        "seed_keywords": "{seed_keywords}",
+        "window_minutes": 60,
+        "limit_per_keyword": 500,
+        "match_mode": "{match_mode}"
+      }
+    },
+    {
+      "tool": "entity_story_pack",
+      "skip_if_empty_params": ["entity_value"],
+      "args": {
+        "entity_value": "{entity_value}",
+        "start_date": "{incident_start}",
+        "end_date": "{incident_end}",
+        "seed_keywords": "{seed_keywords}",
+        "window_minutes": 60,
+        "limit_per_keyword": 200,
+        "match_key": "raw",
+        "graph_limit_per_node_type": 200,
+        "match_mode": "{match_mode}"
+      }
+    }
+  ]
+}

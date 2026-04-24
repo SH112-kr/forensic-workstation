@@ -38,19 +38,19 @@ from typing import Any
 # if the richer context is missing) should have their single must-have
 # family listed.
 RULE_REQUIREMENTS: dict[str, list[list[str]]] = {
-    "lsass_access":                 [["Windows Event Logs"]],
-    "suspicious_process_creation":  [["Windows Event Logs"]],
-    "service_installation":         [["Windows Event Logs"]],
-    "scheduled_task_creation":      [["Windows Event Logs", "Scheduled Tasks"]],
-    "log_clearing":                 [["Windows Event Logs"]],
-    "rdp_lateral_movement":         [["Windows Event Logs"]],
-    "explicit_credential_use":      [["Windows Event Logs"]],
-    "suspicious_prefetch":          [["Prefetch"]],
-    "suspicious_service_paths":     [["System Services"]],
-    "powershell_scriptblock":       [["Windows Event Logs"]],
-    "watering_hole_indicators":     [["Prefetch"], ["Startup Items"]],
-    "suspicious_msi_install":       [["AmCache"]],
-    "ssh_activity":                 [["Windows Event Logs", "System Services", "Prefetch", "SSH Keys"]],
+    "sysmon_eid10_lsass_handle_open":          [["Windows Event Logs"]],
+    "evtx_eid_4688_process_creation_events":   [["Windows Event Logs"]],
+    "evtx_eid_7045_service_installs":          [["Windows Event Logs"]],
+    "evtx_eid_4698_scheduled_task_events":     [["Windows Event Logs", "Scheduled Tasks"]],
+    "evtx_eid_1102_audit_log_cleared":         [["Windows Event Logs"]],
+    "evtx_eid_4624_type10_rdp_logons":         [["Windows Event Logs"]],
+    "evtx_eid_4648_explicit_credential_logons":[["Windows Event Logs"]],
+    "prefetch_pentest_tool_names":             [["Prefetch"]],
+    "services_nonstandard_binary_paths":       [["System Services"]],
+    "evtx_eid_4104_scriptblock_logs":          [["Windows Event Logs"]],
+    "prefetch_security_sw_werfault_correlation":[["Prefetch"], ["Startup Items"]],
+    "amcache_remote_access_tool_names":        [["AmCache"]],
+    "openssh_artifacts":                       [["Windows Event Logs", "System Services", "Prefetch", "SSH Keys"]],
 }
 
 

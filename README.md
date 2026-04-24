@@ -95,6 +95,7 @@ Claude Code / Codex에서 호출 가능한 도구들입니다. 모든 도구는 
 - `open_case`, `get_summary`, `get_artifact_types`
 - `search_artifacts`, `get_hit_detail`, `search_by_hash`
 - `build_timeline`, `correlate`, `extract_iocs`, `map_to_mitre`
+- `initial_triage_pack` - window-first initial triage with coverage gates, candidate windows, and delayed baseline diff
 - `slice_timeline` — user/process/host/path 필터 적용한 타임라인
 - `query_result`, `get_tagged_hits`
 

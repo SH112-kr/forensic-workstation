@@ -78,3 +78,6 @@ backend/state/suppressions.json
 
 # Hunt packs — analyst-authored local packs only
 backend/hunt_packs/local/
+
+# Regression harness outputs (transcripts, CSVs, markdown reports)
+backend/regression/reports/

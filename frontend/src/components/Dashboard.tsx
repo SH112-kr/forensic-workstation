@@ -2,8 +2,52 @@ import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 
+const KILL_CHAIN_PHASES = [
+  'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
+  'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access',
+  'Discovery', 'Lateral Movement', 'Collection', 'Command and Control',
+  'Exfiltration', 'Impact',
+];
+
+const LANE_ORDER = ['ingress_access', 'execution_impact', 'persistence_cleanup'] as const;
+const LANE_LABELS: Record<(typeof LANE_ORDER)[number], string> = {
+  ingress_access: 'Ingress / Access',
+  execution_impact: 'Execution / Impact',
+  persistence_cleanup: 'Persistence / Cleanup',
+};
+const LANE_STATE_STYLES: Record<string, { bg: string; color: string; border: string }> = {
+  confirmed: { bg: 'var(--low-bg)', color: 'var(--low)', border: 'var(--low)' },
+  suggested: { bg: 'var(--medium-bg)', color: 'var(--medium)', border: 'var(--medium)' },
+  unverified: { bg: 'var(--high-bg)', color: 'var(--high)', border: 'var(--high)' },
+  not_seen: { bg: 'var(--surface)', color: 'var(--text-dim)', border: 'var(--border)' },
+};
+
+function formatFindingTitle(ruleName: string) {
+  return String(ruleName || '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+}
+
+function downgradeRiskLevel(level: string | null, allowStrongConclusion: boolean) {
+  if (!level || allowStrongConclusion) return level;
+  if (level === 'critical') return 'high';
+  if (level === 'high') return 'medium';
+  return level;
+}
+
 export default function Dashboard() {
-  const { caseInfo, detection, mitre, detectionLoading, setDetection, setDetectionLoading, setActiveView, setLastAction, kapeDiagnostics, setKapeDiagnostics } = useStore();
+  const {
+    caseInfo,
+    detection,
+    mitre,
+    laneStateBoard,
+    detectionLoading,
+    setDetection,
+    setDetectionLoading,
+    setLaneStateBoard,
+    setActiveView,
+    setLastAction,
+    kapeDiagnostics,
+    setKapeDiagnostics,
+  } = useStore();
   const [topTypes, setTopTypes] = useState<any[]>([]);
   const [coverageSummary, setCoverageSummary] = useState<{ searched: number; available_not_loaded: number; structurally_unavailable: number; case_format: string } | null>(null);
   const [antiForensics, setAntiForensics] = useState<any>(null);
@@ -14,25 +58,36 @@ export default function Dashboard() {
   }, [caseInfo]);
 
   useEffect(() => {
-    // Only fetch if not already cached
-    if (!caseInfo || detection) return;
-    setDetectionLoading(true);
-    const t0 = performance.now();
-    Promise.all([
-      post('/api/detection/run', {}).catch(() => null),
-      get('/api/detection/mitre').catch(() => null),
-    ]).then(([det, mit]) => {
-      setDetection(det, mit);
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
-      const count = det?.total_findings ?? 0;
-      setLastAction(`Detection completed: ${count} findings (${elapsed}s)`);
-    }).finally(() => setDetectionLoading(false));
+    if (!caseInfo) return;
 
-    // Fetch top artifact types for bar chart
-    get('/api/cases/types').then(data => setTopTypes((data.artifact_types || []).slice(0, 10))).catch(() => {});
+    const shouldLoadDetection = !detection;
+    const shouldLoadLaneState = laneStateBoard === null;
+    if (shouldLoadDetection) {
+      setDetectionLoading(true);
+    }
+    if (shouldLoadDetection || shouldLoadLaneState) {
+      const t0 = performance.now();
+      Promise.all([
+        shouldLoadDetection ? post('/api/detection/run', {}).catch(() => null) : Promise.resolve(detection),
+        shouldLoadDetection ? get('/api/detection/mitre').catch(() => null) : Promise.resolve(mitre),
+        shouldLoadLaneState ? get('/api/triage/lane-state').catch(() => ({})) : Promise.resolve({ lane_state_board: laneStateBoard }),
+      ]).then(([det, mit, lane]) => {
+        if (shouldLoadDetection && det) {
+          setDetection(det, mit);
+          const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+          const count = det?.total_findings ?? 0;
+          setLastAction(`Detection completed: ${count} findings (${elapsed}s)`);
+        }
+        if (shouldLoadLaneState) {
+          setLaneStateBoard(lane?.lane_state_board ?? {});
+        }
+      }).finally(() => {
+        if (shouldLoadDetection) setDetectionLoading(false);
+      });
+    }
 
-    // Coverage summary — gives the analyst an at-a-glance hint that some
-    // families are structurally unavailable before they chase empty searches.
+    get('/api/cases/types').then((data) => setTopTypes((data.artifact_types || []).slice(0, 10))).catch(() => {});
+
     get('/api/cases/coverage').then((d) => {
       if (d && d.summary) {
         setCoverageSummary({
@@ -44,83 +99,88 @@ export default function Dashboard() {
       }
     }).catch(() => {});
 
-    // Anti-forensics — runs against the active case and surfaces at the top
-    // of the Dashboard when any rule fires so log-tamper / shadow-deletion is
-    // impossible to miss.
     get('/api/detection/anti-forensics').then((d) => {
       if (d && d.rules_fired > 0) setAntiForensics(d);
+      else setAntiForensics(null);
     }).catch(() => {});
 
-    // Fetch KAPE diagnostics if not already loaded
     if (!kapeDiagnostics) {
-      get('/api/cases/summary').then(data => {
+      get('/api/cases/summary').then((data) => {
         if (data.kape_diagnostics) setKapeDiagnostics(data.kape_diagnostics);
       }).catch(() => {});
     }
-  }, [caseInfo, detection]);
+  }, [
+    caseInfo,
+    detection,
+    mitre,
+    laneStateBoard,
+    kapeDiagnostics,
+    setDetection,
+    setDetectionLoading,
+    setLaneStateBoard,
+    setLastAction,
+    setKapeDiagnostics,
+  ]);
 
   if (!caseInfo) return null;
 
   const findings = detection?.findings || [];
+  const keyFindings = detection?.alert_summary?.key_findings || findings.slice(0, 10);
+  const balanceWarnings = detection?.alert_summary?.balance?.warnings || [];
   const loading = detectionLoading;
+  const laneBoard = laneStateBoard || null;
+  const laneError = laneBoard?.error || '';
+  const hasLaneBoard = !!laneBoard && LANE_ORDER.some((lane) => lane in laneBoard);
+  const allowStrongConclusion = hasLaneBoard ? laneBoard?.allow_strong_conclusion !== false : true;
+  const blockedLaneLabels = (laneBoard?.blocked_lanes || []).map((lane: string) => LANE_LABELS[lane as keyof typeof LANE_LABELS] || lane);
 
-  // Don't show risk level until detection is complete
-  const hasCritical = findings.some((f: any) => f.severity === 'critical');
-  const hasHigh = findings.some((f: any) => f.severity === 'high');
-  const riskLevel = loading ? null : hasCritical ? 'critical' : hasHigh ? 'high' : findings.length ? 'medium' : 'low';
+  const hasCritical = keyFindings.some((f: any) => f.severity === 'critical');
+  const hasHigh = keyFindings.some((f: any) => f.severity === 'high');
+  const rawRiskLevel = loading ? null : hasCritical ? 'critical' : hasHigh ? 'high' : keyFindings.length ? 'medium' : 'low';
+  const riskLevel = downgradeRiskLevel(rawRiskLevel, allowStrongConclusion);
+  const riskDowngraded = rawRiskLevel !== null && rawRiskLevel !== riskLevel;
   const riskLabels: Record<string, string> = {
-    critical: 'CRITICAL', high: 'HIGH', medium: 'MEDIUM', low: 'LOW',
+    critical: 'CRITICAL',
+    high: 'HIGH',
+    medium: 'MEDIUM',
+    low: 'LOW',
   };
 
   const phases = mitre?.narrative || [];
-  const killChainPhases = [
-    'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
-    'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access',
-    'Discovery', 'Lateral Movement', 'Collection', 'Command and Control',
-    'Exfiltration', 'Impact',
-  ];
   const activePhases = new Set(phases.map((p: any) => p.tactic));
-
   const clickableCardStyle: React.CSSProperties = { cursor: 'pointer', transition: 'transform 0.1s' };
 
-  // "Next steps" nudges — conditional suggestions driven by existing
-  // endpoints only. Each condition is deterministic and visible to the
-  // analyst (no hidden heuristics). Rendered after the critical anti-
-  // forensics alert so the alert always stays first.
-  const criticalCount = (detection?.findings || []).filter((f: any) => f.severity === 'critical').length;
-  const nextSteps: { icon: string; text: string; cta: string; onClick: () => void }[] = [];
+  const criticalCount = findings.filter((f: any) => f.severity === 'critical').length;
+  const nextSteps: { text: string; cta: string; onClick: () => void }[] = [];
   if (criticalCount > 0) {
     nextSteps.push({
-      icon: '🔴',
-      text: `Detection 탭에서 critical ${criticalCount}건 먼저 검토`,
+      text: `Detection includes ${criticalCount} critical findings that need review.`,
       cta: 'Detection',
       onClick: () => setActiveView('detection'),
     });
   }
   if (coverageSummary && coverageSummary.structurally_unavailable > 0) {
     nextSteps.push({
-      icon: '🧾',
-      text: `구조적으로 제공 불가한 아티팩트 ${coverageSummary.structurally_unavailable}종 — 무엇을 못 보는지 확인`,
+      text: `${coverageSummary.structurally_unavailable} artifact families are structurally unavailable in this case format.`,
       cta: 'Coverage',
       onClick: () => setActiveView('coverage'),
     });
   }
   if (antiForensics && antiForensics.rules_fired > 0) {
     const firedNames = (antiForensics.rules || [])
-      .filter((r: any) => r.ok && r.count).map((r: any) => r.rule_name).slice(0, 3).join(', ');
+      .filter((r: any) => r.ok && r.count)
+      .map((r: any) => r.rule_name)
+      .slice(0, 3)
+      .join(', ');
     nextSteps.push({
-      icon: '⚠',
-      text: `로그 변조 의심: ${firedNames}`,
+      text: `Anti-forensics fired: ${firedNames}`,
       cta: 'Detection',
       onClick: () => setActiveView('detection'),
     });
   }
-  // Clean-state CTA: only meaningful when multiple cases are loaded, otherwise
-  // pivot_across_cases is useless. Codex Round-12 guard.
   if (nextSteps.length === 0 && caseCount >= 2) {
     nextSteps.push({
-      icon: '🎯',
-      text: '중요 신호 없음. pivot_across_cases로 교차 검증 시작 추천',
+      text: 'No urgent signals surfaced. Validate by pivoting across loaded cases.',
       cta: 'Pivot',
       onClick: () => setActiveView('pivot'),
     });
@@ -128,116 +188,234 @@ export default function Dashboard() {
 
   return (
     <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      {/* Anti-forensics alert — renders first so log tamper / snapshot
-          deletion is never buried. Only appears when rules actually fired. */}
       {antiForensics && antiForensics.rules_fired > 0 && (
         <div
           onClick={() => setActiveView('detection')}
           style={{
-            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
-            background: 'var(--critical-bg)', border: '1px solid var(--critical)',
-            display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+            padding: '12px 16px',
+            borderRadius: 10,
+            marginBottom: 12,
+            background: 'var(--critical-bg)',
+            border: '1px solid var(--critical)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            cursor: 'pointer',
           }}
           title="Review the full anti-forensics findings in Detection"
         >
-          <span style={{ fontSize: 18 }}>⚠</span>
           <div style={{ flex: 1, fontSize: 12 }}>
             <div style={{ fontWeight: 700, color: 'var(--critical)' }}>
               Anti-forensic activity detected
             </div>
             <div style={{ color: 'var(--text-dim)' }}>
-              {antiForensics.rules_fired} rule{antiForensics.rules_fired > 1 ? 's' : ''} fired ·
-              {' '}{antiForensics.total_hits} total hit{antiForensics.total_hits === 1 ? '' : 's'} ·
-              {' '}{(antiForensics.rules || []).filter((r: any) => r.ok && r.count).map((r: any) => r.rule_name).join(', ')}
+              {antiForensics.rules_fired} rule{antiForensics.rules_fired > 1 ? 's' : ''} fired, {antiForensics.total_hits} total hit{antiForensics.total_hits === 1 ? '' : 's'}
             </div>
           </div>
-          <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review →</span>
+          <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review</span>
         </div>
       )}
 
-      {/* Next-steps nudges — transparent, condition-driven. Never shows
-          opinionated urgency that the analyst didn't already have evidence
-          for. Hidden when nothing is actionable. */}
+      {hasLaneBoard && allowStrongConclusion === false && (
+        <div
+          onClick={() => setActiveView('detection')}
+          style={{
+            padding: '12px 16px',
+            borderRadius: 10,
+            marginBottom: 12,
+            background: 'var(--high-bg)',
+            border: '1px solid var(--high)',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ fontWeight: 700, color: 'var(--high)', marginBottom: 4 }}>
+            Investigation incomplete
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            Lanes unverified: {blockedLaneLabels.join(', ') || 'unknown'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            Do not issue strong end-to-end conclusions.
+          </div>
+        </div>
+      )}
+
+      {laneError && (
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: 10,
+          marginBottom: 12,
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          fontSize: 12,
+          color: 'var(--text-dim)',
+        }}>
+          <strong style={{ color: 'var(--text)' }}>Lane state unavailable.</strong> {laneError}
+        </div>
+      )}
+
+      {hasLaneBoard && !laneError && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: 10,
+          marginBottom: 12,
+        }}>
+          {LANE_ORDER.map((lane) => {
+            const entry = laneBoard?.[lane] || {};
+            const state = entry.state || 'not_seen';
+            const style = LANE_STATE_STYLES[state] || LANE_STATE_STYLES.not_seen;
+            const basis = (entry.basis || []).slice(0, 2).join(', ') || 'No supporting signals surfaced';
+            return (
+              <div
+                key={lane}
+                onClick={() => setActiveView('detection')}
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: 10,
+                  background: style.bg,
+                  border: `1px solid ${style.border}`,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', fontWeight: 700, marginBottom: 8 }}>
+                  {LANE_LABELS[lane]}
+                </div>
+                <div style={{
+                  display: 'inline-block',
+                  padding: '2px 8px',
+                  borderRadius: 999,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  marginBottom: 8,
+                  color: style.color,
+                  background: 'rgba(255,255,255,0.45)',
+                }}>
+                  {String(state).toUpperCase()}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{basis}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {balanceWarnings.length > 0 && (
+        <div
+          onClick={() => setActiveView('detection')}
+          style={{
+            padding: '12px 16px',
+            borderRadius: 10,
+            marginBottom: 12,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+            Balance warning
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            {balanceWarnings[0]}
+          </div>
+        </div>
+      )}
+
       {nextSteps.length > 0 && (
         <div style={{
-          padding: '10px 14px', borderRadius: 10, marginBottom: 12,
-          background: 'var(--surface)', border: '1px solid var(--border)',
+          padding: '10px 14px',
+          borderRadius: 10,
+          marginBottom: 12,
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
         }}>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
-            제안된 다음 단계
+          <div style={{
+            fontSize: 11,
+            color: 'var(--text-dim)',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            marginBottom: 6,
+          }}>
+            Suggested next steps
           </div>
-          {nextSteps.map((s, i) => (
-            <div key={i}
-              onClick={s.onClick}
+          {nextSteps.map((step, index) => (
+            <div
+              key={index}
+              onClick={step.onClick}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0',
-                cursor: 'pointer', fontSize: 12,
-                borderTop: i > 0 ? '1px solid var(--border-light)' : 'none',
-              }}>
-              <span style={{ fontSize: 14 }}>{s.icon}</span>
-              <span style={{ flex: 1 }}>{s.text}</span>
-              <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>{s.cta} →</span>
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '6px 0',
+                cursor: 'pointer',
+                fontSize: 12,
+                borderTop: index > 0 ? '1px solid var(--border-light)' : 'none',
+              }}
+            >
+              <span style={{ flex: 1 }}>{step.text}</span>
+              <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>{step.cta}</span>
             </div>
           ))}
         </div>
       )}
 
-      {/* Evidence Coverage — compact summary with a jump to the full view. Hides
-          when no hints are actionable (everything searched, nothing structural). */}
       {coverageSummary && (coverageSummary.structurally_unavailable > 0 || coverageSummary.available_not_loaded > 0) && (
         <div
           onClick={() => setActiveView('coverage')}
           style={{
-            padding: '12px 16px', borderRadius: 10, marginBottom: 12,
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+            padding: '12px 16px',
+            borderRadius: 10,
+            marginBottom: 12,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            cursor: 'pointer',
           }}
           title="Open full coverage view"
         >
-          <span style={{ fontSize: 16 }}>🧾</span>
           <div style={{ flex: 1, fontSize: 12 }}>
-            <div style={{ fontWeight: 700, color: 'var(--text)' }}>Evidence Coverage</div>
+            <div style={{ fontWeight: 700, color: 'var(--text)' }}>Evidence coverage</div>
             <div style={{ color: 'var(--text-dim)' }}>
               <span style={{ color: '#4ade80' }}>{coverageSummary.searched} searchable</span>
-              {coverageSummary.available_not_loaded > 0 && (
-                <> · <span style={{ color: '#f59e0b' }}>{coverageSummary.available_not_loaded} with zero records</span></>
-              )}
-              {coverageSummary.structurally_unavailable > 0 && (
-                <> · <span style={{ color: '#ef4444' }}>{coverageSummary.structurally_unavailable} structurally unavailable</span></>
-              )}
-              {coverageSummary.case_format === 'kape' && (
-                <> — KAPE-only case; AXIOM-only families cannot be searched here.</>
-              )}
+              {coverageSummary.available_not_loaded > 0 && <> | <span style={{ color: '#f59e0b' }}>{coverageSummary.available_not_loaded} with zero records</span></>}
+              {coverageSummary.structurally_unavailable > 0 && <> | <span style={{ color: '#ef4444' }}>{coverageSummary.structurally_unavailable} structurally unavailable</span></>}
+              {coverageSummary.case_format === 'kape' && <> | KAPE-only case</>}
             </div>
           </div>
-          <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>Details →</span>
+          <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>Details</span>
         </div>
       )}
 
-      {/* KAPE Diagnostics Banner */}
       {kapeDiagnostics && kapeDiagnostics.modules_failed > 0 && (
         <div style={{
-          padding: '14px 18px', borderRadius: 10, marginBottom: 16,
-          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+          padding: '14px 18px',
+          borderRadius: 10,
+          marginBottom: 16,
+          background: 'rgba(245,158,11,0.08)',
+          border: '1px solid rgba(245,158,11,0.25)',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <span style={{ fontSize: 16 }}>{'\u26A0'}</span>
             <span style={{ fontWeight: 700, fontSize: 13, color: '#f59e0b' }}>
-              KAPE Parsing Incomplete — {kapeDiagnostics.modules_failed} module{kapeDiagnostics.modules_failed > 1 ? 's' : ''} failed
+              KAPE parsing incomplete: {kapeDiagnostics.modules_failed} module{kapeDiagnostics.modules_failed > 1 ? 's' : ''} failed
             </span>
             <div style={{ flex: 1 }} />
-            <span onClick={() => setKapeDiagnostics(null)}
-              style={{ cursor: 'pointer', color: 'var(--text-dim)', fontSize: 18, lineHeight: 1 }}>{'\u00D7'}</span>
+            <span
+              onClick={() => setKapeDiagnostics(null)}
+              style={{ cursor: 'pointer', color: 'var(--text-dim)', fontSize: 18, lineHeight: 1 }}
+            >
+              x
+            </span>
           </div>
 
-          {/* Failed modules grouped by reason */}
           {kapeDiagnostics.dotnet_errors > 0 && (
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
               <span style={{ color: '#ef4444', fontWeight: 600 }}>.NET runtimeconfig missing:</span>{' '}
               {[...new Set((kapeDiagnostics.failed_modules || [])
                 .filter((m: any) => m.reason?.includes('runtimeconfig'))
-                .map((m: any) => m.module))]
-                .join(', ') || `${kapeDiagnostics.dotnet_errors} modules`}
+                .map((m: any) => m.module))].join(', ') || `${kapeDiagnostics.dotnet_errors} modules`}
             </div>
           )}
 
@@ -248,15 +426,13 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Recovered modules */}
           {kapeDiagnostics.recovered_modules?.length > 0 && (
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
-              <span style={{ color: '#4ade80', fontWeight: 600 }}>Recovered (re-parsed):</span>{' '}
+              <span style={{ color: '#4ade80', fontWeight: 600 }}>Recovered:</span>{' '}
               {kapeDiagnostics.recovered_modules.join(', ')}
             </div>
           )}
 
-          {/* Loaded artifact types */}
           {caseInfo && Object.keys(caseInfo.artifact_types || {}).length > 0 && (
             <div style={{ fontSize: 12, marginBottom: 6 }}>
               <span style={{ color: '#4ade80', fontWeight: 600 }}>Loaded:</span>{' '}
@@ -268,96 +444,125 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Recommendations */}
-          {kapeDiagnostics.recommendations?.map((r: string, i: number) => (
-            <div key={i} style={{
-              fontSize: 11, color: '#60a5fa', marginTop: 4,
-              padding: '4px 8px', borderRadius: 4, background: 'rgba(96,165,250,0.08)',
-            }}>
-              {r}
+          {kapeDiagnostics.recommendations?.map((recommendation: string, index: number) => (
+            <div
+              key={index}
+              style={{
+                fontSize: 11,
+                color: '#60a5fa',
+                marginTop: 4,
+                padding: '4px 8px',
+                borderRadius: 4,
+                background: 'rgba(96,165,250,0.08)',
+              }}
+            >
+              {recommendation}
             </div>
           ))}
 
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <button onClick={() => setActiveView('settings')} style={{
-              padding: '5px 14px', borderRadius: 5, border: 'none', fontSize: 11,
-              background: '#f59e0b', color: '#000', fontWeight: 600, cursor: 'pointer',
-            }}>
-              Run KAPE Health Check
+            <button
+              onClick={() => setActiveView('settings')}
+              style={{
+                padding: '5px 14px',
+                borderRadius: 5,
+                border: 'none',
+                fontSize: 11,
+                background: '#f59e0b',
+                color: '#000',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Run KAPE health check
             </button>
           </div>
         </div>
       )}
 
-      {/* Risk Banner */}
       {loading ? (
         <div style={{
-          padding: '16px 20px', borderRadius: 10, marginBottom: 20,
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '16px 20px',
+          borderRadius: 10,
+          marginBottom: 20,
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
         }}>
           <div style={{
-            width: 18, height: 18, border: '3px solid var(--border)',
-            borderTopColor: 'var(--accent)', borderRadius: '50%',
+            width: 18,
+            height: 18,
+            border: '3px solid var(--border)',
+            borderTopColor: 'var(--accent)',
+            borderRadius: '50%',
             animation: 'spin 0.8s linear infinite',
           }} />
           <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>Running threat detection...</span>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <style>{'@keyframes spin { to { transform: rotate(360deg); } }'}</style>
         </div>
       ) : riskLevel && (
         <div style={{
-          padding: '16px 20px', borderRadius: 10, marginBottom: 20,
-          display: 'flex', alignItems: 'center', gap: 16,
+          padding: '16px 20px',
+          borderRadius: 10,
+          marginBottom: 20,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
           background: `var(--${riskLevel}-bg)`,
           border: `1px solid var(--${riskLevel})`,
         }}>
-          <span style={{ fontSize: 28, fontWeight: 800, color: `var(--${riskLevel})` }}>
-            {riskLabels[riskLevel]}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 28, fontWeight: 800, color: `var(--${riskLevel})` }}>
+              {riskLabels[riskLevel]}
+            </span>
+            {riskDowngraded && (
+              <span style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+                padding: '3px 8px',
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.5)',
+                color: `var(--${riskLevel})`,
+              }}>
+                incomplete
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            <strong style={{ color: 'var(--text)' }}>Risk Assessment</strong>
+            <strong style={{ color: 'var(--text)' }}>Risk assessment</strong>
             <br />
-            {findings.length} detection rules triggered, {findings.reduce((s: number, f: any) => s + f.matching_count, 0).toLocaleString()} total evidence hits
+            {findings.length} detection rules triggered, {findings.reduce((sum: number, finding: any) => sum + (finding.matching_count || 0), 0).toLocaleString()} total evidence hits
           </div>
         </div>
       )}
 
-      {/* Cards */}
       <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-        gap: 10, marginBottom: 24,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+        gap: 10,
+        marginBottom: 24,
       }}>
-        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle}
-          onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
-          onMouseLeave={e => (e.currentTarget.style.transform = 'none')}>
+        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
           <div className="card-label">Artifacts</div>
           <div className="card-value">{caseInfo.total_hits?.toLocaleString()}</div>
         </div>
-        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle}
-          onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
-          onMouseLeave={e => (e.currentTarget.style.transform = 'none')}>
+        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
           <div className="card-label">Types</div>
           <div className="card-value">{caseInfo.artifact_type_count}</div>
         </div>
-        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle}
-          onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
-          onMouseLeave={e => (e.currentTarget.style.transform = 'none')}>
+        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
           <div className="card-label">Findings</div>
-          <div className="card-value" style={{ color: 'var(--critical)' }}>
-            {loading ? '...' : detection?.total_findings ?? '0'}
-          </div>
+          <div className="card-value" style={{ color: 'var(--critical)' }}>{loading ? '...' : detection?.total_findings ?? '0'}</div>
         </div>
-        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle}
-          onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
-          onMouseLeave={e => (e.currentTarget.style.transform = 'none')}>
+        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
           <div className="card-label">ATT&CK</div>
-          <div className="card-value" style={{ color: 'var(--high)' }}>
-            {loading ? '...' : mitre?.attack_phases ?? '0'}
-          </div>
+          <div className="card-value" style={{ color: 'var(--high)' }}>{loading ? '...' : mitre?.attack_phases ?? '0'}</div>
         </div>
-        <div className="card" onClick={() => setActiveView('timeline')} style={clickableCardStyle}
-          onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
-          onMouseLeave={e => (e.currentTarget.style.transform = 'none')}>
+        <div className="card" onClick={() => setActiveView('timeline')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
           <div className="card-label">Period</div>
           <div className="card-value" style={{ fontSize: 13 }}>
             {(caseInfo.date_range_start || '?').slice(0, 10)} ~ {(caseInfo.date_range_end || '?').slice(0, 10)}
@@ -365,88 +570,115 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Kill Chain */}
       <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Attack Kill Chain
+        Attack kill chain
       </h3>
-      <div style={{
-        display: 'flex', gap: 3, marginBottom: 24, overflowX: 'auto', paddingBottom: 4,
-      }}>
-        {killChainPhases.map((phase, i) => {
+      <div style={{ display: 'flex', gap: 3, marginBottom: 24, overflowX: 'auto', paddingBottom: 4 }}>
+        {KILL_CHAIN_PHASES.map((phase, index) => {
           const isHit = activePhases.has(phase);
           return (
             <div key={phase} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
               <div style={{
-                flex: '1 0 80px', minWidth: 80, padding: '8px 6px', borderRadius: 6,
-                textAlign: 'center', fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
+                flex: '1 0 80px',
+                minWidth: 80,
+                padding: '8px 6px',
+                borderRadius: 6,
+                textAlign: 'center',
+                fontSize: 9,
+                fontWeight: 700,
+                textTransform: 'uppercase',
                 border: `1px solid ${isHit ? 'var(--high)' : 'var(--border-light)'}`,
                 background: isHit ? 'var(--high-bg)' : 'var(--surface)',
                 color: isHit ? 'var(--high)' : 'var(--text-dim)',
               }}>
-                <div style={{ fontSize: 8, opacity: 0.6 }}>{i + 1}</div>
+                <div style={{ fontSize: 8, opacity: 0.6 }}>{index + 1}</div>
                 {phase.replace('Command and Control', 'C2')}
               </div>
-              {i < killChainPhases.length - 1 && (
-                <span style={{ color: 'var(--border)', fontSize: 8 }}>{'\u25B6'}</span>
+              {index < KILL_CHAIN_PHASES.length - 1 && (
+                <span style={{ color: 'var(--border)', fontSize: 8 }}>{'>'}</span>
               )}
             </div>
           );
         })}
       </div>
 
-      {/* Top Artifact Types bar chart */}
       <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Top Artifact Types
+        Top artifact types
       </h3>
       {topTypes.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          {topTypes.map((t, i) => {
+          {topTypes.map((artifact, index) => {
             const maxCount = topTypes[0]?.count || 1;
             return (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <span style={{ width: 180, fontSize: 11, color: 'var(--text-dim)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{t.artifact_type}</span>
+              <div key={index} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ width: 180, fontSize: 11, color: 'var(--text-dim)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                  {artifact.artifact_type}
+                </span>
                 <div style={{ flex: 1, background: 'var(--surface)', borderRadius: 4, height: 16 }}>
-                  <div style={{ width: `${(t.count / maxCount * 100)}%`, background: 'var(--accent)', height: '100%', borderRadius: 4, minWidth: 2 }} />
+                  <div style={{ width: `${(artifact.count / maxCount) * 100}%`, background: 'var(--accent)', height: '100%', borderRadius: 4, minWidth: 2 }} />
                 </div>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)', minWidth: 60, textAlign: 'right' }}>{t.count.toLocaleString()}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', minWidth: 60, textAlign: 'right' }}>{artifact.count.toLocaleString()}</span>
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Key Findings */}
-      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Key Findings
+      <h3 style={{ fontSize: 13, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Key findings (balanced)
       </h3>
-      {findings.filter((f: any) => f.severity === 'critical' || f.severity === 'high').map((f: any, i: number) => (
-        <div key={i} style={{
-          background: 'var(--surface)', border: '1px solid var(--border-light)',
-          borderRadius: 8, padding: '12px 16px', marginBottom: 8,
-          display: 'flex', alignItems: 'flex-start', gap: 12,
-          cursor: 'pointer',
-        }} onClick={() => setActiveView('detection')}>
-          <span className={`badge badge-${f.severity}`}>{f.severity.toUpperCase()}</span>
+      {keyFindings.slice(0, 10).map((finding: any, index: number) => (
+        <div
+          key={index}
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--border-light)',
+            borderRadius: 8,
+            padding: '12px 16px',
+            marginBottom: 8,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            cursor: 'pointer',
+          }}
+          onClick={() => setActiveView('detection')}
+        >
+          <span className={`badge badge-${finding.severity}`}>{String(finding.severity || 'info').toUpperCase()}</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
-              {f.rule_name.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
+              {formatFindingTitle(finding.rule_name)}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{f.description}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{finding.description}</div>
             <div style={{ marginTop: 4 }}>
-              {(f.mitre_techniques || []).map((t: string) => (
-                <span key={t} style={{
-                  display: 'inline-block', padding: '0 5px', margin: '2px 3px 0 0',
-                  background: 'var(--accent-light)', borderRadius: 3, fontSize: 10,
-                  fontFamily: 'var(--mono)',
-                }}>{t}</span>
+              {(finding.mitre_techniques || []).map((technique: string) => (
+                <span
+                  key={technique}
+                  style={{
+                    display: 'inline-block',
+                    padding: '0 5px',
+                    margin: '2px 3px 0 0',
+                    background: 'var(--accent-light)',
+                    borderRadius: 3,
+                    fontSize: 10,
+                    fontFamily: 'var(--mono)',
+                  }}
+                >
+                  {technique}
+                </span>
               ))}
             </div>
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-dim)' }}>
-            {f.matching_count.toLocaleString()}
+            {(finding.matching_count || 0).toLocaleString()}
           </div>
         </div>
       ))}
+
+      {!loading && keyFindings.length === 0 && findings.length > 0 && (
+        <div style={{ color: 'var(--text-dim)', fontSize: 13, fontStyle: 'italic' }}>
+          Balanced selection returned 0 findings. Review Detection for the full legacy list.
+        </div>
+      )}
 
       {!loading && findings.length === 0 && (
         <div style={{ color: 'var(--text-dim)', fontSize: 13, fontStyle: 'italic' }}>

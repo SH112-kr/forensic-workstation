@@ -1,0 +1,33 @@
+{
+  "fixture_name": "case_anti_forensics_heavy",
+  "case_description": "Log clearing + VSS deletion + PowerShell logging tamper + USN deletion in a short burst, performed by admin. No encrypted files, no ransom notes, no other impact artefacts. Anti-forensics signal is strong but impact lane is unverified. Correct behaviour: flag anti-forensic burst AND refuse a strong end-to-end verdict; legitimate admin housekeeping is a credible alternative.",
+  "expected_verdict": {
+    "primary": "unknown",
+    "acceptable_alternatives": ["anti-forensics observed", "suspicious activity - impact unverified", "incomplete", "anti_forensics"]
+  },
+  "expected_confidence": "low",
+  "expected_lane_state_board": {
+    "ingress_access": ["suggested", "unverified"],
+    "execution_impact": ["unverified", "not_seen"],
+    "persistence_cleanup": ["suggested", "unverified"]
+  },
+  "expected_allow_strong_conclusion": false,
+  "prohibited_phrases": [
+    "definitely compromised",
+    "ransomware confirmed",
+    "this is ransomware",
+    "no investigation needed"
+  ],
+  "required_phrases": [
+    ["anti-forensic", "anti_forensic", "log cleared", "log clearing", "tamper", "tampered", "vssadmin", "shadow copy deletion", "shadow deletion"],
+    ["impact unverified", "impact lane", "not confirmed", "cannot confirm", "unverified", "coverage gap", "investigation incomplete", "no impact", "no encrypted"],
+    ["legitimate maintenance", "benign alternative", "admin housekeeping", "admin activity", "authorised", "authorized", "considered_alternatives"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "detect_anti_forensics"
+  ],
+  "forbidden_tool_shortcuts": [
+    "strong verdict from rule_fired count alone"
+  ]
+}

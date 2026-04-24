@@ -22,6 +22,8 @@ Output contract (stable for callers):
   {
     "ok": bool,
     "entity": {"value": str, "seed_keywords": [str, ...]},
+    "match_semantics": {"mode": str, "entity": str, "seed_keywords": str},
+    "sampling_scope": {"counts": str, "windows": str, "boundaries": str},
     "periods": {"baseline": {...}, "incident": {...}},
     "baseline": {"total_events": N, "co_occurrence_windows": N,
                  "last_event_ts": str|None, "per_keyword_totals": {kw: N}},
@@ -30,7 +32,7 @@ Output contract (stable for callers):
                  "top_windows": [{start, keywords_present, event_count}, ...]},
     "delta": {
       "dormant_gap_seconds": float|None,
-      "dormant_gap_reason": "computed|baseline_empty|incident_empty|both_empty",
+      "dormant_gap_reason": "computed|baseline_empty|incident_empty|both_empty|truncated_sample",
       "new_cooccurring_keywords": [str, ...],
       "volume_ratio_per_keyword": {kw: {"baseline": N, "incident": N,
                                         "ratio": float|None,
@@ -112,6 +114,14 @@ def _period_totals(per_keyword: dict[str, Any]) -> dict[str, int]:
     return {kw: int(v.get("total_hits", 0)) for kw, v in per_keyword.items()}
 
 
+def _sampled_event(per_keyword: dict[str, Any], keyword: str, newest: bool) -> dict[str, Any] | None:
+    """Read the sampled first/last event attached by ``correlate_keywords``."""
+    entry = per_keyword.get(keyword, {}) or {}
+    field = "sampled_last_event" if newest else "sampled_first_event"
+    event = entry.get(field)
+    return event if isinstance(event, dict) else None
+
+
 def _extreme_event(events: list[dict[str, Any]], newest: bool) -> dict[str, Any] | None:
     """Return the newest-or-oldest event or ``None`` when the list is empty."""
     if not events:
@@ -169,6 +179,8 @@ def _volume_ratios(
 def _dormant_gap(
     last_baseline_event: dict[str, Any] | None,
     first_incident_event: dict[str, Any] | None,
+    *,
+    truncated: bool = False,
 ) -> tuple[float | None, str]:
     """``(gap_seconds, reason)`` — Codex pre-review #2.
 
@@ -176,6 +188,8 @@ def _dormant_gap(
     gap is a real number. Consumers that only read ``gap_seconds`` and
     ignore ``reason`` cannot mistake "not computable" for "no gap".
     """
+    if truncated:
+        return None, "truncated_sample"
     if not last_baseline_event and not first_incident_event:
         return None, "both_empty"
     if not last_baseline_event:
@@ -253,6 +267,7 @@ def behavioral_delta(
     seed_keywords: list[str] | str | None = None,
     window_minutes: int = 60,
     limit_per_keyword: int = 500,
+    match_mode: str = "substring",
 ) -> dict[str, Any]:
     """Run baseline-vs-incident behavioural delta for one entity.
 
@@ -308,11 +323,13 @@ def behavioral_delta(
         axiom, seeds,
         start_date=baseline_start, end_date=baseline_end,
         window_minutes=window_minutes, limit=limit_per_keyword,
+        match_mode=match_mode,
     )
     incident_corr = correlate_keywords(
         axiom, seeds,
         start_date=incident_start, end_date=incident_end,
         window_minutes=window_minutes, limit=limit_per_keyword,
+        match_mode=match_mode,
     )
 
     b_per_kw = baseline_corr.get("per_keyword", {})
@@ -323,17 +340,26 @@ def behavioral_delta(
     i_events = incident_corr.get("chronological_events", []) or []
     b_windows = baseline_corr.get("co_occurrence_windows", []) or []
     i_windows = incident_corr.get("co_occurrence_windows", []) or []
+    entity_keyword = seeds[0]
     # Dormant gap is measured against the PRIMARY entity keyword only —
     # "how long was bomgar-pec silent" is a different question from "how
     # long was any seed keyword silent". The seed-keyword events are
     # still reported in top_windows / co_occurrence_growth; they just
     # don't distort the dormant-gap semantics.
-    b_entity_events = [e for e in b_events if e.get("keyword") == entity_value]
-    i_entity_events = [e for e in i_events if e.get("keyword") == entity_value]
-    b_last = _extreme_event(b_entity_events, newest=True)
-    i_first = _extreme_event(i_entity_events, newest=False)
+    b_entity_events = [e for e in b_events if e.get("keyword") == entity_keyword]
+    i_entity_events = [e for e in i_events if e.get("keyword") == entity_keyword]
+    entity_truncated = (
+        b_per_kw.get(entity_keyword, {}).get("truncated")
+        or i_per_kw.get(entity_keyword, {}).get("truncated")
+    )
+    b_last = None if b_per_kw.get(entity_keyword, {}).get("truncated") else (
+        _sampled_event(b_per_kw, entity_keyword, newest=True) or _extreme_event(b_entity_events, newest=True)
+    )
+    i_first = None if i_per_kw.get(entity_keyword, {}).get("truncated") else (
+        _sampled_event(i_per_kw, entity_keyword, newest=False) or _extreme_event(i_entity_events, newest=False)
+    )
 
-    gap_seconds, gap_reason = _dormant_gap(b_last, i_first)
+    gap_seconds, gap_reason = _dormant_gap(b_last, i_first, truncated=bool(entity_truncated))
     ratios = _volume_ratios(b_totals, i_totals)
 
     b_keysets = _cooccurrence_keysets(b_windows)
@@ -363,8 +389,8 @@ def behavioral_delta(
     claims: list[dict[str, Any]] = []
     # Use entity-only counts for the primary activity classification so a
     # noisy seed keyword cannot mask an entity that is itself silent.
-    b_entity_count = len(b_entity_events)
-    i_entity_count = len(i_entity_events)
+    b_entity_count = b_totals.get(entity_keyword, 0)
+    i_entity_count = i_totals.get(entity_keyword, 0)
 
     if b_entity_count == 0 and i_entity_count == 0:
         claims.append(_claim(
@@ -387,7 +413,13 @@ def behavioral_delta(
             [_pointer("baseline", b_last)] if b_last else [],
         ))
     else:
-        if gap_reason == "computed" and gap_seconds is not None and gap_seconds > 0:
+        if (
+            gap_reason == "computed"
+            and gap_seconds is not None
+            and gap_seconds > 0
+            and not b_per_kw.get(entity_keyword, {}).get("truncated")
+            and not i_per_kw.get(entity_keyword, {}).get("truncated")
+        ):
             claims.append(_claim(
                 _KIND_DORMANT_THEN_ACTIVE,
                 f"'{entity_value}' had its last baseline event at "
@@ -410,10 +442,10 @@ def behavioral_delta(
         if entry["baseline"] == entry["incident"]:
             continue
         # Find a derivation pointer for this keyword from each period, if any.
-        b_kw_event = next(
+        b_kw_event = _sampled_event(b_per_kw, kw, newest=False) or next(
             (e for e in b_events if e.get("keyword") == kw), None,
         )
-        i_kw_event = next(
+        i_kw_event = _sampled_event(i_per_kw, kw, newest=False) or next(
             (e for e in i_events if e.get("keyword") == kw), None,
         )
         pointers = []
@@ -457,10 +489,35 @@ def behavioral_delta(
         _truncation_warnings("baseline", b_per_kw)
         + _truncation_warnings("incident", i_per_kw)
     )
+    if (
+        b_entity_count > 0
+        and i_entity_count > 0
+        and (
+            b_per_kw.get(entity_keyword, {}).get("truncated")
+            or i_per_kw.get(entity_keyword, {}).get("truncated")
+        )
+    ):
+        truncation_warnings.append(
+            f"entity keyword '{entity_keyword}' truncated in at least one period; "
+            "activity classification uses true totals, but dormant-gap and entity first/last timestamps "
+            "are suppressed because the returned sample may not represent the full result set."
+        )
 
     return {
         "ok": True,
         "entity": {"value": entity_value, "seed_keywords": seeds},
+        "match_semantics": {
+            "mode": str(match_mode or "substring").strip().lower() or "substring",
+            "entity": "substring keyword presence across string fragments"
+            if str(match_mode or "substring").strip().lower() != "exact"
+            else "exact-like whole-value or basename/stem equality over returned string fragments",
+            "seed_keywords": "same mode as entity_value; seed keywords remain generic search terms unless a caller constrains them further",
+        },
+        "sampling_scope": {
+            "counts": "per_keyword_totals use true totals under the selected match mode",
+            "windows": "co_occurrence_windows and top_windows reflect returned hits within limit_per_keyword",
+            "boundaries": "entity first/last timestamps are emitted only when the entity sample is not truncated",
+        },
         "periods": {
             "baseline": {"start": baseline_start, "end": baseline_end},
             "incident": {"start": incident_start, "end": incident_end},

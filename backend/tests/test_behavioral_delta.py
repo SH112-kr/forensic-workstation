@@ -77,6 +77,49 @@ class _CorrelatableStub:
         return int(dt.timestamp() * 1000)
 
 
+class _BroadMatchStub(_CorrelatableStub):
+    def search(
+        self, keyword: str = "", filters: dict[str, Any] | None = None,
+        limit: int = 50, offset: int = 0,
+    ) -> dict[str, Any]:
+        self.search_calls.append({
+            "keyword": keyword, "filters": filters or {},
+            "limit": limit, "offset": offset,
+        })
+        filters = filters or {}
+        start = filters.get("start_date", "")
+        end = filters.get("end_date", "")
+        matched: list[dict[str, Any]] = []
+        needle = keyword.lower()
+        for hits in self._hits.values():
+            for h in hits:
+                blob = " ".join(str(v) for v in (h.get("fields") or {}).values()).lower()
+                if needle not in blob:
+                    continue
+                ts_values = list((h.get("timestamps") or {}).values())
+                if not ts_values:
+                    continue
+                first_ts = ts_values[0]
+                if start and first_ts < start:
+                    continue
+                if end and first_ts > end + "Z":
+                    continue
+                matched.append(h)
+        returned = matched[offset:offset + limit]
+        return {"hits": returned, "total": len(matched), "returned": len(returned)}
+
+
+class _ArtifactQueryStub:
+    def __init__(self, event_rows: dict[int, list[dict[str, Any]]]):
+        self._event_rows = event_rows
+
+    def query_event_logs(self, event_ids: list[int] | None = None, provider: str = "", keyword_in_data: str = "", limit: int = 100) -> list[dict]:
+        rows: list[dict[str, Any]] = []
+        for eid in event_ids or []:
+            rows.extend(self._event_rows.get(eid, []))
+        return rows if limit == 0 else rows[:limit]
+
+
 def _hit(hit_id: int, timestamps: dict[str, str], artifact_type: str = "Windows Event Logs") -> dict[str, Any]:
     return {"hit_id": hit_id, "timestamps": timestamps, "artifact_type": artifact_type}
 
@@ -267,6 +310,47 @@ def test_single_hit_with_multiple_timestamps_does_not_double_count_totals():
     assert ratios["incident"] == 1  # NOT 3
 
 
+def test_out_of_range_timestamp_fields_do_not_leak_back_into_period_metrics():
+    """Returned hits may carry stale timestamp fields; compositions must
+    re-filter event fan-out to the requested period."""
+    stub = _CorrelatableStub({
+        "bomgar-pec": [
+            _hit(1, {"Last Run": "2026-01-08T06:36:59"}),
+            _hit(2, {
+                "Last Run": "2026-04-11T17:50:02",
+                "Volume Created": "2019-12-16T03:17:55.321",
+            }, artifact_type="Prefetch Files - Windows 8/10/11"),
+            _hit(3, {"Last Run": "2026-04-15T00:35:18.454"}),
+        ],
+        "4648": [
+            _hit(10, {"Created": "2026-04-11T17:50:03"}),
+        ],
+        "7045": [
+            _hit(20, {
+                "Created": "2026-04-11T17:50:04",
+                "Link Date": "1980-11-24T00:00:00",
+            }, artifact_type="AmCache File Entries"),
+        ],
+    })
+
+    r = behavioral_delta(
+        stub,
+        entity_value="bomgar-pec",
+        baseline_start="2026-01-01",
+        baseline_end="2026-04-10",
+        incident_start="2026-04-11",
+        incident_end="2026-04-16",
+        seed_keywords=["4648", "7045"],
+        window_minutes=60,
+    )
+
+    assert r["baseline"]["last_event_ts"] == "2026-01-08T06:36:59"
+    assert r["incident"]["first_event_ts"] == "2026-04-11T17:50:02"
+    assert r["delta"]["dormant_gap_reason"] == "computed"
+    assert r["delta"]["dormant_gap_seconds"] is not None
+    assert r["delta"]["dormant_gap_seconds"] > 90 * 86400
+
+
 # ── Seed keyword normalization ───────────────────────────────────────────
 
 
@@ -291,6 +375,112 @@ def test_seed_keywords_comma_string_accepted():
         seed_keywords="a, b , a",
     )
     assert r["entity"]["seed_keywords"] == ["x", "a", "b"]
+
+
+def test_entity_value_whitespace_does_not_break_entity_classification():
+    stub = _CorrelatableStub({
+        "x": [_hit(1, {"ts": "2026-04-12T10:00:00"})],
+    })
+    r = behavioral_delta(
+        stub, entity_value=" x ",
+        baseline_start="2026-01-01", baseline_end="2026-01-31",
+        incident_start="2026-04-01", incident_end="2026-04-30",
+    )
+    kinds = {c["kind"] for c in r["claims"]}
+    assert "entity_net_new_in_incident" in kinds
+    assert "no_activity_in_either_period" not in kinds
+
+
+def test_exact_match_mode_filters_broad_substring_matches():
+    stub = _BroadMatchStub({
+        "bundle": [
+            {
+                "hit_id": 1,
+                "timestamps": {"ts": "2026-04-12T10:00:00"},
+                "artifact_type": "Prefetch",
+                "fields": {"Application Name": "bomgar-pec.exe"},
+            },
+            {
+                "hit_id": 2,
+                "timestamps": {"ts": "2026-04-12T10:10:00"},
+                "artifact_type": "Prefetch",
+                "fields": {"Application Name": "bomgar-pec-helper.dll"},
+            },
+        ],
+    })
+
+    substring_r = behavioral_delta(
+        stub,
+        entity_value="bomgar-pec",
+        baseline_start="2026-01-01",
+        baseline_end="2026-01-31",
+        incident_start="2026-04-01",
+        incident_end="2026-04-30",
+    )
+    exact_r = behavioral_delta(
+        stub,
+        entity_value="bomgar-pec",
+        baseline_start="2026-01-01",
+        baseline_end="2026-01-31",
+        incident_start="2026-04-01",
+        incident_end="2026-04-30",
+        match_mode="exact",
+    )
+
+    assert substring_r["incident"]["per_keyword_totals"]["bomgar-pec"] == 2
+    assert exact_r["incident"]["per_keyword_totals"]["bomgar-pec"] == 1
+    assert exact_r["match_semantics"]["mode"] == "exact"
+
+
+def test_event_id_seed_avoids_keyword_noise():
+    stub = _BroadMatchStub({
+        "bundle": [
+            {
+                "hit_id": 1,
+                "timestamps": {"ts": "2026-04-12T10:00:00"},
+                "artifact_type": "UsnJrnl",
+                "fields": {"File Name": "etilqs_LJ4648ThtooQ8Ul"},
+            },
+            {
+                "hit_id": 2,
+                "timestamps": {"ts": "2026-04-12T10:05:00"},
+                "artifact_type": "Windows Event Logs",
+                "fields": {"Event ID": 4648, "Event Data": "Explicit credentials used"},
+            },
+        ],
+    })
+    stub.artifact_queries = _ArtifactQueryStub({
+        4648: [
+            {
+                "hit_id": 2,
+                "artifact_type": "Windows Event Logs",
+                "Created Date/Time - UTC (yyyy-mm-dd)": "2026-04-12T10:05:00",
+                "timestamps": {"Created Date/Time - UTC (yyyy-mm-dd)": "2026-04-12T10:05:00"},
+            }
+        ]
+    })
+
+    keyword_r = behavioral_delta(
+        stub,
+        entity_value="entity",
+        baseline_start="2026-01-01",
+        baseline_end="2026-01-31",
+        incident_start="2026-04-01",
+        incident_end="2026-04-30",
+        seed_keywords=["4648"],
+    )
+    typed_r = behavioral_delta(
+        stub,
+        entity_value="entity",
+        baseline_start="2026-01-01",
+        baseline_end="2026-01-31",
+        incident_start="2026-04-01",
+        incident_end="2026-04-30",
+        seed_keywords=["event_id:4648"],
+    )
+
+    assert keyword_r["incident"]["per_keyword_totals"]["4648"] == 2
+    assert typed_r["incident"]["per_keyword_totals"]["event_id:4648"] == 1
 
 
 def test_empty_entity_returns_error():
@@ -346,6 +536,57 @@ def test_claims_capped_per_kind():
     )
     cooc = [c for c in r["claims"] if c["kind"] == "observed_cooccurrence_change"]
     assert len(cooc) <= 50
+
+
+def test_entity_classification_uses_true_totals_not_global_chronological_sample():
+    """Large seed sets must not push the primary entity out of the global
+    chronological sample and flip the result to no_activity."""
+    hits: dict[str, list[dict[str, Any]]] = {
+        "entity": [_hit(10000 + i, {"ts": f"2026-04-12T12:{i % 60:02d}:00"}) for i in range(10)]
+    }
+    seed_keywords: list[str] = []
+    for i in range(600):
+        kw = f"k{i:03d}"
+        hits[kw] = [_hit(i, {"ts": f"2026-04-12T00:{i % 60:02d}:00"})]
+        seed_keywords.append(kw)
+
+    stub = _CorrelatableStub(hits)
+    r = behavioral_delta(
+        stub, entity_value="entity",
+        baseline_start="2026-01-01", baseline_end="2026-01-31",
+        incident_start="2026-04-01", incident_end="2026-04-30",
+        seed_keywords=seed_keywords,
+        limit_per_keyword=500,
+    )
+    kinds = {c["kind"] for c in r["claims"]}
+    assert "entity_net_new_in_incident" in kinds
+    assert "no_activity_in_either_period" not in kinds
+    assert r["delta"]["volume_ratio_per_keyword"]["entity"]["incident"] == 10
+
+
+def test_truncated_entity_suppresses_dormant_gap_and_entity_boundary_timestamps():
+    hits = {
+        "entity": [
+            _hit(i, {"ts": f"2026-01-{(i % 28) + 1:02d}T00:00:00"}) for i in range(600)
+        ] + [
+            _hit(10000 + i, {"ts": f"2026-04-12T12:{i % 60:02d}:00"}) for i in range(10)
+        ]
+    }
+    stub = _CorrelatableStub(hits)
+    r = behavioral_delta(
+        stub,
+        entity_value="entity",
+        baseline_start="2026-01-01",
+        baseline_end="2026-01-31",
+        incident_start="2026-04-01",
+        incident_end="2026-04-30",
+        limit_per_keyword=500,
+    )
+
+    assert r["delta"]["dormant_gap_seconds"] is None
+    assert r["delta"]["dormant_gap_reason"] == "truncated_sample"
+    assert r["baseline"]["last_event_ts"] is None
+    assert r["incident"]["first_event_ts"] == "2026-04-12T12:00:00"
 
 
 # ── Determinism ──────────────────────────────────────────────────────────

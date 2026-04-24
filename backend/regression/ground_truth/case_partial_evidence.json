@@ -1,0 +1,32 @@
+{
+  "fixture_name": "case_partial_evidence",
+  "case_description": "Insufficient coverage — event logs missing, SRUM absent, USN absent. Only generic prefetch + one weak AmCache+Shim pair remain.",
+  "expected_verdict": {
+    "primary": "unknown",
+    "acceptable_alternatives": ["incomplete", "insufficient coverage"]
+  },
+  "expected_confidence": "incomplete",
+  "expected_lane_state_board": {
+    "ingress_access": ["not_seen", "unverified"],
+    "execution_impact": ["unverified", "not_seen"],
+    "persistence_cleanup": ["unverified", "not_seen"]
+  },
+  "expected_allow_strong_conclusion": false,
+  "prohibited_phrases": [
+    "this is ransomware",
+    "definitely compromised",
+    "insider threat confirmed",
+    "active compromise"
+  ],
+  "required_phrases": [
+    ["investigation incomplete", "insufficient coverage", "coverage gap", "missing coverage", "structurally missing", "available_not_loaded", "not loaded"],
+    ["blocked_lanes", "unverified", "not_seen", "cannot confirm", "cannot determine"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "case_health"
+  ],
+  "forbidden_tool_shortcuts": [
+    "strong verdict when lane_state_board.allow_strong_conclusion is false"
+  ]
+}

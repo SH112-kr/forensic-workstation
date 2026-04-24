@@ -13,6 +13,19 @@ interface ToolStatus {
   auto_path?: string;
 }
 
+const TRIAGE_LANE_ORDER = ['ingress_access', 'execution_impact', 'persistence_cleanup'] as const;
+const TRIAGE_LANE_LABELS: Record<(typeof TRIAGE_LANE_ORDER)[number], string> = {
+  ingress_access: 'Ingress / Access',
+  execution_impact: 'Execution / Impact',
+  persistence_cleanup: 'Persistence / Cleanup',
+};
+const TRIAGE_LANE_COLORS: Record<string, { bg: string; color: string }> = {
+  confirmed: { bg: 'var(--low-bg)', color: 'var(--low)' },
+  suggested: { bg: 'var(--medium-bg)', color: 'var(--medium)' },
+  unverified: { bg: 'var(--high-bg)', color: 'var(--high)' },
+  not_seen: { bg: 'var(--surface2)', color: 'var(--text-dim)' },
+};
+
 export default function Settings() {
   const [tools, setTools] = useState<ToolStatus[]>([]);
   const [scanDir, setScanDir] = useState('');
@@ -385,6 +398,57 @@ export default function Settings() {
                 <div style={{ fontWeight: 700, marginBottom: 8, color: '#4ade80' }}>
                   Triage Complete ({triageResult.total_duration_s}s)
                 </div>
+                {triageResult.lane_state_board?.error ? (
+                  <div style={{
+                    marginBottom: 12,
+                    padding: '10px 12px',
+                    borderRadius: 6,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-dim)',
+                  }}>
+                    <strong style={{ color: 'var(--text)' }}>Lane state unavailable.</strong> {triageResult.lane_state_board.error}
+                  </div>
+                ) : triageResult.lane_state_board && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                      <span style={{ fontWeight: 600 }}>Lane state:</span>
+                      {triageResult.lane_state_board.allow_strong_conclusion === false && (
+                        <span style={{
+                          padding: '2px 8px',
+                          borderRadius: 999,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                          background: 'var(--high-bg)',
+                          color: 'var(--high)',
+                        }}>
+                          incomplete
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {TRIAGE_LANE_ORDER.map((lane) => {
+                        const entry = triageResult.lane_state_board?.[lane];
+                        const state = entry?.state || 'not_seen';
+                        const color = TRIAGE_LANE_COLORS[state] || TRIAGE_LANE_COLORS.not_seen;
+                        return (
+                          <div key={lane} style={{
+                            padding: '8px 10px',
+                            borderRadius: 8,
+                            background: color.bg,
+                            color: color.color,
+                            fontSize: 11,
+                            minWidth: 130,
+                          }}>
+                            <div style={{ fontWeight: 700, marginBottom: 4 }}>{TRIAGE_LANE_LABELS[lane]}</div>
+                            <div>{String(state).toUpperCase()}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 16px' }}>
                   <span>Total Artifacts:</span>
                   <span style={{ fontWeight: 600 }}>{triageResult.total_hits?.toLocaleString()}</span>

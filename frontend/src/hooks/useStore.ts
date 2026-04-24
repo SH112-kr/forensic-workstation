@@ -22,9 +22,11 @@ interface AppState {
   // Detection cache
   detection: any | null;
   mitre: any | null;
+  laneStateBoard: any | null;
   detectionLoading: boolean;
   setDetection: (det: any, mit: any) => void;
   setDetectionLoading: (v: boolean) => void;
+  setLaneStateBoard: (board: any | null) => void;
 
   // Active view
   activeView: string;
@@ -59,14 +61,16 @@ interface AppState {
 export const useStore = create<AppState>((set) => ({
   caseInfo: null,
   caseLoading: false,
-  setCaseInfo: (info) => set({ caseInfo: info, detection: null, mitre: null }),
+  setCaseInfo: (info) => set({ caseInfo: info, detection: null, mitre: null, laneStateBoard: null }),
   setCaseLoading: (v) => set({ caseLoading: v }),
 
   detection: null,
   mitre: null,
+  laneStateBoard: null,
   detectionLoading: false,
   setDetection: (det, mit) => set({ detection: det, mitre: mit }),
   setDetectionLoading: (v) => set({ detectionLoading: v }),
+  setLaneStateBoard: (board) => set({ laneStateBoard: board }),
 
   activeView: 'dashboard',
   setActiveView: (v) => set({ activeView: v }),

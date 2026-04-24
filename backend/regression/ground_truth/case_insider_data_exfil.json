@@ -1,0 +1,35 @@
+{
+  "fixture_name": "case_insider_data_exfil",
+  "case_description": "Trusted admin exfiltrates confidential documents via cloud sync + USB over multiple business-hour sessions. No ransomware, no remote-access exploit, no persistence artefacts. The exfil pattern lies OUTSIDE the candidate_axes taxonomy (ransomware / credential / persistence / remote / tool / anti-forensics); the LLM must still surface it per the CLAUDE.md fourth-angle rule.",
+  "expected_verdict": {
+    "primary": "insider",
+    "acceptable_alternatives": ["insider data exfiltration", "data exfiltration", "insider threat", "insider data theft"]
+  },
+  "expected_confidence": "moderate",
+  "expected_lane_state_board": {
+    "ingress_access": ["confirmed", "suggested"],
+    "execution_impact": ["suggested", "unverified"],
+    "persistence_cleanup": ["not_seen", "unverified"]
+  },
+  "expected_allow_strong_conclusion": false,
+  "prohibited_phrases": [
+    "ransomware",
+    "this is benign",
+    "no action required"
+  ],
+  "required_phrases": [
+    ["exfil", "exfiltration", "data theft", "data removal", "data leak"],
+    ["usb", "removable", "kingston", "removable media", "external drive"],
+    ["cloud", "google drive", "googledrivefs", "dropbox", "mega.nz"],
+    ["insider", "authorised user", "authorized user", "trusted account", "trusted admin"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "search_artifacts",
+    "build_timeline"
+  ],
+  "forbidden_tool_shortcuts": [
+    "auto_triage alone without drill-down",
+    "declaring benign because no ransomware evidence exists"
+  ]
+}

@@ -30,9 +30,9 @@ Output shape (stable for callers):
     "substrate_gaps": [...],
     "detection_gaps": [...],
     "corroboration_gaps": [...],
-    "pivots_not_attempted": [...],
+    "truncation_gaps": [...],
     "bucket_gaps": {...} | None,
-    "recommended_next_queries": [...],
+    "recommended_next_queries": [],
     "notes": [str, ...],
   }
 """
@@ -42,98 +42,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
-# Hand-curated, auditable map from fired detection rule names (and selected
-# anti-forensic rule names) to the canonical MCP tool + params an analyst
-# would call to drive the investigation forward. Kept small on purpose —
-# the goal is "point at the obvious next step", not "plan the case".
-#
-# Every entry carries a ``why`` string so the caller can see the reasoning
-# attached to the suggestion.
-_PIVOT_MAP: dict[str, list[dict[str, Any]]] = {
-    # Anti-forensic rules ---------------------------------------------------
-    "log_cleared_security_1102": [
-        {
-            "tool_name": "search_logs",
-            "params": {"keyword": "1102", "limit": 50},
-            "why": "Find the immediate context — who cleared the Security log and when.",
-        },
-        {
-            "tool_name": "build_timeline",
-            "params": {"artifact_types": "Windows Event Logs"},
-            "why": "Look for gaps around the clear event that would indicate destroyed evidence.",
-        },
-    ],
-    "log_cleared_system_104": [
-        {
-            "tool_name": "search_logs",
-            "params": {"keyword": "104", "limit": 50},
-            "why": "Correlate the System log clear with surrounding events.",
-        },
-    ],
-    "vss_shadow_deletion": [
-        {
-            "tool_name": "build_timeline",
-            "params": {"artifact_types": "Prefetch,Windows Event Logs"},
-            "why": "Locate the execution of the deletion command and preceding process tree.",
-        },
-        {
-            "tool_name": "find_suspicious",
-            "params": {"rules": "ransomware_markers"},
-            "why": "Snapshot deletion is a canonical ransomware step — check for corroborating markers.",
-        },
-    ],
-    "usn_journal_deletion": [
-        {
-            "tool_name": "search_artifacts",
-            "params": {"keyword": "fsutil", "artifact_type": "Prefetch"},
-            "why": "Corroborate the journal deletion with a Prefetch execution record.",
-        },
-    ],
-    "ps_logging_tamper": [
-        {
-            "tool_name": "search_artifacts",
-            "params": {"keyword": "ScriptBlockLogging"},
-            "why": "Read the exact registry rows that were modified.",
-        },
-    ],
-    "security_service_stop": [
-        {
-            "tool_name": "search_artifacts",
-            "params": {"keyword": "Sysmon,Defender,EventLog"},
-            "why": "Find which service(s) were stopped and when.",
-        },
-    ],
-    "cleanup_tool_execution": [
-        {
-            "tool_name": "get_file_timestamps",
-            "params": {},
-            "why": "Confirm the MFT timestamp of each anti-forensic utility so you can place it on the timeline.",
-        },
-    ],
-    # Detection rules ------------------------------------------------------
-    "persistence_service_install": [
-        {
-            "tool_name": "baseline_diff",
-            "params": {"categories": "services"},
-            "why": "Compare against the Windows known-good baseline to isolate the net-new service.",
-        },
-    ],
-    "persistence_scheduled_task": [
-        {
-            "tool_name": "baseline_diff",
-            "params": {"categories": "scheduled_tasks"},
-            "why": "Compare against the Windows known-good baseline to isolate the net-new task.",
-        },
-    ],
-    "suspicious_hash_observed": [
-        {
-            "tool_name": "search_by_hash",
-            "params": {},
-            "why": "Check whether the same hash appears in other loaded cases.",
-        },
-    ],
-}
 
 
 def _load_optional_findings(findings_payload: Any) -> dict[str, Any] | None:
@@ -197,65 +105,60 @@ def _detection_gaps(findings: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _corroboration_gaps(findings: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Findings whose strength is below 'confirmed' — the obvious next step is
-    to corroborate them. Weak findings still appear here so the analyst sees
-    them, but pivots_not_attempted will deliberately skip them."""
+    """All findings with their absent_corroboration lists.
+
+    Every finding is surfaced so the LLM can decide which ones warrant
+    additional cross-artifact corroboration. No code-side strength filter
+    is applied — that judgment belongs to the analyst.
+    """
     if not findings:
         return []
     out = []
     for f in findings.get("findings", []) or []:
-        strength = f.get("overall_strength") or "moderate"
-        if strength == "confirmed":
-            continue
+        absent = f.get("absent_corroboration") or []
         out.append({
             "rule_name": f.get("rule_name") or f.get("rule_id"),
-            "overall_strength": strength,
-            "absent_corroboration": f.get("absent_corroboration") or [],
-            "hint": f"Strength={strength}. Corroborate via supporting_artifacts before concluding.",
+            "absent_corroboration": absent,
         })
     return out
 
 
-def _pivots_not_attempted(
-    findings: dict[str, Any] | None,
-    anti_forensics_out: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Match fired rules to canonical next tools via the _PIVOT_MAP.
 
-    Codex R14b contract: anti-forensic rules are emitted independently of
-    ``findings`` — they carry their own strength and do not require a
-    find_suspicious payload. Only the findings branch is gated by presence.
-    Weak-strength signals are suppressed everywhere (confirmation-bias guard).
+def _truncation_pivots(findings: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Emit mandatory pagination pivots for any finding whose details list was capped.
+
+    When suspicious.py truncated a rule's details (truncated=True), the analyst
+    has not seen all evidence for that rule and must paginate before concluding.
+    These pivots carry severity="mandatory" to distinguish them from optional pivots.
     """
+    if not findings:
+        return []
     out: list[dict[str, Any]] = []
-
-    fired_names: list[tuple[str, str]] = []  # (rule_name, strength)
-
-    # Anti-forensic rules — always included. We treat them as moderate for
-    # pivot purposes because the rules themselves require exact matches.
-    for r in anti_forensics_out.get("rules", []) or []:
-        if r.get("ok") and r.get("count"):
-            fired_names.append((r.get("rule_name") or "", "moderate"))
-
-    # Detection findings — strength per rule is already computed.
-    if findings:
-        for f in findings.get("findings", []) or []:
-            strength = f.get("overall_strength") or "moderate"
-            name = f.get("rule_name") or f.get("rule_id") or ""
-            if name:
-                fired_names.append((name, strength))
-
-    # Codex R14 fix: suppress pivots for weak-only findings.
-    for name, strength in fired_names:
-        if strength == "weak":
+    for f in (findings.get("findings") or []):
+        if not f.get("truncated"):
             continue
-        pivots = _PIVOT_MAP.get(name)
-        if not pivots:
-            continue
+        matching = int(f.get("matching_count") or 0)
+        returned = int(f.get("returned_count") or 0)
+        rule = str(f.get("rule_name") or "")
+        remaining = matching - returned
         out.append({
-            "rule_name": name,
-            "strength": strength,
-            "suggested_pivots": pivots,
+            "rule_name": rule,
+            "pivot_reason": "truncated_details",
+            "severity": "mandatory",
+            "matching_count": matching,
+            "returned_count": returned,
+            "remaining_unseen": remaining,
+            "suggested_pivots": [
+                {
+                    "tool_name": "find_suspicious",
+                    "params": {"rules": rule},
+                    "why": (
+                        f"Rule '{rule}' returned only {returned} of {matching} records. "
+                        f"{remaining} records are unseen — must re-run this single rule "
+                        "before using it as a conclusion basis."
+                    ),
+                }
+            ],
         })
     return out
 
@@ -338,57 +241,6 @@ def _bucket_gaps(
     }
 
 
-def _recommended_next_queries(
-    substrate_gaps: list[dict[str, Any]],
-    detection_gaps: list[dict[str, Any]],
-    pivots: list[dict[str, Any]],
-    coverage_out: dict[str, Any],
-) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-
-    # 1) High-severity substrate gaps should always lead.
-    for g in substrate_gaps:
-        if g.get("severity") in {"critical", "high"} and g.get("suggested_action"):
-            out.append({
-                "tool_name": "case_health",
-                "params": {},
-                "why": f"substrate: {g['check_name']} — {g['suggested_action']}",
-            })
-
-    # 2) Coverage gaps — only structurally_unavailable are actionable.
-    unavail = [
-        c for c in (coverage_out.get("coverage") or [])
-        if c.get("status") == "structurally_unavailable"
-    ]
-    if unavail:
-        out.append({
-            "tool_name": "coverage_explainer",
-            "params": {},
-            "why": (
-                f"{len(unavail)} family/ies are structurally unavailable on "
-                "the loaded case. Load the MFDB if one exists for this incident."
-            ),
-        })
-
-    # 3) Detection gaps — surface the rule_coverage blockers.
-    for d in detection_gaps[:5]:
-        out.append({
-            "tool_name": "find_suspicious",
-            "params": {"rules": d.get("rule_name", "")},
-            "why": f"Rule '{d.get('rule_name')}' could not run — {d.get('reason')}",
-        })
-
-    # 4) Pivots — limit to 5 so the list stays readable.
-    for p in pivots[:5]:
-        for sug in p.get("suggested_pivots", [])[:2]:
-            out.append({
-                "tool_name": sug["tool_name"],
-                "params": sug.get("params", {}),
-                "why": f"[{p['rule_name']}] {sug['why']}",
-            })
-
-    return out
-
 
 def investigation_gap_report(
     connectors: dict[str, Any],
@@ -436,27 +288,19 @@ def investigation_gap_report(
     substrate_gaps = _substrate_gaps(health_out)
     detection_gaps = _detection_gaps(findings) if findings_available else []
     corroboration_gaps = _corroboration_gaps(findings) if findings_available else []
-    # Codex R14b: anti-forensic pivots must emit even without findings; the
-    # helper is pure-function safe when findings=None.
-    pivots = _pivots_not_attempted(findings, af_out)
+    truncation_gaps = _truncation_pivots(findings) if findings_available else []
 
     bucket_gaps = _bucket_gaps(snapshot_slug, connectors) if snapshot_slug else None
-
-    recommended = _recommended_next_queries(
-        substrate_gaps, detection_gaps, pivots, coverage_out,
-    )
 
     notes = [
         "Composition tool — runs case_health, coverage_explainer and "
         "detect_anti_forensics then reformats their outputs. No new rules fire here.",
-        "Pivot suggestions are drawn from a hand-curated table; rules with no "
-        "entry in the table will not appear in pivots_not_attempted.",
     ]
     if not findings_available:
         notes.append(
             "findings_payload was not supplied — detection_gaps / corroboration_gaps "
-            "were skipped. Anti-forensic pivots are still included. Re-run with the "
-            "output of find_suspicious to fill in the findings-dependent sections."
+            "were skipped. Re-run with the output of find_suspicious to fill in the "
+            "findings-dependent sections."
         )
     if bucket_gaps and bucket_gaps.get("verification_capped"):
         notes.append(
@@ -471,8 +315,8 @@ def investigation_gap_report(
         "substrate_gaps": substrate_gaps,
         "detection_gaps": detection_gaps,
         "corroboration_gaps": corroboration_gaps,
-        "pivots_not_attempted": pivots,
+        "truncation_gaps": truncation_gaps,
         "bucket_gaps": bucket_gaps,
-        "recommended_next_queries": recommended,
+        "recommended_next_queries": [],
         "notes": notes,
     }

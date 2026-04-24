@@ -3,7 +3,7 @@
   "description": "Surface remote-access activity — RDP logons, SSH artifacts, explicit credential use, NTLM authentication, and session reconnects.",
   "params_schema": {},
   "steps": [
-    {"tool": "find_suspicious", "args": {"rules": "rdp_lateral_movement,explicit_credential_use,ssh_activity"}},
+    {"tool": "find_suspicious", "args": {"rules": "evtx_eid_4624_type10_rdp_logons,evtx_eid_4648_explicit_credential_logons,openssh_artifacts"}},
     {"tool": "hunt_evtx_rules", "args": {"rule_ids": "fw-evtx-005,fw-evtx-010", "severity_min": "low"}}
   ]
 }

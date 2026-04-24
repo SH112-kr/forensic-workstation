@@ -1,0 +1,34 @@
+{
+  "fixture_name": "case_benign_remote_work",
+  "case_description": "Legitimate remote-admin rollout. Remote-access service is net-new vs baseline but sessions follow business-hour patterns and no impact artifacts exist.",
+  "expected_verdict": {
+    "primary": "benign",
+    "acceptable_alternatives": ["unknown", "benign admin activity"]
+  },
+  "expected_confidence": "moderate",
+  "expected_lane_state_board": {
+    "ingress_access": ["suggested", "unverified"],
+    "execution_impact": "not_seen",
+    "persistence_cleanup": ["suggested", "unverified"]
+  },
+  "expected_allow_strong_conclusion": false,
+  "prohibited_phrases": [
+    "this is a compromise",
+    "lurking threat",
+    "latent intrusion",
+    "active intrusion"
+  ],
+  "required_phrases": [
+    ["no evidence of impact", "no impact observed", "no encrypted files", "no ransom", "no file signature mismatch"],
+    ["business hours", "business-hour", "working hours", "legitimate", "authorised", "authorized"],
+    ["investigation incomplete", "not seen", "not_seen", "unverified", "coverage gap", "missing coverage", "structurally missing"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "get_file_timestamps"
+  ],
+  "forbidden_tool_shortcuts": [
+    "auto_triage alone without drill-down",
+    "baseline_diff net-new declared as malicious without corroboration"
+  ]
+}

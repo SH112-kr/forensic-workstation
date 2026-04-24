@@ -17,11 +17,11 @@ def _patch_store(tmp_path, monkeypatch):
 
 def test_add_and_list(tmp_path, monkeypatch):
     _patch_store(tmp_path, monkeypatch)
-    r = sup.add_suppression("rdp_lateral_movement", reason="Admin jump box", analyst="Alice")
+    r = sup.add_suppression("evtx_eid_4624_type10_rdp_logons", reason="Admin jump box", analyst="Alice")
     assert r["ok"] is True
     lst = sup.list_suppressions()
     assert lst["count"] == 1
-    assert lst["entries"][0]["rule_id"] == "rdp_lateral_movement"
+    assert lst["entries"][0]["rule_id"] == "evtx_eid_4624_type10_rdp_logons"
     assert lst["entries"][0]["analyst"] == "Alice"
 
 

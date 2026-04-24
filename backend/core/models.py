@@ -16,6 +16,7 @@ class CaseMetadata(BaseModel):
     total_hits: int = 0
     artifact_type_count: int = 0
     evidence_sources: list[str] = []
+    evidence_locations: list[str] = []
     date_range_start: str = ""
     date_range_end: str = ""
 

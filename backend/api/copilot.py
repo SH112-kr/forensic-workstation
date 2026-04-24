@@ -13,6 +13,7 @@ import traceback
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 router = APIRouter(tags=["copilot"])
 
@@ -29,6 +30,22 @@ TOOL_REGISTRY: dict[str, dict] = {
     "build_timeline": {
         "description": "Build chronological timeline of events",
         "params": ["start_date", "end_date", "limit"],
+    },
+    "date_anchor_triage": {
+        "description": "Surface decisive raw anchors for a narrow date window",
+        "params": ["start_date", "end_date", "limit_per_query"],
+    },
+    "initial_triage_pack": {
+        "description": "Window-first initial triage with coverage gates, candidate windows, and delayed baseline diff",
+        "params": [
+            "scope_mode",
+            "start_date",
+            "end_date",
+            "suspected_date",
+            "top_window_count",
+            "timeline_scan_limit",
+            "include_baseline_diff",
+        ],
     },
     "find_suspicious": {
         "description": "Run structured threat detection rules",
@@ -80,6 +97,26 @@ def execute_tool(name: str, params: dict) -> dict:
                 end_date=params.get("end_date", ""),
                 limit=min(int(params.get("limit", 200)), 500),
             )
+        elif name == "date_anchor_triage":
+            from core.analysis.date_anchor_triage import date_anchor_triage
+            return date_anchor_triage(
+                axiom,
+                start_date=params.get("start_date", ""),
+                end_date=params.get("end_date", ""),
+                limit_per_query=min(int(params.get("limit_per_query", 10)), 50),
+            )
+        elif name == "initial_triage_pack":
+            from core.analysis.initial_triage import initial_triage
+            return initial_triage(
+                axiom,
+                scope_mode=params.get("scope_mode", "recent_14d"),
+                start_date=params.get("start_date", ""),
+                end_date=params.get("end_date", ""),
+                suspected_date=params.get("suspected_date", ""),
+                top_window_count=max(1, min(int(params.get("top_window_count", 3)), 5)),
+                timeline_scan_limit=max(200, min(int(params.get("timeline_scan_limit", 1200)), 4000)),
+                include_baseline_diff=bool(params.get("include_baseline_diff", True)),
+            )
         elif name == "find_suspicious":
             from core.analysis.suspicious import find_suspicious
             return find_suspicious(axiom.artifact_queries, rules=params.get("rules", ""))
@@ -106,6 +143,36 @@ def execute_tool(name: str, params: dict) -> dict:
             return {"error": f"Unknown tool: {name}"}
     except Exception as e:
         return {"error": str(e)}
+
+
+async def _safe_send_text(websocket: WebSocket, data: str) -> bool:
+    """Best-effort send that exits cleanly once the socket is closed."""
+    if (
+        websocket.client_state == WebSocketState.DISCONNECTED
+        or websocket.application_state == WebSocketState.DISCONNECTED
+    ):
+        return False
+
+    try:
+        await websocket.send_text(data)
+        return True
+    except (WebSocketDisconnect, RuntimeError):
+        return False
+
+
+async def _safe_send_json(websocket: WebSocket, data: dict[str, Any]) -> bool:
+    """JSON variant for sockets that may already be closing."""
+    if (
+        websocket.client_state == WebSocketState.DISCONNECTED
+        or websocket.application_state == WebSocketState.DISCONNECTED
+    ):
+        return False
+
+    try:
+        await websocket.send_json(data)
+        return True
+    except (WebSocketDisconnect, RuntimeError):
+        return False
 
 
 @router.get("/api/copilot/events")
@@ -151,7 +218,8 @@ async def mcp_monitor_ws(websocket: WebSocket):
                 all_lines = f.readlines()
             tail = [ln.strip() for ln in all_lines[-backfill_count:] if ln.strip()]
             for line in tail:
-                await websocket.send_text(line)
+                if not await _safe_send_text(websocket, line):
+                    return
             last_pos = os.path.getsize(event_file)
         except Exception:
             last_pos = os.path.getsize(event_file) if os.path.exists(event_file) else 0
@@ -164,7 +232,8 @@ async def mcp_monitor_ws(websocket: WebSocket):
 
             # Send heartbeat every 15s to keep the connection alive
             if tick % 30 == 0:
-                await websocket.send_text('{"type":"ping"}')
+                if not await _safe_send_text(websocket, '{"type":"ping"}'):
+                    return
 
             if not os.path.exists(event_file):
                 continue
@@ -182,10 +251,11 @@ async def mcp_monitor_ws(websocket: WebSocket):
                 for line in new_lines:
                     line = line.strip()
                     if line:
-                        await websocket.send_text(line)
+                        if not await _safe_send_text(websocket, line):
+                            return
             except Exception:
                 pass
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         pass
 
 
@@ -198,7 +268,8 @@ async def copilot_ws(websocket: WebSocket):
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({"type": "error", "content": "Invalid JSON"})
+                if not await _safe_send_json(websocket, {"type": "error", "content": "Invalid JSON"}):
+                    return
                 continue
 
             msg_type = msg.get("type", "")
@@ -206,11 +277,12 @@ async def copilot_ws(websocket: WebSocket):
             if msg_type == "chat":
                 # User message — echo back (LLM integration placeholder)
                 user_text = msg.get("content", "")
-                await websocket.send_json({
+                if not await _safe_send_json(websocket, {
                     "type": "assistant",
                     "content": f"Co-pilot received: \"{user_text}\"\n\nAI integration pending. "
                                f"You can call tools directly using the tool panel.",
-                })
+                }):
+                    return
 
             elif msg_type == "tool_call":
                 # Execute a tool
@@ -218,36 +290,43 @@ async def copilot_ws(websocket: WebSocket):
                 tool_params = msg.get("params", {})
 
                 # Notify: tool is running
-                await websocket.send_json({
+                if not await _safe_send_json(websocket, {
                     "type": "tool_status",
                     "tool": tool_name,
                     "status": "running",
-                })
+                }):
+                    return
 
                 # Execute
                 result = execute_tool(tool_name, tool_params)
 
                 # Send result
-                await websocket.send_json({
+                if not await _safe_send_json(websocket, {
                     "type": "tool_result",
                     "tool": tool_name,
                     "result": _truncate_result(result),
-                })
+                }):
+                    return
 
             elif msg_type == "list_tools":
-                await websocket.send_json({
+                if not await _safe_send_json(websocket, {
                     "type": "tool_list",
                     "tools": TOOL_REGISTRY,
-                })
+                }):
+                    return
 
             else:
-                await websocket.send_json({"type": "error", "content": f"Unknown message type: {msg_type}"})
+                if not await _safe_send_json(
+                    websocket,
+                    {"type": "error", "content": f"Unknown message type: {msg_type}"},
+                ):
+                    return
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
         try:
-            await websocket.send_json({"type": "error", "content": str(e)})
+            await _safe_send_json(websocket, {"type": "error", "content": str(e)})
         except Exception:
             pass
 

@@ -33,6 +33,135 @@ def load_allowed_evidence() -> dict[str, Any]:
     return {"paths": sorted(set(paths)), "source": data.get("source", "")}
 
 
+def load_active_case() -> dict[str, Any]:
+    """Read persisted active-case metadata for cross-process evidence resolution."""
+    if not os.path.exists(_ACTIVE_CASE_FILE):
+        return {}
+    try:
+        with open(_ACTIVE_CASE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+
+    def _normalize_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        evidence_locations = [
+            normalize_path(p) if os.path.isabs(str(p).strip()) else str(p).strip()
+            for p in entry.get("evidence_locations", [])
+            if str(p).strip()
+        ]
+        evidence_sources = [
+            str(v).strip()
+            for v in entry.get("evidence_sources", [])
+            if str(v).strip()
+        ]
+        return {
+            **entry,
+            "path": normalize_path(entry.get("path", "")),
+            "evidence_locations": sorted(set(evidence_locations)),
+            "evidence_sources": evidence_sources,
+        }
+
+    data = _normalize_entry(data)
+    data["all_cases"] = [
+        _normalize_entry(entry)
+        for entry in data.get("all_cases", [])
+        if isinstance(entry, dict)
+    ]
+    return data
+
+
+def _find_relative_evidence_path(case_path: str, evidence_name: str) -> str:
+    """Resolve a basename-only evidence reference near the selected case tree.
+
+    AXIOM sometimes stores only ``foo.E01`` instead of an absolute path. In
+    that case, search a small set of ancestor directories around the already
+    user-selected case path and accept the first UNIQUE match.
+    """
+    if not case_path or not evidence_name:
+        return ""
+    basename = os.path.basename(str(evidence_name).strip())
+    if not basename or basename != str(evidence_name).strip():
+        return ""
+
+    roots: list[str] = []
+    current = os.path.dirname(case_path)
+    for _ in range(4):
+        if not current or current in roots:
+            break
+        roots.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    for root in roots:
+        matches: list[str] = []
+        try:
+            for dirpath, _, filenames in os.walk(root):
+                if basename in filenames:
+                    matches.append(normalize_path(os.path.join(dirpath, basename)))
+                    if len(matches) > 1:
+                        break
+        except Exception:
+            continue
+        if len(matches) == 1:
+            return matches[0]
+
+    return ""
+
+
+def resolve_active_case_evidence(path_or_ref: str = "") -> str:
+    """Resolve an active-case evidence path from an empty input, path, or ref.
+
+    Supported inputs:
+    - ``""`` or ``"active_case"``: use the sole evidence file on the active case
+    - full path: allowed if it exactly matches an active-case evidence location
+    - basename / source evidence id: matched against active-case metadata
+    """
+    active = load_active_case()
+    if not active:
+        return ""
+
+    refs = {str(path_or_ref or "").strip(), str(path_or_ref or "").strip().lower()}
+
+    candidates: list[str] = []
+    for entry in [active, *active.get("all_cases", [])]:
+        for loc in entry.get("evidence_locations", []):
+            if loc and loc not in candidates:
+                candidates.append(loc)
+
+    if not candidates:
+        return ""
+
+    raw = str(path_or_ref or "").strip()
+    if raw in {"", "active_case"}:
+        if len(candidates) != 1:
+            return ""
+        chosen = candidates[0]
+        if os.path.isabs(chosen):
+            return chosen
+        for entry in [active, *active.get("all_cases", [])]:
+            resolved = _find_relative_evidence_path(entry.get("path", ""), chosen)
+            if resolved:
+                return resolved
+        return chosen
+
+    normalized = normalize_path(raw)
+    for loc in candidates:
+        if normalized == loc:
+            return loc
+
+    for entry in [active, *active.get("all_cases", [])]:
+        entry_locs = entry.get("evidence_locations", [])
+        entry_sources = [str(v).strip().lower() for v in entry.get("evidence_sources", [])]
+        for loc in entry_locs:
+            basename = os.path.basename(loc).lower()
+            if raw.lower() == basename or raw.lower() in entry_sources:
+                return loc if os.path.isabs(loc) else (_find_relative_evidence_path(entry.get("path", ""), loc) or loc)
+
+    return ""
+
+
 def is_path_allowed(path: str) -> bool:
     """Return True when the path was explicitly selected by the user."""
     norm = normalize_path(path)
@@ -165,9 +294,23 @@ class AppState:
             for cid, p in self._case_paths.items():
                 c = self._connectors.get(f"axiom:{cid}")
                 if p and c and c.is_connected():
-                    cases.append({"path": p, "case_id": cid})
+                    meta = c.get_metadata()
+                    cases.append({
+                        "path": p,
+                        "case_id": cid,
+                        "evidence_sources": meta.get("evidence_sources", []),
+                        "evidence_locations": meta.get("evidence_locations", []),
+                    })
+            active_connector = self._connectors.get(f"axiom:{case_id}")
+            active_meta = active_connector.get_metadata() if active_connector else {}
             with open(_ACTIVE_CASE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"path": path, "case_id": case_id, "all_cases": cases}, f, ensure_ascii=False, indent=2)
+                json.dump({
+                    "path": path,
+                    "case_id": case_id,
+                    "evidence_sources": active_meta.get("evidence_sources", []),
+                    "evidence_locations": active_meta.get("evidence_locations", []),
+                    "all_cases": cases,
+                }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -251,3 +394,21 @@ class AppState:
 
 
 app_state = AppState()
+
+
+# ── Regression harness: FW_FIXTURE preload ──
+# When FW_FIXTURE is set, load a synthetic fixture as the active case so
+# the MCP server / FastAPI backend both see it without any open_case call.
+# Fully opt-in: env unset → this block is a no-op. Import is deferred so
+# production deployments without backend/regression/ on sys.path still
+# start cleanly.
+try:
+    from regression.preload import preload_fixture_if_requested as _preload_fixture
+    _preload_fixture(app_state)
+except ModuleNotFoundError:
+    pass
+except SystemExit:
+    raise
+except Exception as _preload_err:  # defensive: never crash production startup
+    import sys as _sys
+    print(f"[regression] preload skipped: {_preload_err}", file=_sys.stderr)

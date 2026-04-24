@@ -144,11 +144,23 @@ def _extract_path_key(entry: dict[str, Any]) -> str | None:
     return None
 
 
+_TIER_ORDER = {"confirmed": 4, "strong": 3, "moderate": 2, "weak": 1}
+
+
+def _best_detail_tier(details: list[dict[str, Any]]) -> str:
+    best = max(
+        (_TIER_ORDER.get(d.get("strength", "moderate"), 2) for d in details),
+        default=2,
+    )
+    return next((k for k, v in _TIER_ORDER.items() if v == best), "moderate")
+
+
 def score_finding(finding: dict[str, Any]) -> dict[str, Any]:
     """Annotate a single find_suspicious finding in place and return it.
 
-    Each detail gains ``strength`` and ``strength_reason``. The finding itself
-    gets an ``overall_strength`` (highest tier any detail earned).
+    Each detail gains ``strength`` and ``strength_reason``. The LLM
+    determines overall evidence quality from the per-detail tiers — no
+    finding-level rollup label is written.
     """
     details = finding.get("details") or []
 
@@ -174,31 +186,26 @@ def score_finding(finding: dict[str, Any]) -> dict[str, Any]:
             d["strength"] = upgraded
             d["strength_reason"] = d["strength_reason"] + " " + note
 
-    # Roll up the highest tier for the finding as a whole.
-    tier_order = {"confirmed": 4, "strong": 3, "moderate": 2, "weak": 1}
-    best = max(
-        (tier_order.get(d.get("strength", "moderate"), 2) for d in details),
-        default=2,
-    )
-    tier_name = next((k for k, v in tier_order.items() if v == best), "moderate")
-    finding["overall_strength"] = tier_name
     return finding
 
 
 def score_findings(payload: dict[str, Any]) -> dict[str, Any]:
-    """Annotate an entire find_suspicious payload with strength tiers.
+    """Annotate an entire find_suspicious payload with per-detail strength tiers.
 
-    Safe to run on a payload that already has ``overall_strength`` — the tags
-    are deterministic and overwrite-stable.
+    Each detail gets ``strength`` (confirmed/strong/moderate/weak) and
+    ``strength_reason`` explaining which artifact-type criteria fired.
+    ``strength_rollup`` summarises the distribution across findings for
+    quick reference — computed from each finding's best detail tier.
     """
     findings = payload.get("findings") or []
     for f in findings:
         score_finding(f)
 
-    # Summary counts for the UI.
+    # Rollup is computed from each finding's best per-detail tier.
     rollup = {"confirmed": 0, "strong": 0, "moderate": 0, "weak": 0}
     for f in findings:
-        rollup[f.get("overall_strength", "moderate")] = rollup.get(f.get("overall_strength", "moderate"), 0) + 1
+        tier = _best_detail_tier(f.get("details") or [])
+        rollup[tier] = rollup.get(tier, 0) + 1
 
     payload["strength_rollup"] = rollup
     payload["strength_notes"] = [

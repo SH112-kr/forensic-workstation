@@ -1,13 +1,7 @@
-"""Structured suspicious pattern detection — artifact-type-aware rules.
+"""Structured artifact detection — artifact-type-aware rules.
 
 Each rule queries specific artifact types with specific field conditions,
 not keyword matching. This eliminates false positives from substring matches.
-
-Evidence confidence levels:
-- confirmed: Multiple independent artifacts corroborate (e.g., Prefetch + SRUM + Event Log)
-- high: Strong single-source evidence (e.g., Event Log with specific EID)
-- moderate: Artifact exists but interpretation has caveats (e.g., ShimCache = existence, not execution)
-- low: Heuristic correlation only (e.g., time-based co-occurrence without causal link)
 
 IMPORTANT forensic principles encoded in rules:
 - ShimCache entry ≠ execution proof (file existence on disk triggers it)
@@ -15,6 +9,10 @@ IMPORTANT forensic principles encoded in rules:
 - Link Date = compile time, NOT deployment time
 - File timestamps must be verified from $MFT, not inferred from other artifacts
 - Temporal correlation ≠ causation — always flag as needing verification
+
+Each rule returns: rule_name, query_description, matching_count, returned_count,
+truncated, detail_cap, matched_patterns, details[]. No severity, confidence, or
+MITRE pre-labels — those judgments belong to the analyst, not the code.
 """
 
 from __future__ import annotations
@@ -24,74 +22,97 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from connectors.axiom_artifact_queries import ArtifactQueries
 
-MITRE_MAP = {
-    "lsass_access": ["T1003.001"],
-    "suspicious_process_creation": ["T1059", "T1059.001", "T1059.003"],
-    "service_installation": ["T1543.003"],
-    "scheduled_task_creation": ["T1053.005"],
-    "log_clearing": ["T1070.001"],
-    "rdp_lateral_movement": ["T1021.001"],
-    "explicit_credential_use": ["T1078"],
-    "suspicious_prefetch": ["T1204"],
-    "suspicious_service_paths": ["T1543.003"],
-    "powershell_scriptblock": ["T1059.001"],
-    "watering_hole_indicators": ["T1189"],
-    "suspicious_msi_install": ["T1218.007"],
-    "ssh_activity": ["T1021.004"],
+RULE_CATEGORY_MAP = {
+    "sysmon_eid10_lsass_handle_open": "credential_access",
+    "evtx_eid_4688_process_creation_events": "execution",
+    "evtx_eid_7045_service_installs": "persistence",
+    "evtx_eid_4698_scheduled_task_events": "persistence",
+    "evtx_eid_1102_audit_log_cleared": "anti_forensics",
+    "evtx_eid_4624_type10_rdp_logons": "remote_access",
+    "evtx_eid_4648_explicit_credential_logons": "credential_access",
+    "prefetch_pentest_tool_names": "tool_execution",
+    "services_nonstandard_binary_paths": "persistence",
+    "evtx_eid_4104_scriptblock_logs": "execution",
+    "prefetch_security_sw_werfault_correlation": "initial_access",
+    "amcache_remote_access_tool_names": "tool_installation",
+    "openssh_artifacts": "remote_access",
 }
-
-# Confidence level for each rule — indicates evidence strength
-CONFIDENCE_MAP = {
-    "lsass_access": "high",           # Event log with specific EID
-    "suspicious_process_creation": "high",  # Event log with specific EID
-    "service_installation": "confirmed",    # EID 7045 = definitive
-    "scheduled_task_creation": "moderate",  # Task exists, but creation time may be missing
-    "log_clearing": "confirmed",       # EID 1102 = definitive
-    "rdp_lateral_movement": "high",    # Event log with specific EID
-    "explicit_credential_use": "high", # EID 4648 = definitive
-    "suspicious_prefetch": "moderate", # Prefetch = execution, but no cmdline context
-    "suspicious_service_paths": "moderate",  # Service exists in suspicious path
-    "powershell_scriptblock": "high",  # Script content captured
-    "watering_hole_indicators": "low", # Date-level correlation only — NOT causation
-    "suspicious_msi_install": "moderate",   # Install record exists
-    "ssh_activity": "high",            # Multiple artifact types combined
-}
-
 
 # Query limits used by each rule — documented for transparency
 RULE_QUERY_LIMITS: dict[str, dict[str, int]] = {
-    "lsass_access": {"process_access_events": 500, "details": 20},
-    "suspicious_process_creation": {"process_creation_events": 1000, "details": 20},
-    "service_installation": {"service_installs": 500},
-    "scheduled_task_creation": {"scheduled_task_events": 2000, "details": 20},
-    "log_clearing": {"log_cleared": 200, "details": 20},
-    "rdp_lateral_movement": {"logon_events": 1000},
-    "explicit_credential_use": {"event_logs_4648": 500},
-    "suspicious_prefetch": {"prefetch_per_tool": 200, "details": 20},
-    "suspicious_service_paths": {"services": 10000},
-    "powershell_scriptblock": {"scriptblock": 500, "details": 20},
-    "watering_hole_indicators": {"werfault_prefetch": 500, "security_sw_prefetch": 200, "startup_items": 2000, "details": 20},
-    "suspicious_msi_install": {"amcache_programs": 5000},
-    "ssh_activity": {"openssh_events": 500, "services": 100, "prefetch": 500},
+    "sysmon_eid10_lsass_handle_open": {"process_access_events": 500, "details": 20},
+    "evtx_eid_4688_process_creation_events": {"process_creation_events": 1000, "details": 20},
+    "evtx_eid_7045_service_installs": {"service_installs": 500},
+    "evtx_eid_4698_scheduled_task_events": {"scheduled_task_events": 2000, "details": 20},
+    "evtx_eid_1102_audit_log_cleared": {"log_cleared": 200, "details": 20},
+    "evtx_eid_4624_type10_rdp_logons": {"logon_events": 1000},
+    "evtx_eid_4648_explicit_credential_logons": {"event_logs_4648": 500},
+    "prefetch_pentest_tool_names": {"prefetch_per_tool": 200, "details": 20},
+    "services_nonstandard_binary_paths": {"services": 10000},
+    "evtx_eid_4104_scriptblock_logs": {"scriptblock": 500, "details": 20},
+    "prefetch_security_sw_werfault_correlation": {"werfault_prefetch": 500, "security_sw_prefetch": 200, "startup_items": 2000, "details": 20},
+    "amcache_remote_access_tool_names": {"amcache_programs": 5000},
+    "openssh_artifacts": {"openssh_events": 500, "services": 100, "prefetch": 500},
+}
+
+# Attack techniques and artifact families this workstation has no query interface for.
+# Absence of a fired rule does NOT mean the technique did not occur if it appears here.
+KNOWN_COVERAGE_GAPS: dict[str, str] = {
+    "evtx_eid_4769_kerberos_svc_ticket_requests": "No query interface — requires Security EVTX with Kerberos service ticket auditing",
+    "evtx_eid_4768_kerberos_tgt_requests": "No query interface — requires Security EVTX with Kerberos TGT auditing",
+    "evtx_eid_4662_ad_object_access": "No query interface — requires DC Security EVTX for DCSync (EID 4662 with replication rights)",
+    "registry_run_keys_persistence": "No query interface — requires registry hive parsing (NTUSER.DAT / SOFTWARE)",
+    "registry_clsid_hijacking": "No query interface — requires registry hive parsing",
+    "vss_shadow_copy_deletion": "No query interface — VSS deletion typically via cmd/PS; cross-check prefetch + process creation",
+    "wmi_event_subscription_persistence": "No query interface — requires WMI repository (OBJECTS.DATA) parsing",
+    "ntds_dit_or_sam_extraction": "No query interface — requires EVTX EID 4663 + file access auditing on DC",
+    "defender_tamper_events": "No query interface — requires Microsoft-Windows-Windows Defender/Operational EVTX",
+    "bits_job_persistence": "No query interface — requires BITS-Client/Operational log",
+    "dpapi_master_key_operations": "No query interface — requires Security EVTX EID 4692/4693",
+    "evtx_eid_4720_user_account_created": "No query interface — requires Security EVTX account management auditing",
+    "evtx_eid_4732_group_membership_changes": "No query interface — requires Security EVTX group auditing",
+}
+
+# Per-rule explanations for zero-result outcomes — prevents "0 hits = clean" misreads.
+_ZERO_RESULT_NOTES: dict[str, str] = {
+    "sysmon_eid10_lsass_handle_open": "0 LSASS handle events. Sysmon EID 10 requires Sysmon installation with process access auditing configured.",
+    "evtx_eid_4688_process_creation_events": "0 matching process creation events. EID 4688 requires Audit Process Creation policy; Sysmon EID 1 is an alternative if deployed.",
+    "evtx_eid_7045_service_installs": "0 service install events. Possible: no new services installed, Security EVTX not collected, or audit policy gap.",
+    "evtx_eid_4698_scheduled_task_events": "0 scheduled task events. EID 4698/4702 requires task creation auditing; tasks may predate the collection window.",
+    "evtx_eid_1102_audit_log_cleared": "0 log clearing events. If Security EVTX was collected, absence is meaningful — clearing events would appear here.",
+    "evtx_eid_4624_type10_rdp_logons": "0 RDP logon events (LogonType 10). Possible: no RDP sessions, Security EVTX not collected, or NLA pre-auth not logged.",
+    "evtx_eid_4648_explicit_credential_logons": "0 explicit credential use events. EID 4648 requires logon auditing; absence may indicate no runas or pass-the-hash activity.",
+    "prefetch_pentest_tool_names": "0 Prefetch entries for known attack tools. Prefetch may be disabled, cleared, or tools ran from a network share (no prefetch generated).",
+    "services_nonstandard_binary_paths": "0 services with Temp/ProgramData/Public binary paths. Service artifacts may be incomplete or paths were cleaned up post-incident.",
+    "evtx_eid_4104_scriptblock_logs": "0 PowerShell Script Block logs. EID 4104 requires Script Block Logging group policy; without it, PS commands are not recorded.",
+    "prefetch_security_sw_werfault_correlation": "0 WerFault + Korean security SW date correlations. WerFault not present or security SW not active during the collection window.",
+    "amcache_remote_access_tool_names": "0 AmCache entries matching remote access tool names. AmCache may not include tools installed outside the case window.",
+    "openssh_artifacts": "0 OpenSSH artifacts across event logs, services, key files, and Prefetch. SSH may not have been used or artifacts were removed.",
 }
 
 
 def find_suspicious(aq: ArtifactQueries, rules: str = "") -> dict:
-    """Run structured detection rules against .mfdb artifact data."""
+    """Run structured detection rules against .mfdb artifact data.
+
+    Every executed rule appears in the output — rules with 0 matches go to
+    ``zero_result_rules`` so the LLM can distinguish "checked and clean"
+    from "not checked". ``coverage_manifest`` lists what was queried and what
+    has no query interface at all.
+    """
     all_rules = {
-        "lsass_access": rule_lsass_access,
-        "suspicious_process_creation": rule_suspicious_process_creation,
-        "service_installation": rule_service_installation,
-        "scheduled_task_creation": rule_scheduled_task_creation,
-        "log_clearing": rule_log_clearing,
-        "rdp_lateral_movement": rule_rdp_lateral_movement,
-        "explicit_credential_use": rule_explicit_credential_use,
-        "suspicious_prefetch": rule_suspicious_prefetch,
-        "suspicious_service_paths": rule_suspicious_service_paths,
-        "powershell_scriptblock": rule_powershell_scriptblock,
-        "watering_hole_indicators": rule_watering_hole_indicators,
-        "suspicious_msi_install": rule_suspicious_msi_install,
-        "ssh_activity": rule_ssh_activity,
+        "sysmon_eid10_lsass_handle_open": rule_lsass_access,
+        "evtx_eid_4688_process_creation_events": rule_suspicious_process_creation,
+        "evtx_eid_7045_service_installs": rule_service_installation,
+        "evtx_eid_4698_scheduled_task_events": rule_scheduled_task_creation,
+        "evtx_eid_1102_audit_log_cleared": rule_log_clearing,
+        "evtx_eid_4624_type10_rdp_logons": rule_rdp_lateral_movement,
+        "evtx_eid_4648_explicit_credential_logons": rule_explicit_credential_use,
+        "prefetch_pentest_tool_names": rule_suspicious_prefetch,
+        "services_nonstandard_binary_paths": rule_suspicious_service_paths,
+        "evtx_eid_4104_scriptblock_logs": rule_powershell_scriptblock,
+        "prefetch_security_sw_werfault_correlation": rule_watering_hole_indicators,
+        "amcache_remote_access_tool_names": rule_suspicious_msi_install,
+        "openssh_artifacts": rule_ssh_activity,
     }
 
     if rules:
@@ -103,24 +124,76 @@ def find_suspicious(aq: ArtifactQueries, rules: str = "") -> dict:
     if not active:
         return {"error": f"Unknown rules. Available: {', '.join(all_rules.keys())}"}
 
-    findings = []
+    findings: list[dict] = []
+    zero_result_rules: list[dict] = []
     for name, func in active.items():
         result = func(aq)
         if result:
-            result["mitre_techniques"] = MITRE_MAP.get(name, [])
-            result["confidence"] = CONFIDENCE_MAP.get(name, "moderate")
+            result["rule_name"] = name  # canonical artifact-descriptive name
             result["query_limits"] = RULE_QUERY_LIMITS.get(name, {})
+            result["category"] = RULE_CATEGORY_MAP.get(name, "uncategorized")
+            result["query_status"] = "executed"
+            td = _temporal_distribution(result.get("details", []))
+            if td:
+                result["temporal_distribution"] = td
             findings.append(result)
+        else:
+            zero_result_rules.append({
+                "rule_name": name,
+                "matching_count": 0,
+                "query_status": "executed",
+                "category": RULE_CATEGORY_MAP.get(name, "uncategorized"),
+                "note": _ZERO_RESULT_NOTES.get(name, "0 results — artifact was queried but no matches found."),
+            })
 
-    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    findings.sort(key=lambda x: severity_order.get(x.get("severity", ""), 99))
+    rules_not_in_scope = sorted(set(all_rules.keys()) - set(active.keys()))
+    coverage_manifest = {
+        "queries_executed": sorted(active.keys()),
+        "queries_with_hits": [f["rule_name"] for f in findings],
+        "queries_zero_hits": [z["rule_name"] for z in zero_result_rules],
+        "queries_not_in_scope": rules_not_in_scope,
+        "queries_not_implemented": KNOWN_COVERAGE_GAPS,
+        "note": (
+            "queries_not_implemented lists attack techniques this workstation "
+            "has no query interface for. Absence from findings does not mean "
+            "the technique did not occur if it appears in queries_not_implemented."
+        ),
+    }
 
     return {
         "rules_executed": len(active),
+        "rules_with_hits": len(findings),
         "total_findings": len(findings),
         "findings": findings,
+        "zero_result_rules": zero_result_rules,
+        "coverage_manifest": coverage_manifest,
         "available_rules": sorted(all_rules.keys()),
     }
+
+
+# ── Helpers ──
+
+def _temporal_distribution(details: list[dict]) -> dict | None:
+    """Extract first_seen / last_seen / spike_dates from a detail list.
+
+    Checks multiple timestamp field names to handle rule-specific differences.
+    Returns None when no parseable dates are found.
+    """
+    from collections import Counter
+    ts_fields = ["timestamp", "Last Run", "Install Date", "Registry Modified", "File Created"]
+    dates: list[str] = []
+    for d in details:
+        for field in ts_fields:
+            ts = str(d.get(field, "") or "")[:10]
+            if len(ts) == 10 and ts[4] == "-":
+                dates.append(ts)
+                break
+    if not dates:
+        return None
+    counts = Counter(dates)
+    avg = len(dates) / max(len(counts), 1)
+    spike_dates = sorted(d for d, c in counts.items() if c > avg)[:5]
+    return {"first_seen": min(dates), "last_seen": max(dates), "spike_dates": spike_dates}
 
 
 # ── Rules ──
@@ -138,13 +211,13 @@ def rule_lsass_access(aq: ArtifactQueries) -> dict | None:
         return None
 
     details = []
-    for h in lsass_hits[:20]:
+    for h in lsass_hits:
         event_data = h.get("Event Data", "")
         detail = {
             "hit_id": h["hit_id"],
             "artifact_type": "Windows Event Logs (Sysmon EID 10)",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "Sysmon detected a process accessing LSASS memory",
+            "artifact_context": "Sysmon detected a process accessing LSASS memory",
             "event_data_excerpt": str(event_data)[:500],
             "computer": h.get("Computer", ""),
         }
@@ -154,14 +227,16 @@ def rule_lsass_access(aq: ArtifactQueries) -> dict | None:
         ])
         details.append(detail)
 
+    details, truncated, returned_count = _apply_detail_cap(details)
     return {
         "rule_name": "lsass_access",
-        "severity": "critical",
-        "description": f"Sysmon detected {len(lsass_hits)} process access events targeting LSASS. "
-                       "This indicates potential credential dumping (Mimikatz, procdump, etc.).",
+        "query_description": f"Sysmon EID 10 — {len(lsass_hits)} process access events targeting LSASS.",
         "matching_count": len(lsass_hits),
         "matched_patterns": {"Sysmon Event ID 10 + Target=lsass.exe": len(lsass_hits)},
         "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -199,7 +274,7 @@ def rule_suspicious_process_creation(aq: ArtifactQueries) -> dict | None:
                     "hit_id": h["hit_id"],
                     "artifact_type": f"Windows Event Logs (EID {h.get('Event ID', '?')})",
                     "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-                    "evidence": desc,
+                    "artifact_context": desc,
                     "computer": h.get("Computer", ""),
                 }
                 _extract_xml_fields(event_data, detail, [
@@ -218,14 +293,16 @@ def rule_suspicious_process_creation(aq: ArtifactQueries) -> dict | None:
         ev = d.get("evidence", "")
         evidence_summary[ev] = evidence_summary.get(ev, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(suspicious)
     return {
         "rule_name": "suspicious_process_creation",
-        "severity": "high",
-        "description": f"{len(suspicious)} suspicious process creation events detected. "
-                       "Includes encoded commands, download cradles, LOLBin abuse, or lateral movement tools.",
+        "query_description": f"EID 1/4688 — {len(suspicious)} process creation events matching encoded commands, download cradles, LOLBin, or lateral movement tool patterns.",
         "matching_count": len(suspicious),
         "matched_patterns": evidence_summary,
-        "details": suspicious[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -236,12 +313,12 @@ def rule_service_installation(aq: ArtifactQueries) -> dict | None:
         return None
 
     details = []
-    for h in hits[:20]:
+    for h in hits:
         detail = {
             "hit_id": h["hit_id"],
             "artifact_type": "Windows Event Logs (EID 7045)",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "New service installed on the system",
+            "artifact_context": "New service installed on the system",
             "event_data_excerpt": str(h.get("Event Data", ""))[:500],
             "computer": h.get("Computer", ""),
         }
@@ -250,14 +327,16 @@ def rule_service_installation(aq: ArtifactQueries) -> dict | None:
         ])
         details.append(detail)
 
+    details, truncated, returned_count = _apply_detail_cap(details)
     return {
         "rule_name": "service_installation",
-        "severity": "high",
-        "description": f"{len(hits)} service installation events (EID 7045) detected. "
-                       "Review service names and paths for unauthorized persistence.",
+        "query_description": f"EID 7045 — {len(hits)} service installation events. Review service names and paths.",
         "matching_count": len(hits),
         "matched_patterns": {"Event ID 7045 (Service Installed)": len(hits)},
         "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -270,7 +349,7 @@ def rule_scheduled_task_creation(aq: ArtifactQueries) -> dict | None:
         if not tasks:
             return None
         details = []
-        for t in tasks[:20]:
+        for t in tasks:
             details.append({
                 "hit_id": t["hit_id"],
                 "artifact_type": "Scheduled Tasks",
@@ -281,34 +360,40 @@ def rule_scheduled_task_creation(aq: ArtifactQueries) -> dict | None:
                 "Run As": t.get("Run As", ""),
                 "Created Date/Time": t.get("Created Date/Time - Local Time (yyyy-mm-dd)", ""),
             })
+        details, truncated, returned_count = _apply_detail_cap(details)
         return {
             "rule_name": "scheduled_task_creation",
-            "severity": "medium",
-            "description": f"{len(tasks)} scheduled tasks found. Review for unauthorized persistence.",
+            "query_description": f"Scheduled Tasks artifact — {len(tasks)} tasks found.",
             "matching_count": len(tasks),
             "matched_patterns": {"Scheduled Tasks artifact": len(tasks)},
             "details": details,
+            "returned_count": returned_count,
+            "truncated": truncated,
+            "detail_cap": 20,
         }
 
     details = []
-    for h in hits[:20]:
+    for h in hits:
         detail = {
             "hit_id": h["hit_id"],
             "artifact_type": f"Windows Event Logs (EID {h.get('Event ID', '?')})",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "Scheduled task created or modified via event log",
+            "artifact_context": "Scheduled task created or modified via event log",
             "computer": h.get("Computer", ""),
             "event_data_excerpt": str(h.get("Event Data", ""))[:500],
         }
         details.append(detail)
 
+    details, truncated, returned_count = _apply_detail_cap(details)
     return {
         "rule_name": "scheduled_task_creation",
-        "severity": "high",
-        "description": f"{len(hits)} scheduled task creation/modification events detected.",
+        "query_description": f"EID 4698/4702 — {len(hits)} scheduled task creation/modification events.",
         "matching_count": len(hits),
         "matched_patterns": {f"Event ID {h.get('Event ID', '?')}": 1 for h in hits[:5]},
         "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -319,24 +404,26 @@ def rule_log_clearing(aq: ArtifactQueries) -> dict | None:
         return None
 
     details = []
-    for h in hits[:20]:
+    for h in hits:
         details.append({
             "hit_id": h["hit_id"],
             "artifact_type": "Windows Event Logs (EID 1102)",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "Security audit log was cleared — anti-forensic activity",
+            "artifact_context": "Security audit log was cleared",
             "computer": h.get("Computer", ""),
             "security_id": h.get("Security Identifier", ""),
         })
 
+    details, truncated, returned_count = _apply_detail_cap(details)
     return {
         "rule_name": "log_clearing",
-        "severity": "critical",
-        "description": f"Security audit log was cleared {len(hits)} time(s). "
-                       "This is a strong indicator of anti-forensic activity.",
+        "query_description": f"EID 1102 — security audit log cleared {len(hits)} time(s).",
         "matching_count": len(hits),
         "matched_patterns": {"Event ID 1102 (Audit Log Cleared)": len(hits)},
         "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -352,7 +439,7 @@ def rule_rdp_lateral_movement(aq: ArtifactQueries) -> dict | None:
                 "hit_id": h["hit_id"],
                 "artifact_type": "Windows Event Logs (EID 4624 Type 10)",
                 "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": "RDP logon detected — potential lateral movement",
+                "artifact_context": "RDP logon (LogonType 10)",
                 "computer": h.get("Computer", ""),
             }
             _extract_xml_fields(event_data, detail, [
@@ -369,14 +456,16 @@ def rule_rdp_lateral_movement(aq: ArtifactQueries) -> dict | None:
         ip = d.get("IpAddress", "unknown")
         ip_counts[ip] = ip_counts.get(ip, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(rdp_logons)
     return {
         "rule_name": "rdp_lateral_movement",
-        "severity": "high",
-        "description": f"{len(rdp_logons)} RDP logon events (Type 10) detected from "
-                       f"{len(ip_counts)} unique source(s). Potential lateral movement.",
+        "query_description": f"EID 4624 Type 10 — {len(rdp_logons)} RDP logons from {len(ip_counts)} unique source(s).",
         "matching_count": len(rdp_logons),
         "matched_patterns": {f"RDP from {ip}": cnt for ip, cnt in ip_counts.items()},
-        "details": rdp_logons[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -387,12 +476,12 @@ def rule_explicit_credential_use(aq: ArtifactQueries) -> dict | None:
         return None
 
     details = []
-    for h in hits[:20]:
+    for h in hits:
         detail = {
             "hit_id": h["hit_id"],
             "artifact_type": "Windows Event Logs (EID 4648)",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "Explicit credentials used (runas, mapped drive, or pass-the-hash)",
+            "artifact_context": "Explicit credential use event",
             "computer": h.get("Computer", ""),
         }
         _extract_xml_fields(h.get("Event Data", ""), detail, [
@@ -400,14 +489,16 @@ def rule_explicit_credential_use(aq: ArtifactQueries) -> dict | None:
         ])
         details.append(detail)
 
+    details, truncated, returned_count = _apply_detail_cap(details)
     return {
         "rule_name": "explicit_credential_use",
-        "severity": "medium",
-        "description": f"{len(hits)} explicit credential use events (EID 4648). "
-                       "May indicate runas, pass-the-hash, or mapped drive authentication.",
+        "query_description": f"EID 4648 — {len(hits)} explicit credential use events.",
         "matching_count": len(hits),
         "matched_patterns": {"Event ID 4648 (Explicit Credential Use)": len(hits)},
         "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -430,7 +521,7 @@ def rule_suspicious_prefetch(aq: ArtifactQueries) -> dict | None:
                 found.append({
                     "hit_id": h["hit_id"],
                     "artifact_type": "Prefetch",
-                    "evidence": f"Attack tool '{app_name}' was executed on this system",
+                    "artifact_context": f"Prefetch entry for '{app_name}'",
                     "Application Name": app_name,
                     "Application Path": h.get("Application Path", ""),
                     "Run Count": h.get("Application Run Count", ""),
@@ -446,14 +537,16 @@ def rule_suspicious_prefetch(aq: ArtifactQueries) -> dict | None:
         name = d.get("Application Name", "unknown")
         tool_counts[name] = tool_counts.get(name, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(found)
     return {
         "rule_name": "suspicious_prefetch",
-        "severity": "critical",
-        "description": f"{len(found)} Prefetch entries for known attack tools. "
-                       "These tools were executed on this system.",
+        "query_description": f"Prefetch — {len(found)} entries matching known attack tool names.",
         "matching_count": len(found),
         "matched_patterns": tool_counts,
-        "details": found[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -494,7 +587,7 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
                 suspicious.append({
                     "hit_id": svc["hit_id"],
                     "artifact_type": "System Services",
-                    "evidence": f"Service binary in suspicious path: {p.strip(chr(92))}",
+                    "artifact_context": f"Service binary path contains: {p.strip(chr(92))}",
                     "Service Name": svc.get("Service Name", ""),
                     "Service Location": svc.get("Service Location", ""),
                     "Start Type": svc.get("Start Type", ""),
@@ -506,14 +599,16 @@ def rule_suspicious_service_paths(aq: ArtifactQueries) -> dict | None:
     if not suspicious:
         return None
 
+    details, truncated, returned_count = _apply_detail_cap(suspicious)
     return {
         "rule_name": "suspicious_service_paths",
-        "severity": "high",
-        "description": f"{len(suspicious)} services with binaries in suspicious locations. "
-                       "May indicate malware persistence via service installation.",
+        "query_description": f"System Services — {len(suspicious)} services with binaries in Temp/ProgramData/Public paths.",
         "matching_count": len(suspicious),
         "matched_patterns": {d["Service Name"]: 1 for d in suspicious[:10]},
-        "details": suspicious[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -538,41 +633,46 @@ def rule_powershell_scriptblock(aq: ArtifactQueries) -> dict | None:
                 "hit_id": h["hit_id"],
                 "artifact_type": "Windows Event Logs (EID 4104)",
                 "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": f"Suspicious PowerShell script block: {', '.join(matched)}",
+                "artifact_context": f"Script block matched: {', '.join(matched)}",
                 "event_data_excerpt": str(h.get("Event Data", ""))[:500],
                 "computer": h.get("Computer", ""),
             })
 
     if not suspicious:
         # Still report if there are script blocks (informational)
+        _info_details = [{
+            "hit_id": h["hit_id"],
+            "artifact_type": "Windows Event Logs (EID 4104)",
+            "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
+            "artifact_context": "PowerShell Script Block logged (no keyword match)",
+        } for h in hits]
+        _info_details, _info_truncated, _info_returned = _apply_detail_cap(_info_details, cap=10)
         return {
             "rule_name": "powershell_scriptblock",
-            "severity": "info",
-            "description": f"{len(hits)} PowerShell Script Block logs found (EID 4104). "
-                           "No obviously suspicious content, but review recommended.",
+            "query_description": f"EID 4104 — {len(hits)} PowerShell Script Block logs, no keyword matches.",
             "matching_count": len(hits),
             "matched_patterns": {"Event ID 4104 (Script Block)": len(hits)},
-            "details": [{
-                "hit_id": h["hit_id"],
-                "artifact_type": "Windows Event Logs (EID 4104)",
-                "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": "PowerShell Script Block logged",
-            } for h in hits[:10]],
+            "details": _info_details,
+            "returned_count": _info_returned,
+            "truncated": _info_truncated,
+            "detail_cap": 10,
         }
 
     indicator_counts = {}
     for d in suspicious:
-        for part in d["evidence"].replace("Suspicious PowerShell script block: ", "").split(", "):
+        for part in d["artifact_context"].replace("Suspicious PowerShell script block: ", "").split(", "):
             indicator_counts[part] = indicator_counts.get(part, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(suspicious)
     return {
         "rule_name": "powershell_scriptblock",
-        "severity": "high",
-        "description": f"{len(suspicious)} suspicious PowerShell script blocks detected in EID 4104 logs. "
-                       "Contains download cradles, encoded commands, or known attack patterns.",
+        "query_description": f"EID 4104 — {len(suspicious)} script blocks matching download cradles, encoded commands, or known attack patterns.",
         "matching_count": len(suspicious),
         "matched_patterns": indicator_counts,
-        "details": suspicious[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -655,7 +755,7 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
                 "hit_id": wf["hit_id"],
                 "artifact_type": "Prefetch",
                 "timestamp": wf_ts,
-                "evidence": f"WerFault crash ({bitness}) on same date as security SW execution",
+                "artifact_context": f"WerFault ({bitness}) ran on same date as security SW",
                 "WerFault Path": wf_path,
                 "WerFault Bitness": bitness,
                 "Run Count": wf.get("Application Run Count", "") or wf.get("Run Count", ""),
@@ -681,37 +781,25 @@ def rule_watering_hole_indicators(aq: ArtifactQueries) -> dict | None:
     startup_overlap = flagged_sw_names & startup_sw_names
     is_startup_correlation = len(startup_overlap) >= len(flagged_sw_names) * 0.5
 
-    if is_startup_correlation:
-        severity = "medium"
-        caveat = (
-            " NOTE: The flagged security software runs as startup items, so "
-            "co-occurrence with WerFault on the same day may be coincidental. "
-            "Verify with search_wer_reports whether the security SW itself crashed, "
-            "and use get_file_timestamps to check if malicious files existed before the crash."
-        )
-    else:
-        severity = "high"
-        caveat = (
-            " Verify with search_wer_reports to confirm the security SW actually crashed, "
-            "and check the timeline to establish causation."
-        )
+    caveat = (
+        " NOTE: security SW in startup items — co-occurrence may be coincidental."
+        if is_startup_correlation else
+        " Verify with search_wer_reports whether the security SW itself crashed."
+    )
 
+    details, truncated, returned_count = _apply_detail_cap(correlated)
     return {
         "rule_name": "watering_hole_indicators",
-        "severity": severity,
-        "description": (
-            f"{len(correlated)} WerFault crash(es) correlated with Korean security software "
-            f"execution.{caveat}"
+        "query_description": (
+            f"Prefetch date correlation — {len(correlated)} WerFault entries co-date with Korean security SW.{caveat}"
         ),
         "matching_count": len(correlated),
         "matched_patterns": sw_summary,
-        "details": correlated[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
         "startup_items": sorted(startup_overlap) if startup_overlap else [],
-        "verification_needed": [
-            "Run search_wer_reports with security SW names to check if THEY crashed",
-            "Use get_file_timestamps on suspicious files to verify creation time",
-            "Build timeline around crash time to check for causal sequence",
-        ],
     }
 
 
@@ -777,7 +865,7 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
             flagged.append({
                 "hit_id": h["hit_id"],
                 "artifact_type": h.get("artifact_type", "AmCache Program Entries"),
-                "evidence": "; ".join(reasons),
+                "artifact_context": "; ".join(reasons),
                 "Program Name": h.get("Name", "") or h.get("Program Name", ""),
                 "Version": version,
                 "Publisher": publisher,
@@ -790,19 +878,19 @@ def rule_suspicious_msi_install(aq: ArtifactQueries) -> dict | None:
 
     reason_counts: dict[str, int] = {}
     for d in flagged:
-        for part in d["evidence"].split("; "):
+        for part in d["artifact_context"].split("; "):
             reason_counts[part] = reason_counts.get(part, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(flagged)
     return {
         "rule_name": "suspicious_msi_install",
-        "severity": "high",
-        "description": (
-            f"{len(flagged)} suspicious MSI-installed program(s) detected. "
-            "Includes off-hours installs or known remote access / SSH tools."
-        ),
+        "query_description": f"AmCache — {len(flagged)} programs matching remote access or SSH tool name patterns.",
         "matching_count": len(flagged),
         "matched_patterns": reason_counts,
-        "details": flagged[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
@@ -823,7 +911,7 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
             "artifact_type": "Windows Event Logs (OpenSSH)",
             "event_type": "OpenSSH Event Log",
             "timestamp": h.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-            "evidence": "OpenSSH event log entry detected",
+            "artifact_context": "OpenSSH event log entry",
             "computer": h.get("Computer", ""),
             "event_data_excerpt": event_data[:500],
         }
@@ -847,9 +935,8 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
                 "artifact_type": "System Services",
                 "event_type": "SSH Service",
                 "timestamp": s.get("Registry Key Modified Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": f"SSH-related service found: {s.get('Service Name', '')}",
-                "details": f"Location: {s.get('Service Location', '')}, "
-                           f"Start Type: {s.get('Start Type', '')}",
+                "artifact_context": f"SSH-related service: {s.get('Service Name', '')}",
+                "service_details": f"Location: {s.get('Service Location', '')}, Start Type: {s.get('Start Type', '')}",
             })
 
     # 3. SSH key artifacts
@@ -861,8 +948,8 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
                 "artifact_type": art_name,
                 "event_type": "SSH Key Artifact",
                 "timestamp": k.get("Created Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": f"{art_name} artifact found",
-                "details": str({
+                "artifact_context": f"{art_name} artifact",
+                "key_details": str({
                     key: val for key, val in k.items()
                     if key not in ("hit_id", "artifact_type") and val
                 })[:500],
@@ -884,9 +971,8 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
                 "artifact_type": "Prefetch",
                 "event_type": "SSH Prefetch",
                 "timestamp": p.get("Last Run Date/Time - UTC (yyyy-mm-dd)", ""),
-                "evidence": f"SSH executable was run: {app_name}",
-                "details": f"Path: {p.get('Application Path', '')}, "
-                           f"Run Count: {p.get('Application Run Count', '')}",
+                "artifact_context": f"Prefetch entry: {app_name}",
+                "prefetch_details": f"Path: {p.get('Application Path', '')}, Run Count: {p.get('Application Run Count', '')}",
             })
 
     if not findings:
@@ -898,21 +984,24 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
         et = f.get("event_type", "unknown")
         type_counts[et] = type_counts.get(et, 0) + 1
 
+    details, truncated, returned_count = _apply_detail_cap(findings)
     return {
         "rule_name": "ssh_activity",
-        "severity": "high",
-        "description": (
-            f"{len(findings)} SSH-related artifact(s) detected across event logs, "
-            "services, key files, and Prefetch. SSH activity is uncommon on standard "
-            "Windows enterprise endpoints and may indicate unauthorized remote access."
-        ),
+        "query_description": f"OpenSSH events + services + key artifacts + Prefetch — {len(findings)} SSH-related artifacts across {len(type_counts)} source type(s).",
         "matching_count": len(findings),
         "matched_patterns": type_counts,
-        "details": findings[:20],
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
     }
 
 
-# ── Helpers ──
+def _apply_detail_cap(hits: list, cap: int = 20) -> tuple[list, bool, int]:
+    """Apply the standard detail cap. Returns (capped_list, truncated, returned_count)."""
+    capped = hits[:cap]
+    return capped, len(hits) > cap, len(capped)
+
 
 def _extract_xml_fields(event_data: str, detail: dict, field_names: list[str]) -> None:
     """Extract specific fields from Windows Event XML data."""

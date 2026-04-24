@@ -351,12 +351,6 @@ export default function CaseManager() {
     setRecentCases(loadRecent());
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '8px 12px', borderRadius: 6,
-    border: '1px solid var(--border)', background: 'var(--bg)',
-    color: 'var(--text)', fontSize: 13, fontFamily: 'monospace',
-  };
-
   const sectionStyle: React.CSSProperties = {
     background: 'var(--surface)', border: '1px solid var(--border)',
     borderRadius: 12, padding: 20, marginBottom: 16,

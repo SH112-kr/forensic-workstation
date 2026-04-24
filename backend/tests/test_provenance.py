@@ -13,11 +13,19 @@ from core.analysis.provenance import (
 def test_corroboration_map_covers_shipped_rules():
     """Every shipped rule in find_suspicious should have a provenance entry."""
     shipped = {
-        "lsass_access", "suspicious_process_creation", "service_installation",
-        "scheduled_task_creation", "log_clearing", "rdp_lateral_movement",
-        "explicit_credential_use", "suspicious_prefetch",
-        "suspicious_service_paths", "powershell_scriptblock",
-        "watering_hole_indicators", "suspicious_msi_install", "ssh_activity",
+        "sysmon_eid10_lsass_handle_open",
+        "evtx_eid_4688_process_creation_events",
+        "evtx_eid_7045_service_installs",
+        "evtx_eid_4698_scheduled_task_events",
+        "evtx_eid_1102_audit_log_cleared",
+        "evtx_eid_4624_type10_rdp_logons",
+        "evtx_eid_4648_explicit_credential_logons",
+        "prefetch_pentest_tool_names",
+        "services_nonstandard_binary_paths",
+        "evtx_eid_4104_scriptblock_logs",
+        "prefetch_security_sw_werfault_correlation",
+        "amcache_remote_access_tool_names",
+        "openssh_artifacts",
     }
     assert shipped <= set(CORROBORATION_MAP.keys()), \
         f"Missing provenance entries for: {shipped - set(CORROBORATION_MAP.keys())}"
@@ -47,7 +55,7 @@ def test_attach_provenance_fills_supporting_and_absent(kape_case):
     payload = {
         "findings": [
             {
-                "rule_name": "suspicious_prefetch",
+                "rule_name": "prefetch_pentest_tool_names",
                 "details": [{"artifact_type": "Prefetch", "hit_id": 1}],
             },
         ],
@@ -63,9 +71,9 @@ def test_attach_provenance_fills_supporting_and_absent(kape_case):
 
 
 def test_attach_provenance_empty_case():
-    payload = {"findings": [{"rule_name": "lsass_access", "details": []}]}
+    payload = {"findings": [{"rule_name": "sysmon_eid10_lsass_handle_open", "details": []}]}
     attach_provenance(payload, {})
     assert payload["provenance_case_format"] == "none"
     f = payload["findings"][0]
     # With no cases loaded, every corroborator is absent.
-    assert len(f["absent_corroboration"]) == len(CORROBORATION_MAP["lsass_access"])
+    assert len(f["absent_corroboration"]) == len(CORROBORATION_MAP["sysmon_eid10_lsass_handle_open"])

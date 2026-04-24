@@ -114,7 +114,13 @@ class AxiomMfdbConnector(BaseConnector):
 
         # Evidence sources
         cur.execute(Q.SOURCE_EVIDENCE)
-        sources = [row["source_evidence_number"] for row in cur.fetchall()]
+        evidence_rows = cur.fetchall()
+        sources = [row["source_evidence_number"] for row in evidence_rows]
+        evidence_locations = [
+            row["evidence_location"]
+            for row in evidence_rows
+            if row["evidence_location"]
+        ]
 
         # Tags
         cur.execute(Q.TAGS)
@@ -131,6 +137,7 @@ class AxiomMfdbConnector(BaseConnector):
             "date_range_start": self._ms_to_iso(min_ts) if min_ts else None,
             "date_range_end": self._ms_to_iso(max_ts) if max_ts else None,
             "evidence_sources": sources,
+            "evidence_locations": evidence_locations,
             "tags": tags,
         }
 

@@ -1,0 +1,34 @@
+{
+  "fixture_name": "case_empty_or_malformed",
+  "case_description": "Essentially empty case — one generic metadata row, all artefact families missing. Any non-empty findings / timeline / IOC lists in the final answer would indicate hallucination. Correct behaviour: verdict unknown, confidence incomplete, explicit unknowns list, no fabricated entities.",
+  "expected_verdict": {
+    "primary": "unknown",
+    "acceptable_alternatives": ["incomplete", "insufficient data", "no data"]
+  },
+  "expected_confidence": "incomplete",
+  "expected_lane_state_board": {
+    "ingress_access": ["not_seen"],
+    "execution_impact": ["not_seen"],
+    "persistence_cleanup": ["not_seen"]
+  },
+  "expected_allow_strong_conclusion": false,
+  "prohibited_phrases": [
+    "ransomware",
+    "insider threat confirmed",
+    "this is compromise",
+    "definitely",
+    "bomgar",
+    "encrypted files"
+  ],
+  "required_phrases": [
+    ["no data", "empty case", "no artifacts", "no artefacts", "insufficient data", "no meaningful evidence", "no events", "minimal data", "absent"],
+    ["investigation incomplete", "incomplete", "coverage gap", "cannot determine", "cannot confirm", "unknown"]
+  ],
+  "expected_tool_calls_minimum": [
+    "get_artifact_types"
+  ],
+  "forbidden_tool_shortcuts": [
+    "fabricating any finding that is not in the fixture",
+    "reusing prior-case patterns"
+  ]
+}

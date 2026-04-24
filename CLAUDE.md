@@ -49,3 +49,88 @@
 - 가설 수립 후 반드시 반증 가능한 증거를 먼저 확인한다
 - 상관관계(시간적 근접)를 인과관계로 비약하지 않는다
 - "확인된 사실"과 "추정"을 명확히 구분하여 기술한다
+
+## LLM 도구 응답 해석 규칙
+
+이 프로젝트는 LLM 단독 분석 도구다. MCP 도구 응답을 판정으로 읽지
+않고, 증거 구조화 + 불확실성 표지로 읽는다. 아래 규칙은 예외 없이
+적용한다.
+
+### 코드는 존재 여부, LLM은 중요도 판단
+
+도구 응답은 아티팩트의 존재 사실만 전달한다. 중요도 판단(이것이 악성인가?,
+우선순위가 높은가?)은 LLM이 독립적으로 수행한다.
+- `rule_name`, `query_description`, `matching_count`, `details[]` = 사실 데이터
+- `lane_evidence_summary` = 레인별 아티팩트 존재 요약 (사실)
+- 레인에 아티팩트가 있다는 것이 그것이 "confirmed" 또는 "high severity"라는
+  뜻이 아니다. 해석은 LLM의 몫이다.
+
+### truncated: true 이면 페이지네이션 필수 (하드 게이트)
+
+`find_suspicious` 결과에서 `truncated: true` 인 finding 이 있으면
+해당 rule 을 결론의 근거로 사용하기 전에 **반드시**
+`find_suspicious(rules="<rule_name>")` 재실행으로 전체 결과를 확보해야 한다.
+
+- `matching_count - returned_count` = 미확인 증거 건수
+- `investigation_gap_report.truncation_gaps` 에서
+  `pivot_reason: "truncated_details"` 항목을 확인한다
+- 미확인 증거에 핵심 악성 아티팩트가 포함될 수 있다 (실사례: enamgr.dll)
+- Hard gate: `truncated: true` → paginate via `find_suspicious(rules=...)` → then conclude. No exceptions.
+
+### 빈 응답은 데이터 없음이 아니다
+
+`findings: []`, `hits: []`, `entries: []` 을 "해당 없음" 으로 확정
+금지. 반드시 교차 확인:
+- 응답의 `diagnostic` 필드 확인 (해당 타입의 전체 건수 vs 필터
+  매칭 건수).
+- `get_artifact_types` 로 해당 아티팩트 타입의 수집 여부 확인.
+- 필터 (날짜 / 키워드) 를 제거한 재검색으로 데이터 자체 존재 여부
+  교차 확인.
+
+### 가설 선언 후 도구 호출
+
+도구 체인은 확증편향 방향으로 흐르기 쉽다. 이를 막기 위해:
+- 분석 세션 시작 시 가설을 명시적으로 선언: "나는 X 를 의심한다.
+  반증 가능한 증거는 Y 다."
+- 도구 호출은 가설 **검증 / 반증** 수단이다. 가설 생성 수단이
+  아니다.
+- 도구 결과가 가설을 지지하면 즉시 다음으로 넘어가지 말고, 반증
+  검색을 먼저 수행.
+
+### 메모리의 과거 사건은 패턴이 아니다
+
+`memory/project_*.md`, `memory/incident_*.md` 는 과거 개별 사건
+기록이다. 새 케이스의 패턴 인식에 자동 적용 금지.
+- 과거 사건과 유사성을 언급하기 전, 현재 케이스의 증거로 독립
+  재검증.
+- 메모리의 `feedback_tool_install_vs_compromise` 규칙을 특히 준수:
+  정상 솔루션 설치 / 통신을 자동으로 "잠복 침해" 로 단정 금지.
+
+### applicability.primary_domain 이 맞는지 확인
+
+하네스 도구 (`initial_triage_pack`, `auto_triage` 등) 는
+`applicability.primary_domain == "windows_endpoint_ir"` 이다. 현재
+케이스가 이 도메인 밖이면 (cloud / supply chain / network device /
+physical) 하네스 출력을 **degraded hint** 로만 취급.
+- 도구 응답의 `applicability` 필드를 분석 시작 시 첫 확인.
+- degraded domain 이면 분석 노트에 명시 + 저수준 도구 비중 증가.
+
+### 상관은 인과가 아니다
+
+`correlate`, `behavioral_delta`, `bridged_precursor` 등은 시간 /
+토큰 공변 (covariation) 을 감지한다. 인과가 아니다.
+- `bridged_precursor.status == "bridged_precursor"` 여도 bridge
+  token 일치 + static-delta 매치 수준이다. 인과 주장 금지.
+- 이전 시점에 같은 도구가 존재했다고 "잠복 증거" 로 승격 금지. 정상
+  사용 이력일 가능성 먼저 검토.
+
+## Analysis Guardrails
+
+이 섹션은 위 "LLM 도구 응답 해석 규칙" 의 상위 원칙 모음이다. 둘을
+함께 적용한다.
+
+- See `docs/ANALYSIS_GUARDRAILS.md`, `docs/ANALYSIS_PLAYBOOK.md`, and `docs/HYPOTHESIS_REFACTOR_BACKLOG.md`.
+- Prefer evidence-first, multi-hypothesis outputs over single-entity narratives.
+- Keep ingress / access, execution / impact, and persistence / cleanup as separate lanes.
+- If one lane has many artifacts, run verification on the paired lanes before concluding.
+- Do NOT anchor on rule order — findings[] is not significance-sorted.

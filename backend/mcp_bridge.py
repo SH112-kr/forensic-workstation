@@ -39,7 +39,12 @@ from core.connectors.volatility_connector import VolatilityConnector
 from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
 from core.config import config
-from state import app_state, build_not_allowed_message, is_path_allowed
+from state import (
+    app_state,
+    build_not_allowed_message,
+    is_path_allowed,
+    resolve_active_case_evidence,
+)
 
 mcp = FastMCP(
     name="forensic-workstation",
@@ -68,6 +73,19 @@ _tz_config: dict[str, Any] = {
 }
 
 _EVENT_LOG_MAX_BYTES = int(os.environ.get("FW_EVENT_LOG_MAX_BYTES", str(20 * 1024 * 1024)))  # 20 MB
+_SERVER_STARTED_AT = datetime.now(timezone.utc)
+_SERVER_PID = os.getpid()
+_WATCHED_CODE_FILES = [
+    os.path.abspath(__file__),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.py"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "connectors", "axiom_mfdb.py"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "connectors", "e01_image.py"),
+]
+_SERVER_CODE_MTIME_AT_START = {
+    path: os.path.getmtime(path)
+    for path in _WATCHED_CODE_FILES
+    if os.path.exists(path)
+}
 
 
 def _log_event(event_type: str, tool: str, data: Any = None, params: Any = None, result: Any = None, duration: float = 0):
@@ -140,6 +158,79 @@ def _truncate(data: Any, max_len: int = 500) -> Any:
 
 def _mask(data: Any) -> Any:
     return _masker.mask(data) if _masker.enabled else data
+
+
+def _runtime_status() -> dict[str, Any]:
+    stale_files = []
+    latest_seen_mtime = None
+    for path in _WATCHED_CODE_FILES:
+        if not os.path.exists(path):
+            continue
+        current_mtime = os.path.getmtime(path)
+        latest_seen_mtime = current_mtime if latest_seen_mtime is None else max(latest_seen_mtime, current_mtime)
+        started_mtime = _SERVER_CODE_MTIME_AT_START.get(path)
+        if started_mtime is not None and current_mtime > started_mtime:
+            stale_files.append(path)
+
+    return {
+        "pid": _SERVER_PID,
+        "started_at": _SERVER_STARTED_AT.isoformat(),
+        "stale_code_detected": bool(stale_files),
+        "stale_files": stale_files,
+        "watched_files": list(_WATCHED_CODE_FILES),
+        "latest_code_mtime": (
+            datetime.fromtimestamp(latest_seen_mtime, tz=timezone.utc).isoformat()
+            if latest_seen_mtime is not None else ""
+        ),
+    }
+
+
+def _attach_runtime_warning(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    status = _runtime_status()
+    if not status["stale_code_detected"]:
+        return result
+    out = dict(result)
+    warning = (
+        "Connected MCP server process is stale: backend code changed after this "
+        "process started. Restart the forensic-workstation MCP server to apply "
+        "the latest logic."
+    )
+    warnings = list(out.get("runtime_warnings", []))
+    if warning not in warnings:
+        warnings.append(warning)
+    out["runtime_warnings"] = warnings
+    out["server_runtime"] = {
+        "pid": status["pid"],
+        "started_at": status["started_at"],
+        "stale_code_detected": True,
+    }
+    return out
+
+
+_WIN_PATH_RE = re.compile(r"([A-Za-z]:\\[^\r\n\t\"<>|]+)")
+
+
+def _candidate_disk_paths_from_hits(entity_value: str, hits: list[dict[str, Any]]) -> list[str]:
+    """Extract exact Windows paths from hit fields that likely refer to the entity.
+
+    Safety rule: this helper only proposes explicit paths already present in
+    forensic artifacts. It never broadens into directory scans or guessed names.
+    """
+    entity_lc = str(entity_value or "").strip().lower()
+    candidates: list[str] = []
+    for hit in hits:
+        for value in (hit.get("fields", {}) or {}).values():
+            text = str(value or "")
+            for match in _WIN_PATH_RE.findall(text):
+                path_lc = match.lower()
+                basename_lc = os.path.basename(match).lower()
+                if entity_lc and entity_lc not in path_lc and entity_lc not in basename_lc:
+                    continue
+                if match not in candidates:
+                    candidates.append(match)
+    return candidates
 
 
 # ── Timestamp Localization ──
@@ -397,6 +488,7 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
             timeout=timeout_seconds
         )
         result = _localize_timestamps(result)
+        result = _attach_runtime_warning(result)
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
         return result
@@ -447,6 +539,12 @@ async def open_case(path: str, case_name: str = "") -> dict:
         _connectors[f"axiom:{resolved_case_id}"] = c
         return _mask({"status": "success", **meta})
     return await _traced("open_case", {"path": path, "case_name": case_name}, fn)
+
+
+@mcp.tool()
+async def server_runtime_info() -> dict:
+    """Show MCP server runtime/version state for stale-session diagnostics."""
+    return await _traced("server_runtime_info", {}, lambda: _runtime_status(), timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -763,6 +861,120 @@ async def build_timeline(
         else:
             return _mask(axiom.get_timeline(start_date, end_date, type_list, cap, offset))
     return await _traced("build_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
+
+
+@mcp.tool()
+async def date_anchor_triage(
+    start_date: str = "",
+    end_date: str = "",
+    limit_per_query: int = 10,
+) -> dict:
+    """Surface high-value raw anchors for a narrow date window.
+
+    This helper is intentionally deterministic and evidence-first. It does not
+    assign intent or promote a narrative; it only groups raw anchors that are
+    usually decisive in the first 5-10 minutes of triage:
+    services/autoruns, suspicious file drops, execution traces, and
+    browser/download artifacts.
+    """
+    params = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit_per_query": limit_per_query,
+    }
+
+    def fn():
+        from core.analysis.date_anchor_triage import date_anchor_triage as _date_anchor_triage
+
+        return _mask(_date_anchor_triage(
+            _get_axiom(),
+            start_date=start_date,
+            end_date=end_date,
+            limit_per_query=max(1, min(limit_per_query, 50)),
+        ))
+
+    return await _traced("date_anchor_triage", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def initial_triage_pack(
+    scope_mode: str = "recent_14d",
+    start_date: str = "",
+    end_date: str = "",
+    suspected_date: str = "",
+    top_window_count: int = 3,
+    timeline_scan_limit: int = 1200,
+    include_baseline_diff: bool = True,
+    reference_case_id: str = "",
+) -> dict:
+    """Run a window-first initial triage pass before static delta review.
+
+    This composition tool intentionally starts from scope, coverage, and
+    incident-window discovery before it surfaces baseline-diff context. It is
+    tuned for Windows endpoint IR and keeps incident typing conservative:
+    unknown is preferred over a forced verdict.
+
+    Args:
+        scope_mode: One of recent_14d, suspected_date_pm_3d, full_range, custom.
+        start_date / end_date: Explicit ISO dates for custom scope selection.
+        suspected_date: Anchor date for suspected_date_pm_3d.
+        top_window_count: Number of candidate windows to keep (max 5).
+        timeline_scan_limit: Max timeline entries to sample during window discovery.
+        include_baseline_diff: When True, delay baseline_diff into precursor_context.
+        reference_case_id: Optional golden-image/reference case id for baseline diff.
+
+    Reading guide for AI consumers:
+        - applicability.primary_domain is "windows_endpoint_ir". If the case
+          is cloud / supply-chain / network-device / physical, the output
+          is a degraded hint. Weight accordingly.
+        - precursor_context.status == "bridged_precursor" means shared token
+          overlap, not causation. Do NOT assume the static-delta item
+          actually participated in the incident without direct execution
+          evidence.
+        - anchoring_warnings is a live list of bias risks in this pass.
+          Read it before concluding.
+        - lane_evidence_summary shows artifact families seen per lane (facts only).
+          Significance judgment is yours.
+    """
+    params = {
+        "scope_mode": scope_mode,
+        "start_date": start_date,
+        "end_date": end_date,
+        "suspected_date": suspected_date,
+        "top_window_count": top_window_count,
+        "timeline_scan_limit": timeline_scan_limit,
+        "include_baseline_diff": include_baseline_diff,
+        "reference_case_id": reference_case_id,
+    }
+
+    def fn():
+        from state import app_state
+        from core.analysis.initial_triage import initial_triage as _initial_triage
+
+        ref_aq = None
+        if reference_case_id.strip():
+            key = f"axiom:{reference_case_id.strip()}"
+            ref = app_state._connectors.get(key)
+            if ref is None or not ref.is_connected():
+                return {
+                    "ok": False,
+                    "error": f"Reference case not found or not connected: {reference_case_id}",
+                }
+            ref_aq = ref.artifact_queries
+
+        return _mask(_initial_triage(
+            _get_axiom(),
+            scope_mode=scope_mode,
+            start_date=start_date,
+            end_date=end_date,
+            suspected_date=suspected_date,
+            top_window_count=max(1, min(top_window_count, 5)),
+            timeline_scan_limit=max(200, min(timeline_scan_limit, 4000)),
+            include_baseline_diff=include_baseline_diff,
+            reference_aq=ref_aq,
+        ))
+
+    return await _traced("initial_triage_pack", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 @mcp.tool()
@@ -1144,6 +1356,19 @@ async def baseline_diff(
             Windows baseline JSON.
         categories: Optional comma-separated subset of
             services, scheduled_tasks, startup_items, users.
+
+    Reading guide for AI consumers:
+        - "net_new" items exist in the active case but not in the reference
+          baseline. This is NOT a malice indicator. Legitimate third-party
+          software, legitimate admin tools, and case-normal services will
+          appear as net-new.
+        - Use baseline_diff as noise reduction, not as a verdict generator.
+          Triage each net-new item with get_hit_detail /
+          get_file_timestamps / direct evidence before treating it as
+          suspicious.
+        - reference_source == "builtin_windows_baseline" means the reference
+          is a tiny curated list. Expect high noise. For serious triage,
+          diff against a golden-image reference case.
     """
     def fn():
         from state import app_state
@@ -1236,7 +1461,7 @@ async def add_suppression(rule_id: str, reason: str, analyst: str = "", expires_
 
     Args:
         rule_id: Exact rule_name as emitted by find_suspicious (e.g.
-            "rdp_lateral_movement"). No globs, no regex.
+            "evtx_eid_4624_type10_rdp_logons"). No globs, no regex.
         reason: Required. Why this rule is muted here (audit trail).
         analyst: Optional name of the analyst adding the suppression.
         expires_at: Optional ISO 8601 timestamp; after this, the entry is
@@ -1446,6 +1671,21 @@ async def detect_anti_forensics(max_details_per_rule: int = 50) -> dict:
             Set to 0 to disable the cap, or raise it explicitly when you
             need a bigger sample (investigation_gap_report will still see
             the true ``total_count``).
+
+    Reading guide for AI consumers:
+        - A fired rule means the pattern matched. It does NOT confirm
+          malicious tampering. Administrators legitimately clear logs,
+          delete shadow copies during maintenance, and disable scriptblock
+          logging in test environments.
+        - Before concluding anti-forensic activity, correlate with (a)
+          timing relative to other incident signals, (b) the actor account,
+          (c) whether the action aligns with a known administrative task.
+        - rules_fired count is NOT a severity score. A single log-cleared-
+          Security-1102 rule firing can be more significant than ten VSS-
+          shadow-deletion rule firings, depending on context.
+        - If event logs are missing (coverage_gate.statuses.evtx ==
+          "missing"), negative results here have limited weight. Do not
+          read "0 rules fired" as "no tampering".
     """
     def fn():
         from core.analysis.anti_forensics import detect_anti_forensics as _run
@@ -1535,6 +1775,20 @@ async def investigation_gap_report(
                         Empty string skips findings-dependent sections.
         snapshot_slug: Optional case_snapshot slug. When supplied, bucket
                         references are reconciled against loaded cases.
+
+    Reading guide for AI consumers:
+        - pivots_not_attempted lists suggested next queries. These are
+          POINTERS for further investigation, not required follow-ups.
+          Chasing every pivot produces confirmation bias and wasted effort.
+        - Weak-strength signals are intentionally suppressed in
+          pivots_not_attempted to reduce bias. If you want to corroborate a
+          weak finding, do it manually with explicit uncertainty.
+        - If findings_available is false, sections requiring findings are
+          listed in skipped_sections. Do NOT read a missing section as
+          "no gaps there".
+        - bucket_gaps.stale_references lists bucketed hit_ids no longer in
+          any loaded case. A saved snapshot referencing stale hits must not
+          be read as current evidence.
     """
     def fn():
         from state import app_state
@@ -1571,6 +1825,7 @@ async def behavioral_delta_pack(
     seed_keywords: str = "",
     window_minutes: int = 60,
     limit_per_keyword: int = 500,
+    match_mode: str = "substring",
 ) -> dict:
     """Observe behavioural change for an entity between baseline and incident.
 
@@ -1602,11 +1857,28 @@ async def behavioral_delta_pack(
             axiom.search, so truncation never distorts the ratio; only
             the returned sample feeds first/last timestamps and
             top_windows (flagged under ``truncation_warnings``).
+        match_mode: ``substring`` (default) preserves connector keyword
+            search semantics. ``exact`` applies a composition-layer
+            whole-value / basename / stem filter after retrieval.
 
     Returns an envelope with ``claims`` each tagged ``kind`` ∈
-    {no_activity_in_either_period, entity_net_new_in_incident,
+     {no_activity_in_either_period, entity_net_new_in_incident,
      entity_went_silent_in_incident, entity_dormant_then_active,
      observed_volume_change, observed_cooccurrence_change}.
+
+    Reading guide for AI consumers:
+        - This tool reports OBSERVED CHANGE between two periods. It does NOT
+          classify the change as anomalous, malicious, or benign. Change
+          alone is not a verdict.
+        - claims[].kind values like entity_net_new_in_incident or
+          observed_volume_change describe structural difference only. The
+          analyst (LLM or human) interprets the meaning.
+        - derived_from pointers on each claim are the evidence pointers to
+          verify the claim. Do not quote the claim without reading at least
+          one derived_from entry.
+        - dormant_gap_reason can be "truncated_sample" or "baseline_empty"
+          etc. These reasons invalidate the gap measurement — do not use
+          the gap as evidence in those cases.
     """
     def fn():
         from core.analysis.behavioral_delta import behavioral_delta as _delta
@@ -1622,6 +1894,7 @@ async def behavioral_delta_pack(
             seed_keywords=seeds,
             window_minutes=window_minutes,
             limit_per_keyword=limit_per_keyword,
+            match_mode=match_mode,
         ))
     return await _traced(
         "behavioral_delta_pack",
@@ -1632,6 +1905,123 @@ async def behavioral_delta_pack(
             "seed_keywords": seed_keywords,
             "window_minutes": window_minutes,
             "limit_per_keyword": limit_per_keyword,
+            "match_mode": match_mode,
+        },
+        fn, timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+@mcp.tool()
+async def entity_story_pack(
+    entity_value: str,
+    start_date: str = "",
+    end_date: str = "",
+    seed_keywords: str = "",
+    window_minutes: int = 60,
+    limit_per_keyword: int = 200,
+    match_key: str = "raw",
+    graph_limit_per_node_type: int = 200,
+    match_mode: str = "substring",
+) -> dict:
+    """Compose an entity-centric timeline + context story.
+
+    Composition tool — combines keyword search / timeline chronology,
+    co-occurrence windows, nearby graph entities, and supporting
+    suspicious findings into a report-ready narrative scaffold.
+
+    Intentionally descriptive, not verdict-driven: output phases such as
+    ``first_seen``, ``dormant_period``, ``reactivation``, and
+    ``repeat_bursts`` are structural summaries of observed chronology.
+
+    Args:
+        entity_value: Primary entity keyword under investigation.
+        start_date / end_date: Optional ISO date range for the story window.
+        seed_keywords: Comma-separated extra keywords to correlate around the
+            entity (for example ``"4648,7045"``).
+        window_minutes: Co-occurrence window size used for burst grouping.
+        limit_per_keyword: Search cap per keyword. Truncation is surfaced in
+            ``truncation_warnings`` rather than hidden.
+        match_key: Entity-graph normalization mode (raw / strict / loose).
+        graph_limit_per_node_type: Safety cap for graph expansion.
+        match_mode: ``substring`` (default) preserves connector keyword
+            search semantics. ``exact`` applies a composition-layer
+            whole-value / basename / stem filter after retrieval.
+    """
+    def fn():
+        from core.analysis.entity_story import entity_story as _story
+        axiom = _get_axiom()
+        seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
+        return _mask(_story(
+            axiom,
+            entity_value=entity_value,
+            start_date=start_date,
+            end_date=end_date,
+            seed_keywords=seeds,
+            window_minutes=window_minutes,
+            limit_per_keyword=limit_per_keyword,
+            match_key=match_key,
+            graph_limit_per_node_type=graph_limit_per_node_type,
+            match_mode=match_mode,
+        ))
+    return await _traced(
+        "entity_story_pack",
+        {
+            "entity_value": entity_value,
+            "start_date": start_date,
+            "end_date": end_date,
+            "seed_keywords": seed_keywords,
+            "window_minutes": window_minutes,
+            "limit_per_keyword": limit_per_keyword,
+            "match_key": match_key,
+            "graph_limit_per_node_type": graph_limit_per_node_type,
+            "match_mode": match_mode,
+        },
+        fn, timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+@mcp.tool()
+async def auto_seed_entities_pack(
+    start_date: str = "",
+    end_date: str = "",
+    window_minutes: int = 60,
+    limit_per_seed: int = 200,
+    max_seeds: int = 12,
+    match_mode: str = "exact",
+) -> dict:
+    """Auto-extract deterministic seeds from existing case outputs.
+
+    Composition tool — derives a seed catalog from structured findings and
+    baseline diff, then clusters their co-occurrence. No new detection rules.
+
+    Args:
+        start_date / end_date: Optional ISO date range for clustering.
+        window_minutes: Co-occurrence window size for clustering.
+        limit_per_seed: Search cap per selected seed.
+        max_seeds: Max seeds kept in the catalog before clustering.
+        match_mode: Basename/keyword matching mode for non-event-id seeds.
+    """
+    def fn():
+        from core.analysis.auto_seed_entities import auto_seed_entities
+        axiom = _get_axiom()
+        return _mask(auto_seed_entities(
+            axiom,
+            start_date=start_date,
+            end_date=end_date,
+            window_minutes=window_minutes,
+            limit_per_seed=limit_per_seed,
+            max_seeds=max_seeds,
+            match_mode=match_mode,
+        ))
+    return await _traced(
+        "auto_seed_entities_pack",
+        {
+            "start_date": start_date,
+            "end_date": end_date,
+            "window_minutes": window_minutes,
+            "limit_per_seed": limit_per_seed,
+            "max_seeds": max_seeds,
+            "match_mode": match_mode,
         },
         fn, timeout_seconds=TIMEOUT_HEAVY,
     )
@@ -1662,6 +2052,15 @@ async def find_suspicious(
             can distinguish "rule ran and found nothing" from "rule couldn't
             run because required artifacts are missing". Opt-out via False
             when a caller depends on the pre-coverage payload shape.
+
+    Reading guide for AI consumers:
+        - findings[] order is not significance-sorted. Rule execution order is
+          arbitrary — judge significance from details[] and matching_count.
+        - For each finding, examine details[] and absent_corroboration
+          before quoting. A finding with no corroboration is a hint, not
+          evidence.
+        - If truncated=true on a finding, run find_suspicious with that single
+          rule to retrieve all records before using it as a conclusion basis.
     """
     def fn():
         from state import app_state
@@ -1722,6 +2121,18 @@ async def correlate(
         window_minutes: Time window for co-occurrence detection (default 5 min).
         limit: Max results per keyword (default 100).
         offset: Skip first N results per keyword (for pagination).
+
+    Reading guide for AI consumers:
+        - Correlation results show temporal or keyword co-occurrence. They
+          do NOT prove causation.
+        - co_occurrence_windows is a list of time buckets where multiple
+          seeds fired together. A window appearing here is a prompt to
+          investigate, not a proof of sequence.
+        - Do not infer "A caused B" from "A and B appear in the same
+          window". Verify the actual sequence via direct timestamps
+          (get_file_timestamps / timeline).
+        - Empty or truncated results do not mean "no correlation exists".
+          Check truncation_warnings and consider wider windows.
     """
     params = {"pivot_field": pivot_field, "pivot_value": pivot_value,
               "keywords": keywords, "window_minutes": window_minutes, "limit": limit, "offset": offset}
@@ -1844,19 +2255,96 @@ def _get_vol() -> VolatilityConnector:
 
 
 @mcp.tool()
-async def mount_image(e01_path: str) -> dict:
+async def mount_image(e01_path: str = "", evidence_ref: str = "") -> dict:
     """Mount E01/VMDK/raw disk image for file extraction."""
     def fn():
-        if not is_path_allowed(e01_path):
-            return {"error": build_not_allowed_message(e01_path)}
+        ref = evidence_ref or e01_path
+        resolved_path = resolve_active_case_evidence(ref) or e01_path
+        if not (is_path_allowed(resolved_path) or resolve_active_case_evidence(resolved_path)):
+            return {"error": build_not_allowed_message(ref or "active_case")}
         old = _connectors.pop("e01", None)
         if old:
             old.disconnect()
         c = E01ImageConnector()
-        meta = c.connect(e01_path)
+        meta = c.connect(resolved_path)
         _connectors["e01"] = c
-        return _mask({"status": "mounted", **meta})
-    return await _traced("mount_image", {"e01_path": e01_path}, fn, timeout_seconds=TIMEOUT_LIGHT)
+        return _mask({"status": "mounted", "resolved_from": ref or "active_case", **meta})
+    return await _traced("mount_image", {"e01_path": e01_path, "evidence_ref": evidence_ref}, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def compare_case_image_entity(
+    entity_value: str,
+    start_date: str = "",
+    end_date: str = "",
+    limit_case_hits: int = 50,
+    image_path_hints: str = "",
+) -> dict:
+    """Compare MFDB artifact hits with mounted-image file presence for one entity.
+
+    Deterministic composition:
+    - searches the active MFDB case for ``entity_value``
+    - extracts exact Windows file paths already present in hit fields
+    - revalidates those exact paths against the mounted image
+
+    No broad disk scan is performed. Optional ``image_path_hints`` may provide
+    extra exact Windows paths (comma-separated) to revalidate.
+    """
+    params = {
+        "entity_value": entity_value,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit_case_hits": limit_case_hits,
+        "image_path_hints": image_path_hints,
+    }
+    def fn():
+        axiom = _get_axiom()
+        e01 = _get_e01()
+        search_result = axiom.search(
+            keyword=entity_value,
+            filters={"start_date": start_date, "end_date": end_date},
+            limit=limit_case_hits,
+            offset=0,
+        )
+        hits = search_result.get("hits", []) or []
+        candidates = _candidate_disk_paths_from_hits(entity_value, hits)
+        for hint in [x.strip() for x in image_path_hints.split(",") if x.strip()]:
+            if hint not in candidates:
+                candidates.append(hint)
+
+        disk_checks = []
+        for path in candidates:
+            info = e01.get_file_info(path)
+            disk_checks.append({
+                "path": path,
+                "present_on_disk": "error" not in info,
+                "file_info": info,
+            })
+
+        artifact_types = sorted({h.get("artifact_type", "") for h in hits if h.get("artifact_type")})
+        present = [x for x in disk_checks if x["present_on_disk"]]
+        missing = [x for x in disk_checks if not x["present_on_disk"]]
+        return _mask({
+            "entity_value": entity_value,
+            "mfdb": {
+                "total_hits": search_result.get("total") or search_result.get("total_estimated", 0),
+                "returned_hits": len(hits),
+                "artifact_types": artifact_types,
+                "candidate_paths": candidates,
+            },
+            "mounted_image": {
+                "checked_paths": len(disk_checks),
+                "present_count": len(present),
+                "missing_count": len(missing),
+                "disk_checks": disk_checks,
+            },
+            "joined_assessment": {
+                "has_artifact_history": bool(hits),
+                "has_current_disk_presence": bool(present),
+                "executed_then_missing_suspected": bool(hits) and not bool(present) and bool(candidates),
+            },
+        })
+    return await _traced("compare_case_image_entity", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -2538,6 +3026,18 @@ async def auto_triage(
         kape_path: Path to kape.exe (auto-detected if empty)
         skip_kape: Skip KAPE collection (use existing parsed data in output_dir)
         vss: Include Volume Shadow Copies (default: True, requires admin)
+
+    Reading guide for AI consumers:
+        - This tool orchestrates a full-pipeline pass. It does NOT replace
+          hypothesis-driven drill-down. Use its output as a starting index,
+          not a verdict.
+        - findings[] order is not significance-sorted. Judge findings from
+          their details[], matching_count, and truncation_gaps.
+        - lane_evidence_summary shows artifact families seen per lane — facts
+          only. Significance judgment is yours.
+        - Before closing the investigation, run at least one refutation
+          pass (e.g., verify benign explanation for the primary remote tool
+          or service).
     """
     import subprocess
     import time as _t
@@ -2628,6 +3128,25 @@ async def auto_triage(
         })
 
         # ── Step 3: Find Suspicious + Strength Scoring ──
+        t2b = _t.time()
+        initial_triage_summary = {}
+        triage: dict[str, Any] | None = None
+        try:
+            from core.analysis.initial_triage import initial_triage as _initial_triage
+            triage = _initial_triage(c, scope_mode="recent_14d")
+            initial_triage_summary = {
+                "top_window_count": len(triage.get("window_discovery", {}).get("top_windows", []) or []),
+                "precursor_status": triage.get("precursor_context", {}).get("status", "historical_context"),
+                "lane_evidence_summary": triage.get("lane_evidence_summary", {}),
+            }
+            steps.append({
+                "step": "initial_triage_pack",
+                "duration_s": round(_t.time() - t2b, 1),
+                **initial_triage_summary,
+            })
+        except Exception as e:
+            steps.append({"step": "initial_triage_pack", "error": str(e)})
+
         t3 = _t.time()
         strength_rollup = {}
         try:
@@ -2757,17 +3276,9 @@ async def auto_triage(
                 "anti_forensics_rules_fired": anti_forensics.get("rules_fired", 0),
                 "coverage_format": coverage_summary.get("case_format", ""),
             },
+            "initial_triage": initial_triage_summary,
             "anti_forensics": anti_forensics,
             "coverage": coverage_summary,
-            "top_findings": [
-                {
-                    "rule": f["rule_name"],
-                    "severity": f["severity"],
-                    "strength": f.get("overall_strength", "moderate"),
-                    "count": f["matching_count"],
-                }
-                for f in sorted(findings, key=lambda x: {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(x.get("severity", "low"), 4))[:10]
-            ],
             "steps": steps,
         })
 
@@ -2782,12 +3293,16 @@ def main():
 # Explicit allowlist of tools a pack author may call. Kept at module-bottom
 # so the @mcp.tool functions above are fully bound before registration.
 for _tool_name in (
+    "case_health",
+    "baseline_diff",
     "find_suspicious",
     "detect_anti_forensics",
     "hunt_evtx_rules",
     "coverage_explainer",
+    "initial_triage_pack",
     "search_artifacts",
     "build_timeline",
+    "date_anchor_triage",
     "extract_iocs",
     "correlate",
     "map_to_mitre",
@@ -2795,6 +3310,9 @@ for _tool_name in (
     "pivot_across_cases",
     "slice_timeline",
     "assess_evidence_strength",
+    "auto_seed_entities_pack",
+    "behavioral_delta_pack",
+    "entity_story_pack",
     "get_summary",
     "get_artifact_types",
 ):
