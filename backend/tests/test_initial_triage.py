@@ -268,12 +268,11 @@ def test_initial_triage_prefers_window_first_and_delays_baseline_diff():
         "analyst_tunable_params_used",
         "notes",
         "lane_evidence_summary",
+        "lane_state_board",
     ):
         assert key in result
 
-    # No verdict fields
     assert "classification" not in result
-    assert "lane_state_board" not in result
 
     assert result["selected_scope"]["mode"] == "recent_14d"
     assert result["selected_scope"]["start_date"] == "2026-04-02"
@@ -298,6 +297,10 @@ def test_initial_triage_lane_evidence_summary_shape():
 
     # Baro case has execution artifacts → event_count > 0 for execution_impact
     assert les["execution_impact"]["event_count"] > 0
+    board = result["lane_state_board"]
+    assert board["execution_impact"]["state"] in {"confirmed", "suggested"}
+    assert "allow_strong_conclusion" in board
+    assert isinstance(board["blocked_lanes"], list)
 
 
 def test_initial_triage_lane_evidence_summary_reports_missing_families():
@@ -313,9 +316,7 @@ def test_initial_triage_coverage_gate_capped_confidence():
 
     capped = {entry["claim"] for entry in result["coverage_gate"]["capped_confidence_claims"]}
     assert "overall_case_confidence" in capped
-    # No verdict fields
-    assert "allow_strong_conclusion" not in result
-    assert "lane_state_board" not in result
+    assert result["lane_state_board"]["allow_strong_conclusion"] is False
 
 
 def test_initial_triage_bridge_requires_incident_central_multi_axis_window():

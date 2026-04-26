@@ -465,24 +465,47 @@ export default function Settings() {
                   <span>Output:</span>
                   <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{triageResult.output_dir}</span>
                 </div>
-                {triageResult.top_findings?.length > 0 && (
+                {triageResult.autonomous_assessment && !triageResult.autonomous_assessment.error && (
+                  <div style={{
+                    marginTop: 12,
+                    padding: 10,
+                    borderRadius: 8,
+                    background: triageResult.autonomous_assessment.investigation_incomplete ? 'rgba(245,158,11,0.12)' : 'rgba(59,130,246,0.12)',
+                    border: '1px solid var(--border)',
+                    fontSize: 12,
+                  }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                      Autonomous decision: {String(triageResult.autonomous_assessment.decision || 'unknown').replace(/_/g, ' ')}
+                    </div>
+                    <div style={{ color: 'var(--text-dim)' }}>
+                      {String(triageResult.autonomous_assessment.verdict || 'unknown').replace(/_/g, ' ')}
+                      {' '}| confidence {triageResult.autonomous_assessment.confidence || 'unknown'}
+                    </div>
+                  </div>
+                )}
+                {(triageResult.alert_summary?.key_findings || triageResult.top_findings || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Top Findings:</div>
-                    {triageResult.top_findings.map((f: any, i: number) => (
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Key Findings:</div>
+                    {(triageResult.alert_summary?.key_findings || triageResult.top_findings || []).map((f: any, i: number) => {
+                      const tier = f.priority_tier || f.severity || 'info';
+                      const label = f.rule_name || f.rule || 'finding';
+                      const count = f.matching_count ?? f.count ?? 0;
+                      return (
                       <div key={i} style={{ display: 'flex', gap: 8, padding: '2px 0' }}>
                         <span style={{
                           fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                          background: f.severity === 'critical' ? 'rgba(239,68,68,0.2)' :
-                            f.severity === 'high' ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.05)',
-                          color: f.severity === 'critical' ? '#ef4444' :
-                            f.severity === 'high' ? '#f59e0b' : 'var(--text-dim)',
+                          background: tier === 'critical' ? 'rgba(239,68,68,0.2)' :
+                            tier === 'high' ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.05)',
+                          color: tier === 'critical' ? '#ef4444' :
+                            tier === 'high' ? '#f59e0b' : 'var(--text-dim)',
                         }}>
-                          {f.severity}
+                          {tier}
                         </span>
-                        <span>{f.rule}</span>
-                        <span style={{ color: 'var(--text-dim)' }}>({f.count})</span>
+                        <span>{label}</span>
+                        <span style={{ color: 'var(--text-dim)' }}>({count})</span>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </>

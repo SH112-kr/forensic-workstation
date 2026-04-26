@@ -360,8 +360,8 @@ function go(name) {
 // ── Summary Tab ──
 function renderRisk() {
   const f = DATA.findings || [];
-  const hasCrit = f.some(x => x.severity==='critical');
-  const hasHigh = f.some(x => x.severity==='high');
+  const hasCrit = f.some(x => (x.priority_tier||x.severity)==='critical');
+  const hasHigh = f.some(x => (x.priority_tier||x.severity)==='high');
   const lv = hasCrit?'critical':hasHigh?'high':f.length?'medium':'low';
   const icons = {critical:'\u26A0\uFE0F',high:'\u26A0',medium:'\u2139\uFE0F',low:'\u2705'};
   const labels = {critical:'CRITICAL',high:'HIGH',medium:'MEDIUM',low:'LOW'};
@@ -405,7 +405,7 @@ function renderKeyFindings() {
   const el = document.getElementById('key-findings');
   const findings = (DATA.alert_summary && DATA.alert_summary.key_findings && DATA.alert_summary.key_findings.length)
     ? DATA.alert_summary.key_findings
-    : (DATA.findings||[]).filter(f=>f.severity==='critical'||f.severity==='high');
+    : (DATA.findings||[]).filter(f=>(f.priority_tier||f.severity)==='critical'||(f.priority_tier||f.severity)==='high');
   if (!findings.length) { el.innerHTML='<div class="empty">No critical or high severity findings.</div>'; return; }
   el.innerHTML = findings.map((f) => {
     const patterns = Object.entries(f.matched_patterns||{}).sort((a,b)=>b[1]-a[1]).slice(0,8)
@@ -427,9 +427,9 @@ function renderKeyFindings() {
     const rem = (f.details||[]).length - 3;
     return `<div class="finding" onclick="this.classList.toggle('open')">
       <div class="finding-header">
-        <div class="finding-sev"><span class="badge badge-${f.severity}">${f.severity.toUpperCase()}</span></div>
+        <div class="finding-sev"><span class="badge badge-${f.priority_tier||f.severity||'info'}">${String(f.priority_tier||f.severity||'info').toUpperCase()}</span></div>
         <div class="finding-body"><h4>${f.rule_name.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}</h4>
-          <p>${f.description}</p>
+          <p>${esc(f.display_text||f.query_description||f.description||'')}</p>
           <div style="margin-top:6px">${(f.mitre_techniques||[]).map(t=>'<span class="tag">'+t+'</span>').join(' ')}</div></div>
         <div class="finding-count">${f.matching_count.toLocaleString()}</div>
       </div>
@@ -655,10 +655,10 @@ def generate_report(
     from analysis.evidence_strength import score_findings
     from analysis.anti_forensics import detect_anti_forensics as _anti_forensics
     from analysis.coverage import build_coverage_report
-    from analysis.bias_remediation import (
-        build_lane_evidence_summary_surface,
-        is_bias_remediation_enabled,
-    )
+    from analysis.bias_remediation import build_bias_remediation_surface, is_bias_remediation_enabled
+    from analysis.autonomous_assessment import assess_autonomous_case
+    from analysis.evidence_quality import build_evidence_quality_surface
+    from analysis.causal_chain import build_causal_chain_candidates
 
     metadata = axiom.get_metadata()
     types = axiom.get_artifact_type_counts()
@@ -680,9 +680,18 @@ def generate_report(
     except Exception:
         coverage = {"ok": False, "coverage": [], "summary": {}, "case_context": {}}
     lane_evidence_summary: dict[str, Any] = {}
+    bias_surface: dict[str, Any] = {}
     if is_bias_remediation_enabled():
-        lane_surface = build_lane_evidence_summary_surface(axiom)
-        lane_evidence_summary = lane_surface.get("lane_evidence_summary", {})
+        bias_surface = build_bias_remediation_surface(axiom, sus)
+        lane_evidence_summary = bias_surface.get("lane_evidence_summary", {})
+    quality_surface = build_evidence_quality_surface(axiom, sus)
+    causal_surface = build_causal_chain_candidates(axiom)
+    autonomous_assessment = assess_autonomous_case(
+        axiom,
+        {"findings": sus.get("findings", []), **bias_surface, **quality_surface, **causal_surface},
+        anti_forensics=anti,
+        coverage=coverage,
+    )
     json_data = {
         "findings": sus.get("findings", []),
         "strength_rollup": sus.get("strength_rollup", {}),
@@ -693,6 +702,10 @@ def generate_report(
         "anti_forensics": anti,
         "coverage": coverage,
         "lane_evidence_summary": lane_evidence_summary,
+        **bias_surface,
+        **quality_surface,
+        **causal_surface,
+        "autonomous_assessment": autonomous_assessment,
     }
 
     if masker and masker.enabled:

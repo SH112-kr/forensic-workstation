@@ -23,6 +23,7 @@ Typical workflow:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -156,6 +157,82 @@ def _cmd_finalize(args) -> int:
     return 0
 
 
+def _cmd_bias_guard(args) -> int:
+    from regression.bias_guard import run_bias_guard
+    from regression.claude_review import run_claude_review
+
+    result = run_bias_guard(
+        include_external=not args.no_external,
+        download_external=args.download_external,
+    )
+    claude_review = None
+    if args.claude_review:
+        claude_review = run_claude_review(
+            result,
+            output_path=args.claude_review_output or None,
+            dry_run=args.claude_review_dry_run,
+        )
+        result["claude_review"] = claude_review
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(
+            f"ok={result['ok']} checks={result['check_count']} "
+            f"failed={result['failed_count']} policy={result['policy']}"
+        )
+        for failure in result["failures"]:
+            print(f"- {failure['name']}: {failure.get('bias_type')} {failure.get('issues', [])}")
+        if result["residual_risks"]:
+            print("residual_risks:")
+            for risk in result["residual_risks"]:
+                print(f"- {risk}")
+        if claude_review:
+            print(f"claude_review_ok={claude_review.get('ok')}")
+    return 0 if result["ok"] and (not claude_review or claude_review.get("ok")) else 1
+
+
+def _cmd_claude_review(args) -> int:
+    from regression.claude_review import run_claude_review
+
+    if args.input_json:
+        with open(args.input_json, "r", encoding="utf-8") as f:
+            summary = json.load(f)
+    else:
+        from regression.bias_guard import run_bias_guard
+
+        summary = run_bias_guard(include_external=not args.no_external)
+    result = run_claude_review(
+        summary,
+        output_path=args.output or None,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0 if result["ok"] else 1
+
+
+def _cmd_autonomous_validation(args) -> int:
+    from regression.autonomous_validation_runner import run_autonomous_validation
+
+    result = run_autonomous_validation(
+        download=args.download,
+        run_tests=not args.no_tests,
+        claude_review=args.claude_review,
+        output_dir=args.output_dir or "external/dfir_validation/autonomous_runs",
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"ok={result['ok']} output={result['output_path']} report={result['report_path']}")
+        for probe in result["e01_probes"]:
+            print(
+                f"- {probe['case_id']}: status={probe.get('status')} "
+                f"records={probe.get('record_count')} issues={probe.get('issues')}"
+            )
+        if result.get("claude_review"):
+            print(f"claude_review_ok={result['claude_review'].get('ok')}")
+    return 0 if result["ok"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="regression.cli",
@@ -175,6 +252,56 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--session-log", default="")
 
     sub.add_parser("finalize", help="Aggregate ingested runs into CSV + markdown")
+
+    bias = sub.add_parser(
+        "bias-guard",
+        help="Run synthetic and external overcall/undercall regression checks",
+    )
+    bias.add_argument("--json", action="store_true", help="Emit full JSON")
+    bias.add_argument(
+        "--no-external",
+        action="store_true",
+        help="Skip allowlisted external DFIR datasets",
+    )
+    bias.add_argument(
+        "--download-external",
+        action="store_true",
+        help="Download missing allowlisted external datasets before validation",
+    )
+    bias.add_argument(
+        "--claude-review",
+        action="store_true",
+        help="After local guard completes, ask Claude Code to critique the result",
+    )
+    bias.add_argument(
+        "--claude-review-output",
+        default="",
+        help="Optional JSON file path for Claude review output",
+    )
+    bias.add_argument(
+        "--claude-review-dry-run",
+        action="store_true",
+        help="Build the Claude review prompt without invoking Claude",
+    )
+
+    claude = sub.add_parser(
+        "claude-review",
+        help="Ask Claude Code to review a completed validation summary",
+    )
+    claude.add_argument("--input-json", default="", help="Validation summary JSON to review")
+    claude.add_argument("--output", default="", help="Optional JSON output path")
+    claude.add_argument("--dry-run", action="store_true", help="Print prompt payload without invoking Claude")
+    claude.add_argument("--no-external", action="store_true", help="When no input is supplied, skip external datasets")
+
+    auto = sub.add_parser(
+        "autonomous-validation",
+        help="Run allowlisted external validation, E01 lazy probes, pytest, and optional Claude review",
+    )
+    auto.add_argument("--download", action="store_true", help="Download missing allowlisted datasets")
+    auto.add_argument("--no-tests", action="store_true", help="Skip pytest")
+    auto.add_argument("--claude-review", action="store_true", help="Ask Claude to review risk/discussion items")
+    auto.add_argument("--output-dir", default="", help="Output directory for run records")
+    auto.add_argument("--json", action="store_true", help="Emit full JSON")
 
     return parser
 
@@ -198,6 +325,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_ingest(args)
     if args.command == "finalize":
         return _cmd_finalize(args)
+    if args.command == "bias-guard":
+        return _cmd_bias_guard(args)
+    if args.command == "claude-review":
+        return _cmd_claude_review(args)
+    if args.command == "autonomous-validation":
+        return _cmd_autonomous_validation(args)
 
     parser.print_help()
     return 1

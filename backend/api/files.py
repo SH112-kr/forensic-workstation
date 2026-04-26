@@ -13,6 +13,11 @@ router = APIRouter(prefix="/api/files", tags=["files"])
 # Allowed extensions
 FORENSIC_EXTENSIONS = {
     ".mfdb": "AXIOM Case",
+    ".e01": "Disk Image",
+    ".ex01": "Disk Image",
+    ".vmdk": "Disk Image",
+    ".dd": "Disk Image",
+    ".img": "Disk Image",
     ".raw": "Memory Dump",
     ".vmem": "Memory Dump",
     ".dmp": "Memory Dump",

@@ -812,6 +812,91 @@ def _build_lane_evidence_summary(
     return summary
 
 
+def _build_lane_state_board(
+    top_windows: list[dict[str, Any]],
+    coverage_gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Return conservative per-lane state and strong-conclusion gate.
+
+    This is deliberately derived from window axes and coverage only. It does
+    not classify the incident family; it only says whether the three playbook
+    lanes have enough corroboration to support a strong end-to-end conclusion.
+    """
+    statuses = coverage_gate.get("statuses", {}) or {}
+    blocked_claims = set(coverage_gate.get("blocked_claims", []) or [])
+    capped_claims = {
+        str(item.get("claim", ""))
+        for item in coverage_gate.get("capped_confidence_claims", []) or []
+        if isinstance(item, dict)
+    }
+    blocked_by_lane = {
+        "ingress_access": {"srum_network_coverage_gate"},
+        "execution_impact": {"mass_file_modification_gate"},
+        "persistence_cleanup": set(),
+    }
+
+    board: dict[str, Any] = {}
+    for lane, axes in _LANE_AXIS_MAP.items():
+        axis_total = 0
+        matched: list[str] = []
+        for window in top_windows:
+            axis_counts = window.get("axis_counts") or {}
+            for axis in axes:
+                count = int(axis_counts.get(axis, 0) or 0)
+                axis_total += count
+                if count and axis not in matched:
+                    matched.append(axis)
+
+        families = [
+            family
+            for family in _LANE_FAMILY_MAP[lane]
+            if statuses.get(family) in {"present", "thin"}
+        ]
+        if lane == "ingress_access" and any(w.get("tool_families") for w in top_windows):
+            families.append("remote_tool_family")
+
+        lane_blocked = bool(blocked_claims & blocked_by_lane.get(lane, set()))
+        if axis_total >= 2 and not lane_blocked:
+            state = "confirmed"
+        elif axis_total >= 1:
+            state = "suggested"
+        elif families:
+            state = "unverified"
+        else:
+            state = "not_seen"
+
+        basis = []
+        if matched:
+            basis.append("matched axes: " + ", ".join(matched[:4]))
+        if families:
+            basis.append("available families: " + ", ".join(families[:4]))
+        if lane_blocked:
+            basis.append("coverage gate blocks one or more claims for this lane")
+
+        board[lane] = {
+            "state": state,
+            "basis": basis,
+            "axis_event_count": axis_total,
+            "artifact_families_seen": families,
+        }
+
+    blocked_lanes = [
+        lane for lane in _LANE_AXIS_MAP
+        if board[lane]["state"] in {"unverified", "not_seen"}
+    ]
+    board["blocked_lanes"] = blocked_lanes
+    board["allow_strong_conclusion"] = (
+        not blocked_lanes
+        and all(board[lane]["state"] in {"confirmed", "suggested"} for lane in _LANE_AXIS_MAP)
+        and "overall_case_confidence" not in capped_claims
+    )
+    if "overall_case_confidence" in capped_claims:
+        board.setdefault("notes", []).append(
+            "Coverage capped overall case confidence; keep conclusions qualified."
+        )
+    return board
+
+
 def initial_triage(
     connector: Any,
     *,
@@ -858,6 +943,7 @@ def initial_triage(
     )
 
     lane_evidence_summary = _build_lane_evidence_summary(top_windows, coverage_gate)
+    lane_state_board = _build_lane_state_board(top_windows, coverage_gate)
     precursor_context = _build_precursor_context(
         connector,
         selected_scope=selected_scope,
@@ -901,6 +987,7 @@ def initial_triage(
             "top_windows": top_windows,
         },
         "lane_evidence_summary": lane_evidence_summary,
+        "lane_state_board": lane_state_board,
         "anchor_days": anchor_days,
         "precursor_context": precursor_context,
         "anchoring_warnings": warnings,

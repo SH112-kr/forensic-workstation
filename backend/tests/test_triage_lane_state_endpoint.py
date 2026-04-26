@@ -23,6 +23,13 @@ def test_lane_state_endpoint_returns_lane_evidence_summary(monkeypatch):
                 "execution_impact": {"artifact_families_seen": ["prefetch"], "event_count": 12},
                 "persistence_cleanup": {"artifact_families_seen": [], "event_count": 0},
             },
+            "lane_state_board": {
+                "ingress_access": {"state": "suggested"},
+                "execution_impact": {"state": "confirmed"},
+                "persistence_cleanup": {"state": "not_seen"},
+                "blocked_lanes": ["persistence_cleanup"],
+                "allow_strong_conclusion": False,
+            },
         },
     )
 
@@ -34,9 +41,7 @@ def test_lane_state_endpoint_returns_lane_evidence_summary(monkeypatch):
     assert payload["lane_evidence_summary"]["execution_impact"]["event_count"] == 12
     assert payload["lane_evidence_summary"]["ingress_access"]["artifact_families_seen"] == ["evtx_4624"]
 
-    # Old verdict fields must be absent
-    assert "lane_state_board" not in payload
-    assert "allow_strong_conclusion" not in payload
+    assert payload["lane_state_board"]["allow_strong_conclusion"] is False
 
 
 def test_lane_state_endpoint_returns_empty_when_disabled(monkeypatch):

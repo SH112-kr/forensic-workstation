@@ -26,6 +26,14 @@ function formatFindingTitle(ruleName: string) {
   return String(ruleName || '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
 }
 
+function findingTier(finding: any) {
+  return finding?.priority_tier || finding?.severity || 'info';
+}
+
+function findingText(finding: any) {
+  return finding?.display_text || finding?.query_description || finding?.description || '';
+}
+
 function downgradeRiskLevel(level: string | null, allowStrongConclusion: boolean) {
   if (!level || allowStrongConclusion) return level;
   if (level === 'critical') return 'high';
@@ -57,8 +65,11 @@ export default function Dashboard() {
     get('/api/cases/list').then((d) => setCaseCount((d.cases || []).length || 1)).catch(() => {});
   }, [caseInfo]);
 
+  const isDirectMode = !!caseInfo?.case_mode; // e01 / memory — no AXIOM connector
+
   useEffect(() => {
     if (!caseInfo) return;
+    if (isDirectMode) return; // skip all AXIOM-specific calls for image-only cases
 
     const shouldLoadDetection = !detection;
     const shouldLoadLaneState = laneStateBoard === null;
@@ -124,9 +135,90 @@ export default function Dashboard() {
 
   if (!caseInfo) return null;
 
+  // E01 / memory direct-analysis mode — no AXIOM artifacts available
+  if (isDirectMode) {
+    const isE01 = caseInfo.case_mode === 'e01';
+    const modeLabel = isE01 ? 'Disk Image (E01)' : 'Memory Dump';
+    const quickActions: { label: string; view: string; desc: string }[] = isE01
+      ? [
+          { label: 'Binary Analysis', view: 'binary', desc: 'Extract & Ghidra-analyze files from image' },
+          { label: 'Registry Analysis', view: 'registry', desc: 'Browse NTFS registry hives' },
+          { label: 'Auto Triage', view: 'settings', desc: 'Run KAPE on mounted image to unlock full analysis' },
+        ]
+      : [
+          { label: 'Memory Analysis', view: 'memory', desc: 'Run Volatility plugins against this dump' },
+        ];
+    return (
+      <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+        <div style={{
+          padding: '16px 20px', borderRadius: 10, marginBottom: 20,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#f59e0b', marginBottom: 6 }}>
+            Direct Image Analysis — {modeLabel}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+            {isE01
+              ? 'The E01 image is mounted via dissect. Artifact-level detection (Prefetch, SRUM, Event Logs) requires KAPE output. Use Binary Analysis to extract and examine individual files, or run Auto Triage to generate a full KAPE-parsed case.'
+              : 'Memory dump loaded. Use Memory Analysis for Volatility-based process and artifact extraction.'}
+          </div>
+        </div>
+
+        <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Available actions
+        </h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 24 }}>
+          {quickActions.map((a) => (
+            <div
+              key={a.view}
+              onClick={() => setActiveView(a.view)}
+              style={{
+                padding: '16px 18px', borderRadius: 10, cursor: 'pointer',
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                transition: 'border-color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{a.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{a.desc}</div>
+            </div>
+          ))}
+        </div>
+
+        {isE01 && (
+          <>
+            <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              To enable full artifact detection
+            </h3>
+            <div style={{
+              padding: '14px 18px', borderRadius: 10,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.7,
+            }}>
+              <div style={{ marginBottom: 6 }}>
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>1.</span> Mount the E01 with Arsenal Image Mounter or similar — obtain a drive letter (e.g. <code style={{ fontFamily: 'monospace' }}>G:</code>)
+              </div>
+              <div style={{ marginBottom: 6 }}>
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>2.</span> Go to <span
+                  onClick={() => setActiveView('settings')}
+                  style={{ color: 'var(--accent)', cursor: 'pointer', fontWeight: 600 }}
+                >Settings → Auto Triage</span> and enter that drive letter
+              </div>
+              <div>
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>3.</span> KAPE collects + parses artifacts → full detection, MITRE, timeline become available
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   const findings = detection?.findings || [];
   const keyFindings = detection?.alert_summary?.key_findings || findings.slice(0, 10);
   const balanceWarnings = detection?.alert_summary?.balance?.warnings || [];
+  const autonomousAssessment = detection?.autonomous_assessment || null;
   const loading = detectionLoading;
   const laneBoard = laneStateBoard || null;
   const laneError = laneBoard?.error || '';
@@ -134,8 +226,8 @@ export default function Dashboard() {
   const allowStrongConclusion = hasLaneBoard ? laneBoard?.allow_strong_conclusion !== false : true;
   const blockedLaneLabels = (laneBoard?.blocked_lanes || []).map((lane: string) => LANE_LABELS[lane as keyof typeof LANE_LABELS] || lane);
 
-  const hasCritical = keyFindings.some((f: any) => f.severity === 'critical');
-  const hasHigh = keyFindings.some((f: any) => f.severity === 'high');
+  const hasCritical = keyFindings.some((f: any) => findingTier(f) === 'critical');
+  const hasHigh = keyFindings.some((f: any) => findingTier(f) === 'high');
   const rawRiskLevel = loading ? null : hasCritical ? 'critical' : hasHigh ? 'high' : keyFindings.length ? 'medium' : 'low';
   const riskLevel = downgradeRiskLevel(rawRiskLevel, allowStrongConclusion);
   const riskDowngraded = rawRiskLevel !== null && rawRiskLevel !== riskLevel;
@@ -150,7 +242,7 @@ export default function Dashboard() {
   const activePhases = new Set(phases.map((p: any) => p.tactic));
   const clickableCardStyle: React.CSSProperties = { cursor: 'pointer', transition: 'transform 0.1s' };
 
-  const criticalCount = findings.filter((f: any) => f.severity === 'critical').length;
+  const criticalCount = findings.filter((f: any) => findingTier(f) === 'critical').length;
   const nextSteps: { text: string; cta: string; onClick: () => void }[] = [];
   if (criticalCount > 0) {
     nextSteps.push({
@@ -213,6 +305,43 @@ export default function Dashboard() {
             </div>
           </div>
           <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review</span>
+        </div>
+      )}
+
+      {autonomousAssessment && !autonomousAssessment.error && (
+        <div
+          onClick={() => setActiveView('detection')}
+          style={{
+            padding: '12px 16px',
+            borderRadius: 10,
+            marginBottom: 12,
+            background: autonomousAssessment.investigation_incomplete ? 'var(--high-bg)' : 'var(--accent-light)',
+            border: `1px solid ${autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            cursor: 'pointer',
+          }}
+          title="Review autonomous assessment details in Detection"
+        >
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <div style={{
+              fontWeight: 700,
+              color: autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)',
+            }}>
+              Autonomous decision: {String(autonomousAssessment.decision || 'unknown').replace(/_/g, ' ')}
+            </div>
+            <div style={{ color: 'var(--text-dim)' }}>
+              Verdict {String(autonomousAssessment.verdict || 'unknown').replace(/_/g, ' ')}
+              {' '}| confidence {autonomousAssessment.confidence || 'unknown'}
+              {autonomousAssessment.blocked_lanes?.length ? ` | blocked: ${autonomousAssessment.blocked_lanes.join(', ')}` : ''}
+            </div>
+          </div>
+          <span style={{
+            color: autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)',
+            fontSize: 12,
+            fontWeight: 600,
+          }}>Details</span>
         </div>
       )}
 
@@ -643,12 +772,12 @@ export default function Dashboard() {
           }}
           onClick={() => setActiveView('detection')}
         >
-          <span className={`badge badge-${finding.severity}`}>{String(finding.severity || 'info').toUpperCase()}</span>
+          <span className={`badge badge-${findingTier(finding)}`}>{String(findingTier(finding)).toUpperCase()}</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
               {formatFindingTitle(finding.rule_name)}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{finding.description}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{findingText(finding)}</div>
             <div style={{ marginTop: 4 }}>
               {(finding.mitre_techniques || []).map((technique: string) => (
                 <span

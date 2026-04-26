@@ -75,3 +75,34 @@ def test_resolve_active_case_evidence_finds_relative_basename_near_case(monkeypa
     monkeypatch.setattr(_state, "_ACTIVE_CASE_FILE", str(active_case))
 
     assert _state.resolve_active_case_evidence("") == _state.normalize_path(str(evidence_path))
+
+
+def test_resolve_allowed_evidence_from_single_standalone_disk_image(monkeypatch, tmp_path):
+    allowed = tmp_path / ".allowed_evidence.json"
+    image = tmp_path / "incident.E01"
+    image.write_text("", encoding="utf-8")
+    allowed.write_text(json.dumps({
+        "paths": [str(image)],
+        "source": "project:create",
+    }), encoding="utf-8")
+    monkeypatch.setattr(_state, "_ALLOWED_EVIDENCE_FILE", str(allowed))
+
+    expected = _state.normalize_path(str(image))
+    assert _state.resolve_allowed_evidence("", extensions=(".e01",)) == expected
+    assert _state.resolve_allowed_evidence("active_case", extensions=(".e01",)) == expected
+    assert _state.resolve_allowed_evidence("incident.E01", extensions=(".e01",)) == expected
+
+
+def test_resolve_allowed_evidence_requires_unique_default(monkeypatch, tmp_path):
+    allowed = tmp_path / ".allowed_evidence.json"
+    one = tmp_path / "one.E01"
+    two = tmp_path / "two.E01"
+    one.write_text("", encoding="utf-8")
+    two.write_text("", encoding="utf-8")
+    allowed.write_text(json.dumps({
+        "paths": [str(one), str(two)],
+        "source": "project:create",
+    }), encoding="utf-8")
+    monkeypatch.setattr(_state, "_ALLOWED_EVIDENCE_FILE", str(allowed))
+
+    assert _state.resolve_allowed_evidence("", extensions=(".e01",)) == ""

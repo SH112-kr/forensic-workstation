@@ -104,14 +104,37 @@ class FixtureArtifactQueries:
         return out
 
     # ── Event log queries ────────────────────────────────────────────
-    def query_event_logs(self, eids: list[int] | None = None, limit: int = 100) -> list[dict]:
+    def query_event_logs(
+        self,
+        eids: list[int] | None = None,
+        event_ids: list[int] | None = None,
+        provider: str = "",
+        keyword_in_data: str = "",
+        limit: int = 100,
+    ) -> list[dict]:
         rows = self._hits_of(("Windows Event Logs",))
+        eids = event_ids if event_ids is not None else eids
         if eids:
             want = {str(e) for e in eids}
             rows = [
                 r for r in rows
                 if any(w in str(r.get("Event ID", "")) or w in r.get("artifact_type", "")
                        for w in want)
+            ]
+        if provider:
+            needle = provider.lower()
+            rows = [
+                r for r in rows
+                if needle in str(r.get("Provider Name", "")).lower()
+                or needle in str(r.get("provider", "")).lower()
+                or needle in str(r.get("artifact_type", "")).lower()
+            ]
+        if keyword_in_data:
+            needle = keyword_in_data.lower()
+            rows = [
+                r for r in rows
+                if needle in str(r.get("Event Data", "")).lower()
+                or needle in " ".join(str(v) for v in r.values()).lower()
             ]
         return rows[: limit or len(rows)]
 

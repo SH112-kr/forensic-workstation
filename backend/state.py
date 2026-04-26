@@ -162,6 +162,34 @@ def resolve_active_case_evidence(path_or_ref: str = "") -> str:
     return ""
 
 
+def resolve_allowed_evidence(path_or_ref: str = "", extensions: tuple[str, ...] = ()) -> str:
+    """Resolve a path strictly from the persisted user-selected allowlist.
+
+    This is for evidence types that can be uploaded without an AXIOM/KAPE case
+    wrapper, such as a standalone E01. It never searches the filesystem.
+    """
+    raw = str(path_or_ref or "").strip()
+    allowed = load_allowed_evidence().get("paths", [])
+    if extensions:
+        extensions_lc = tuple(ext.lower() for ext in extensions)
+        allowed = [p for p in allowed if str(p).lower().endswith(extensions_lc)]
+
+    if raw in {"", "active_case"}:
+        return allowed[0] if len(allowed) == 1 else ""
+
+    normalized = normalize_path(raw)
+    for path in allowed:
+        if normalized == path:
+            return path
+
+    raw_lc = raw.lower()
+    matches = [
+        path for path in allowed
+        if raw_lc == os.path.basename(path).lower()
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
 def is_path_allowed(path: str) -> bool:
     """Return True when the path was explicitly selected by the user."""
     norm = normalize_path(path)

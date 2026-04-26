@@ -128,28 +128,55 @@ async def close_case():
 @router.get("/summary")
 async def get_summary():
     from state import app_state
-    try:
-        result = app_state.get_axiom().get_metadata()
 
-        if result.get("source_type") == "kape":
-            try:
-                from core.kape_log_parser import get_diagnostics
-                diag = get_diagnostics(result.get("source_path", ""))
-                if "error" not in diag:
-                    result["kape_diagnostics"] = _build_kape_diagnostics(diag)
-            except Exception:
-                pass
+    # AXIOM / KAPE connector가 있으면 우선 사용
+    axiom = app_state.get("axiom")
+    if axiom and axiom.is_connected():
+        try:
+            result = axiom.get_metadata()
+            if result.get("source_type") == "kape":
+                try:
+                    from core.kape_log_parser import get_diagnostics
+                    diag = get_diagnostics(result.get("source_path", ""))
+                    if "error" not in diag:
+                        result["kape_diagnostics"] = _build_kape_diagnostics(diag)
+                except Exception:
+                    pass
+            return result
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # E01 이미지만 로드된 경우 — 제한된 메타데이터 반환
+    e01 = app_state.get("e01")
+    if e01 and e01.is_connected():
+        meta = e01.get_metadata()
+        return {
+            "case_name": meta.get("hostname") or "E01 Image",
+            "case_mode": "e01",
+            "source_type": "e01",
+            "source_path": meta.get("image_path", ""),
+            "total_hits": 0,
+            "artifact_type_count": 0,
+            "date_range_start": "",
+            "date_range_end": "",
+            "evidence_sources": [meta.get("image_path", "")],
+            "artifact_types": {},
+            "os_type": meta.get("os_type", ""),
+            "hostname": meta.get("hostname", ""),
+            "volumes": meta.get("volumes", []),
+        }
+
+    raise HTTPException(status_code=400, detail="케이스가 열려있지 않습니다. 먼저 케이스를 열어주세요.")
 
 
 @router.get("/types")
 async def get_artifact_types():
     from state import app_state
+    axiom = app_state.get("axiom")
+    if not axiom or not axiom.is_connected():
+        return {"artifact_types": [], "total_types": 0}
     try:
-        types = app_state.get_axiom().get_artifact_type_counts()
+        types = axiom.get_artifact_type_counts()
         return {"artifact_types": types, "total_types": len(types)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

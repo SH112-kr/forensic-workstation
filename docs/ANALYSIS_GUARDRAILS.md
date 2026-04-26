@@ -24,6 +24,40 @@ These rules exist to prevent case-specific overfitting and early anchoring.
   - case-specific overfitting
   - loss of cross-case applicability
 
+## Non-volatile autonomous E01 rules
+
+These rules must hold across new sessions and new execution environments. They
+are enforced by tests where possible.
+
+- Active autonomous improvement targets must be Windows OS incident/CTF images.
+  USB-only and data-volume-only images may remain as historical parser coverage
+  references, but must not be enabled in the active E01 validation loop.
+- Blind analysis must write a report before public answer material, writeups, or
+  comparison JSON are opened. A blind report must record
+  `answer_material_used=false`.
+- Known-answer markers, expected paths, and public writeup facts must never be
+  injected into core lazy artifact records. They may be used only in separate
+  regression scoring/comparison steps.
+- `backend/core/**` must not contain case-specific names, challenge aliases, or
+  answer strings from public benchmark cases. Case-specific data belongs in
+  `backend/regression/**`, tests, or external validation records.
+- Prefetch semantic output is execution evidence that remains
+  `pending_corroboration` until independently corroborated by SRUM, EVTX,
+  AmCache, Registry, MFT, or application logs.
+- Prefetch absence is not negative evidence unless OS type, ProductType, and
+  Prefetch configuration prove Prefetch should have been available.
+- Prefetch referenced paths are not execution evidence by themselves.
+- Integrated timeline fields must preserve timestamp meaning, timezone
+  certainty, confidence, and corroboration state. A time-near chain is a
+  follow-up lead, not proof of causation.
+- Timeline correlation must avoid broad same-host or same-log joins. Candidate
+  chains should require meaningful shared context such as a remote-access tool,
+  LOLBin, user/object overlap, or another specific artifact-level connection.
+- E01-extracted files are static-analysis-only. Executables, DLLs, scripts, and
+  payloads recovered from evidence must not be executed.
+- LLM-facing artifacts must pass privacy projection/redaction before being sent
+  to a model or MCP consumer.
+
 ## Validation rules
 
 - Validate every implementation step on a real case when feasible.

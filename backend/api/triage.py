@@ -260,6 +260,39 @@ def _run_triage_background(req: TriageRequest, out_dir: str, collected_dir: str,
         except Exception:
             pass
 
+        bias_surface: dict[str, Any] = {}
+        try:
+            from core.analysis.bias_remediation import build_bias_remediation_surface
+            bias_surface = build_bias_remediation_surface(
+                axiom,
+                {"findings": findings},
+                findings=findings,
+                triage_payload=triage,
+            )
+        except Exception as e:
+            bias_surface = {
+                "alert_summary": {"error": str(e)},
+                "candidate_axes": {"error": str(e), "candidate_axes": []},
+                "lane_state_board": {"error": str(e)},
+            }
+        autonomous_assessment: dict[str, Any] = {}
+        quality_surface: dict[str, Any] = {}
+        causal_surface: dict[str, Any] = {}
+        try:
+            from core.analysis.autonomous_assessment import assess_autonomous_case
+            from core.analysis.evidence_quality import build_evidence_quality_surface
+            from core.analysis.causal_chain import build_causal_chain_candidates
+
+            quality_surface = build_evidence_quality_surface(axiom, {"findings": findings})
+            causal_surface = build_causal_chain_candidates(axiom)
+            autonomous_assessment = assess_autonomous_case(
+                axiom,
+                {"findings": findings, **bias_surface, **quality_surface, **causal_surface},
+                triage_payload=triage,
+            )
+        except Exception as e:
+            autonomous_assessment = {"error": str(e)}
+
         total_duration = round(time.time() - t_start, 1)
         _triage_state["progress"].append({"time": time.time(), "msg": f"Complete! Total: {total_duration}s"})
 
@@ -279,6 +312,10 @@ def _run_triage_background(req: TriageRequest, out_dir: str, collected_dir: str,
                 "mitre_techniques": mitre_count,
             },
             "initial_triage": initial_triage_summary,
+            **bias_surface,
+            **quality_surface,
+            **causal_surface,
+            "autonomous_assessment": autonomous_assessment,
             "steps": steps,
         }
 

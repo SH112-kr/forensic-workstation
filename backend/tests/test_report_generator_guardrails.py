@@ -32,6 +32,7 @@ def _patch_common(monkeypatch):
     import analysis.anti_forensics as anti_forensics
     import analysis.coverage as coverage
     import analysis.bias_remediation as bias_remediation
+    import analysis.autonomous_assessment as autonomous_assessment
 
     monkeypatch.setattr(suspicious, "find_suspicious", lambda *_args, **_kwargs: {
         "findings": [
@@ -58,15 +59,38 @@ def _patch_common(monkeypatch):
     monkeypatch.setattr(coverage, "build_coverage_report", lambda *_args, **_kwargs: {"summary": {}, "coverage": []})
     monkeypatch.setattr(
         bias_remediation,
-        "build_lane_evidence_summary_surface",
+        "build_bias_remediation_surface",
         lambda *_args, **_kwargs: {
+            "alert_summary": {
+                "key_findings": [
+                    {
+                        "rule_name": "evtx_eid_7045_service_installs",
+                        "priority_tier": "medium",
+                        "display_text": "EID 7045 service install events.",
+                        "matching_count": 3,
+                        "details": [],
+                    }
+                ],
+                "balance": {"warnings": []},
+                "surface_policy": "balanced_per_category_rule",
+            },
+            "candidate_axes": {"candidate_axes": [{"axis_id": "persistence", "label": "Persistence"}]},
             "lane_evidence_summary": {
                 "ingress_access": {"artifact_families_seen": ["evtx_4624"], "event_count": 5},
                 "execution_impact": {"artifact_families_seen": ["prefetch"], "event_count": 12},
                 "persistence_cleanup": {"artifact_families_seen": ["services"], "event_count": 3},
-            }
+            },
+            "lane_state_board": {
+                "blocked_lanes": [],
+                "allow_strong_conclusion": True,
+            },
         },
     )
+    monkeypatch.setattr(autonomous_assessment, "assess_autonomous_case", lambda *_args, **_kwargs: {
+        "verdict": "unknown",
+        "confidence": "incomplete",
+        "decision": "collect_more_evidence",
+    })
 
 
 def test_generate_report_renders_key_findings_from_raw_findings(monkeypatch, tmp_path):
@@ -79,11 +103,9 @@ def test_generate_report_renders_key_findings_from_raw_findings(monkeypatch, tmp
     assert result["status"] == "success"
     html = output.read_text(encoding="utf-8")
     assert "<h2>Key Findings</h2>" in html
-    # Verdict/prescription sections must be absent
-    assert "Candidate Axes" not in html
-    assert "Candidate hypotheses" not in html
-    assert "Evidence Alerts" not in html
-    assert "Investigation incomplete" not in html
+    assert "alert_summary" in html
+    assert "candidate_axes" in html
+    assert "autonomous_assessment" in html
     # Raw finding data is present in the embedded JSON
     assert "evtx_eid_7045_service_installs" in html
     assert "T1543.003" in html
@@ -103,6 +125,5 @@ def test_generate_report_lane_evidence_summary_section_rendered(monkeypatch, tmp
     assert "Ingress / Access" in html
     assert "Execution / Impact" in html
     assert "Persistence / Cleanup" in html
-    # No old verdict fields
-    assert "allow_strong_conclusion" not in html
-    assert "lane_state_board" not in html
+    assert "allow_strong_conclusion" in html
+    assert "lane_state_board" in html

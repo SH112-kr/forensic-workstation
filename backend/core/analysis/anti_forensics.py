@@ -14,6 +14,7 @@ Rules covered (intentionally conservative):
 - T1070.002 USN journal deletion        (fsutil usn deletejournal)
 - T1562.006 Sysmon / Windows Defender service stop
 - T1562.002 PowerShell logging tamper   (ScriptBlockLogging / Transcription)
+- T1562.002 EventLog service registry tamper
 - T1070    Anti-forensic tool execution (sdelete, cipher /w, bcdedit disable)
 
 Explicitly out of scope for this rule:
@@ -257,6 +258,29 @@ def _rule_defender_or_sysmon_stop(aq: ArtifactQueries, cmdlines: list[dict[str, 
     return out or None
 
 
+def _rule_eventlog_service_registry_tamper(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
+    """Object-access events touching the EventLog service registry key.
+
+    OTRF Security-Datasets includes scenarios where event logging is disabled
+    by changing service startup configuration rather than by issuing a clear
+    "stop" command. EID 4656/4663 object-access rows against
+    ``HKLM\\SYSTEM\\*\\Services\\EventLog`` preserve that signal.
+    """
+    hits = aq.query_event_logs(event_ids=[4656, 4663], keyword_in_data="EventLog", limit=0)
+    out: list[dict[str, Any]] = []
+    for h in hits:
+        text = _cmdline_text(h)
+        if "services\\eventlog" not in text.lower() and "services\\\\eventlog" not in text.lower():
+            continue
+        out.append(_hit_to_detail(
+            h,
+            "eventlog_service_registry_tamper",
+            "EventLog service registry key access/modification detected",
+            text,
+        ))
+    return out or None
+
+
 def _rule_cleanup_tool_execution(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
     """Prefetch entries for known anti-forensic cleanup utilities."""
     out: list[dict[str, Any]] = []
@@ -306,6 +330,11 @@ def detect_anti_forensics(
             "log_cleared_security_1102", "T1070.001",
             "Security audit log cleared (EID 1102) — strong anti-forensic signal.",
             lambda: _rule_log_cleared(aq),
+        ),
+        (
+            "eventlog_service_registry_tamper", "T1562.002",
+            "Object-access events touching the EventLog service registry key.",
+            lambda: _rule_eventlog_service_registry_tamper(aq),
         ),
         (
             "log_cleared_system_104", "T1070.001",

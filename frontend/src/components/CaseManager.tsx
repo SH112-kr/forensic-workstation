@@ -32,7 +32,7 @@ interface SavedProject {
 interface RecentCase {
   name: string;
   path: string;
-  source: 'project' | 'axiom' | 'kape';
+  source: 'project' | 'axiom' | 'kape' | 'e01' | 'memory';
   totalHits?: number;
   openedAt: string; // ISO
 }
@@ -72,7 +72,7 @@ export default function CaseManager() {
 
   // When rendered as an overlay (caseManagerOpen === true), close the overlay
   // on successful load so the user lands back on the main layout.
-  const goToDashboard = () => { goToDashboard(); setCaseManagerOpen(false); };
+  const goToDashboard = () => { setActiveView('dashboard'); setCaseManagerOpen(false); };
 
   // Tab: 'quick' (single file) or 'project'
   const [tab, setTab] = useState<'project' | 'quick'>('project');
@@ -208,35 +208,53 @@ export default function CaseManager() {
 
       // Check if any case data was loaded
       const loadResults = data.load_results || [];
-      const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
-      if (loaded) {
+      const loadedAxiom = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+      const loadedDirect = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'disk_image' || r.type === 'memory'));
+      if (loadedAxiom) {
         // Fetch case info
         try {
           setLoadingPhase('Preparing dashboard...');
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: projectName || caseData.case_name });
           setKapeDiagnostics(caseData.kape_diagnostics || null);
-          const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          const rc: RecentCase = { name: projectName || caseData.case_name, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loadedAxiom.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
           goToDashboard();
         } catch {
           // Case loaded but summary failed — go to dashboard anyway
           setCaseInfo({
             case_name: projectName,
-            total_hits: loaded.total_hits || 0,
+            total_hits: loadedAxiom.total_hits || 0,
             artifact_type_count: 0,
             date_range_start: '',
             date_range_end: '',
             evidence_sources: [],
             artifact_types: {},
           });
-          const rc: RecentCase = { name: projectName, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loaded.total_hits, openedAt: '' };
+          const rc: RecentCase = { name: projectName, path: data.project_path || scanDirs[0] || '', source: 'project', totalHits: loadedAxiom.total_hits, openedAt: '' };
           saveRecent(rc); setRecentCases(loadRecent());
           goToDashboard();
         }
+      } else if (loadedDirect) {
+        // E01 / memory image loaded — no AXIOM connector, limited analysis
+        const mode = loadedDirect.type === 'disk_image' ? 'e01' : 'memory';
+        const caseName = projectName || (mode === 'e01' ? 'E01 Analysis' : 'Memory Analysis');
+        setCaseInfo({
+          case_name: caseName,
+          case_mode: mode,
+          total_hits: 0,
+          artifact_type_count: 0,
+          date_range_start: '',
+          date_range_end: '',
+          evidence_sources: [],
+          artifact_types: {},
+        });
+        const rc: RecentCase = { name: caseName, path: loadedDirect.path || data.project_path || scanDirs[0] || '', source: mode, totalHits: 0, openedAt: '' };
+        saveRecent(rc); setRecentCases(loadRecent());
+        goToDashboard();
       } else {
-        // No case data — just save project and stay (can use KAPE/Settings)
-        setError('Project saved. No case data (AXIOM/KAPE) was loaded. Use KAPE to collect data first.');
+        // No loadable evidence found
+        setError('Project saved. No loadable evidence found. Add an AXIOM case (.mfdb), KAPE output directory, E01 disk image, or memory dump.');
       }
     } catch (e: any) {
       setError(e.message);
@@ -255,17 +273,33 @@ export default function CaseManager() {
       setLoadingPhase('Loading evidence files...');
       const data = await post('/api/project/open', { path: proj.path });
       const loadResults = data.load_results || [];
-      const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
-      if (loaded) {
+      const loadedAxiom = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+      const loadedDirect = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'disk_image' || r.type === 'memory'));
+      if (loadedAxiom) {
         setLoadingPhase('Preparing dashboard...');
         const caseData = await get('/api/cases/summary');
         setCaseInfo({ ...caseData, case_name: proj.name || caseData.case_name });
         setKapeDiagnostics(caseData.kape_diagnostics || null);
-        saveRecent({ name: proj.name, path: proj.path, source: 'project', totalHits: loaded.total_hits, openedAt: '' });
+        saveRecent({ name: proj.name, path: proj.path, source: 'project', totalHits: loadedAxiom.total_hits, openedAt: '' });
+        setRecentCases(loadRecent());
+        goToDashboard();
+      } else if (loadedDirect) {
+        const mode = loadedDirect.type === 'disk_image' ? 'e01' : 'memory';
+        setCaseInfo({
+          case_name: proj.name,
+          case_mode: mode,
+          total_hits: 0,
+          artifact_type_count: 0,
+          date_range_start: '',
+          date_range_end: '',
+          evidence_sources: [],
+          artifact_types: {},
+        });
+        saveRecent({ name: proj.name, path: loadedDirect.path || proj.path, source: mode, totalHits: 0, openedAt: '' });
         setRecentCases(loadRecent());
         goToDashboard();
       } else {
-        setError('Project opened but no case data loaded.');
+        setError('Project opened but no loadable evidence found. Evidence files may have moved.');
       }
     } catch (e: any) {
       setError(e.message);
@@ -275,6 +309,9 @@ export default function CaseManager() {
     }
   };
 
+  const isImagePath = (p: string) => /\.(e01|ex01|vmdk|dd|raw|img)$/i.test(p.trim());
+  const isMemoryPath = (p: string) => /\.(raw|vmem|dmp|mem)$/i.test(p.trim());
+
   // Quick open (supports multiple paths)
   const handleQuickOpen = async () => {
     const validPaths = quickPaths.map(p => p.trim()).filter(Boolean);
@@ -283,32 +320,76 @@ export default function CaseManager() {
     setLoadingPhase('Opening case files...');
     setQuickError('');
     try {
-      if (validPaths.length === 1) {
-        // Single path: use original endpoint
-        const data = await post('/api/cases/open', { path: validPaths[0] });
-        setCaseInfo(data);
-        setKapeDiagnostics(data.kape_diagnostics || null);
-        const src = validPaths[0].endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
-        saveRecent({ name: data.case_name || validPaths[0].split(/[\\/]/).pop() || '', path: validPaths[0], source: src, totalHits: data.total_hits, openedAt: '' });
+      const imagePaths = validPaths.filter(isImagePath);
+      const otherPaths = validPaths.filter(p => !isImagePath(p));
+
+      if (imagePaths.length > 0 && otherPaths.length === 0) {
+        // E01 / disk image quick open — route through project API
+        const firstName = imagePaths[0].split(/[\\/]/).pop()?.replace(/\.(e01|ex01|vmdk|dd|raw|img)$/i, '') || 'Image Case';
+        const data = await post('/api/project/create', {
+          name: firstName,
+          description: '',
+          incident_date: '',
+          timezone: 'Asia/Seoul',
+          hostname: '',
+          ip_addresses: '',
+          user_accounts: '',
+          known_iocs: '',
+          notes: '',
+          evidence: imagePaths.map(p => ({
+            type: isMemoryPath(p) ? 'memory' : 'disk_image',
+            path: p,
+            label: p.split(/[\\/]/).pop() || '',
+          })),
+        });
+        const loadResults = data.load_results || [];
+        const loadedDirect = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'disk_image' || r.type === 'memory'));
+        if (loadedDirect) {
+          const mode = loadedDirect.type === 'disk_image' ? 'e01' : 'memory';
+          setCaseInfo({
+            case_name: firstName,
+            case_mode: mode,
+            total_hits: 0,
+            artifact_type_count: 0,
+            date_range_start: '',
+            date_range_end: '',
+            evidence_sources: [],
+            artifact_types: {},
+          });
+          saveRecent({ name: firstName, path: imagePaths[0], source: mode, totalHits: 0, openedAt: '' });
+          setRecentCases(loadRecent());
+          goToDashboard();
+        } else {
+          const errItem = loadResults.find((r: any) => r.status === 'error');
+          setQuickError(errItem?.error || 'Failed to load image. Check that the file exists and dissect is installed.');
+        }
       } else {
-        // Multiple paths: use multi endpoint
-        const data = await post('/api/cases/open-multi', { paths: validPaths });
-        setCaseInfo(data);
-        setKapeDiagnostics(data.kape_diagnostics || null);
-        // Save each loaded path as recent
-        for (const r of (data.results || [])) {
-          if (r.status === 'loaded') {
-            const src = r.source_type === 'kape' ? 'kape' as const : 'axiom' as const;
-            saveRecent({ name: r.case_name || r.case_id || r.path.split(/[\\/]/).pop() || '', path: r.path, source: src, totalHits: r.total_hits, openedAt: '' });
+        // AXIOM / KAPE path
+        if (validPaths.length === 1) {
+          const data = await post('/api/cases/open', { path: validPaths[0] });
+          setCaseInfo(data);
+          setKapeDiagnostics(data.kape_diagnostics || null);
+          const src = validPaths[0].endsWith('.mfdb') ? 'axiom' as const : 'kape' as const;
+          saveRecent({ name: data.case_name || validPaths[0].split(/[\\/]/).pop() || '', path: validPaths[0], source: src, totalHits: data.total_hits, openedAt: '' });
+        } else {
+          const data = await post('/api/cases/open-multi', { paths: validPaths });
+          setCaseInfo(data);
+          setKapeDiagnostics(data.kape_diagnostics || null);
+          for (const r of (data.results || [])) {
+            if (r.status === 'loaded') {
+              const src = r.source_type === 'kape' ? 'kape' as const : 'axiom' as const;
+              saveRecent({ name: r.case_name || r.case_id || r.path.split(/[\\/]/).pop() || '', path: r.path, source: src, totalHits: r.total_hits, openedAt: '' });
+            }
           }
         }
+        setRecentCases(loadRecent());
+        goToDashboard();
       }
-      setRecentCases(loadRecent());
-      goToDashboard();
     } catch (e: any) {
       setQuickError(e.message);
     } finally {
       setQuickLoading(false);
+      setLoadingPhase('');
     }
   };
 
@@ -321,15 +402,64 @@ export default function CaseManager() {
       if (rc.source === 'project') {
         const data = await post('/api/project/open', { path: rc.path });
         const loadResults = data.load_results || [];
-        const loaded = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
-        if (loaded) {
+        const loadedAxiom = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'axiom' || r.type === 'kape'));
+        const loadedDirect = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'disk_image' || r.type === 'memory'));
+        if (loadedAxiom) {
           const caseData = await get('/api/cases/summary');
           setCaseInfo({ ...caseData, case_name: rc.name || caseData.case_name });
           setKapeDiagnostics(caseData.kape_diagnostics || null);
-          saveRecent({ ...rc, totalHits: loaded.total_hits }); setRecentCases(loadRecent());
+          saveRecent({ ...rc, totalHits: loadedAxiom.total_hits }); setRecentCases(loadRecent());
+          goToDashboard();
+        } else if (loadedDirect) {
+          const mode = loadedDirect.type === 'disk_image' ? 'e01' : 'memory';
+          setCaseInfo({
+            case_name: rc.name,
+            case_mode: mode,
+            total_hits: 0,
+            artifact_type_count: 0,
+            date_range_start: '',
+            date_range_end: '',
+            evidence_sources: [],
+            artifact_types: {},
+          });
+          saveRecent({ ...rc, source: mode }); setRecentCases(loadRecent());
           goToDashboard();
         } else {
           setError('Project opened but no case data loaded. Evidence files may have moved.');
+        }
+      } else if (rc.source === 'e01' || rc.source === 'memory') {
+        // Re-mount the image directly
+        const mode = rc.source;
+        const data = await post('/api/project/create', {
+          name: rc.name,
+          description: '',
+          incident_date: '',
+          timezone: 'Asia/Seoul',
+          hostname: '',
+          ip_addresses: '',
+          user_accounts: '',
+          known_iocs: '',
+          notes: '',
+          evidence: [{ type: mode === 'e01' ? 'disk_image' : 'memory', path: rc.path, label: rc.name }],
+        });
+        const loadResults = data.load_results || [];
+        const loadedDirect = loadResults.find((r: any) => r.status === 'loaded' && (r.type === 'disk_image' || r.type === 'memory'));
+        if (loadedDirect) {
+          setCaseInfo({
+            case_name: rc.name,
+            case_mode: mode,
+            total_hits: 0,
+            artifact_type_count: 0,
+            date_range_start: '',
+            date_range_end: '',
+            evidence_sources: [],
+            artifact_types: {},
+          });
+          saveRecent({ ...rc }); setRecentCases(loadRecent());
+          goToDashboard();
+        } else {
+          const errItem = loadResults.find((r: any) => r.status === 'error');
+          setError(errItem?.error || 'Failed to reload image. File may have moved.');
         }
       } else {
         const data = await post('/api/cases/open', { path: rc.path });
@@ -342,6 +472,7 @@ export default function CaseManager() {
       setError(`Failed to open: ${e.message}`);
     } finally {
       setQuickLoading(false);
+      setLoadingPhase('');
     }
   };
 
@@ -406,8 +537,8 @@ export default function CaseManager() {
           </label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginTop: 8 }}>
             {recentCases.map((rc, i) => {
-              const sourceTag = rc.source === 'project' ? 'PRJ' : rc.source === 'kape' ? 'KAPE' : 'AXIOM';
-              const sourceColor = rc.source === 'project' ? '#a78bfa' : rc.source === 'kape' ? '#60a5fa' : '#4ade80';
+              const sourceTag = rc.source === 'project' ? 'PRJ' : rc.source === 'kape' ? 'KAPE' : rc.source === 'e01' ? 'E01' : rc.source === 'memory' ? 'MEM' : 'AXIOM';
+              const sourceColor = rc.source === 'project' ? '#a78bfa' : rc.source === 'kape' ? '#60a5fa' : rc.source === 'e01' ? '#f59e0b' : rc.source === 'memory' ? '#c084fc' : '#4ade80';
               const timeAgo = (() => {
                 const diff = Date.now() - new Date(rc.openedAt).getTime();
                 const mins = Math.floor(diff / 60000);
@@ -713,16 +844,20 @@ export default function CaseManager() {
       {/* ── QUICK OPEN TAB ── */}
       {tab === 'quick' && (
         <div style={sectionStyle}>
-          <label className="label" htmlFor="fw-quick-path-0" style={{ display: 'block', marginBottom: 8 }}>
-            Open case files — add multiple sources (.mfdb + KAPE directory) to load together
+          <label className="label" htmlFor="fw-quick-path-0" style={{ display: 'block', marginBottom: 4 }}>
+            Open case files directly
           </label>
+          <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 10px' }}>
+            Supports AXIOM (.mfdb), KAPE output directory, or disk images (.e01, .vmdk, .dd).
+            E01 images load in direct-analysis mode (file browser, binary analysis, registry).
+          </p>
           {quickPaths.map((p, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <input
                 id={`fw-quick-path-${i}`}
                 className="input input-mono"
                 style={{ flex: 1 }}
-                placeholder={i === 0 ? "Path to .mfdb file or KAPE parsed directory..." : "Additional path..."}
+                placeholder={i === 0 ? "Path to .mfdb, KAPE directory, or .e01 image..." : "Additional path..."}
                 value={p}
                 onChange={e => {
                   const next = [...quickPaths];

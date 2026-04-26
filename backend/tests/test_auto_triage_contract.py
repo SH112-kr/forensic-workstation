@@ -44,6 +44,7 @@ def test_auto_triage_returns_required_keys_and_no_verdict_fields(monkeypatch, tm
     import core.analysis.ioc_extractor as ioc_extractor
     import core.analysis.mitre_mapper as mitre_mapper
     import core.analysis.report_generator as report_generator
+    import core.analysis.autonomous_assessment as autonomous_assessment
 
     parsed_dir = tmp_path / "parsed"
     parsed_dir.mkdir(parents=True)
@@ -59,6 +60,13 @@ def test_auto_triage_returns_required_keys_and_no_verdict_fields(monkeypatch, tm
                 "ingress_access": {"artifact_families_seen": ["srum"], "event_count": 5},
                 "execution_impact": {"artifact_families_seen": ["prefetch"], "event_count": 12},
                 "persistence_cleanup": {"artifact_families_seen": [], "event_count": 0},
+            },
+            "lane_state_board": {
+                "ingress_access": {"state": "suggested", "basis": []},
+                "execution_impact": {"state": "confirmed", "basis": []},
+                "persistence_cleanup": {"state": "not_seen", "basis": []},
+                "blocked_lanes": ["persistence_cleanup"],
+                "allow_strong_conclusion": False,
             },
             "window_discovery": {"top_windows": [{"status": "candidate"}]},
             "precursor_context": {"status": "candidate_only"},
@@ -100,6 +108,11 @@ def test_auto_triage_returns_required_keys_and_no_verdict_fields(monkeypatch, tm
     monkeypatch.setattr(report_generator, "generate_report", lambda *_args, **_kwargs: {
         "output_path": "report.html",
     })
+    monkeypatch.setattr(autonomous_assessment, "assess_autonomous_case", lambda *_args, **_kwargs: {
+        "verdict": "unknown",
+        "confidence": "incomplete",
+        "decision": "collect_more_evidence",
+    })
 
     result = _run(mcp_bridge.auto_triage(
         source_drive="X",
@@ -111,16 +124,15 @@ def test_auto_triage_returns_required_keys_and_no_verdict_fields(monkeypatch, tm
     assert result["status"] == "complete"
     assert result["summary"]["strength_rollup"] == {"strong": 1}
 
-    # Verdict fields must NOT be present
     assert "classification" not in result
     assert "incident_type" not in result.get("initial_triage", {})
-    assert "allow_strong_conclusion" not in result
-    assert "lane_state_board" not in result
     assert "top_findings" not in result
     assert "top_findings_policy" not in result
-    assert "alert_summary" not in result
-    assert "candidate_axes" not in result
     assert "anchoring_risk" not in result
+    assert result["lane_state_board"]["allow_strong_conclusion"] is False
+    assert result["alert_summary"]["surface_policy"] == "balanced_per_category_rule"
+    assert result["candidate_axes"]["candidate_axes"]
+    assert result["autonomous_assessment"]["decision"] == "collect_more_evidence"
 
     # initial_triage returns lane_evidence_summary (facts only)
     assert result["initial_triage"]["lane_evidence_summary"]["execution_impact"]["event_count"] == 12

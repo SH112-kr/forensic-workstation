@@ -44,6 +44,7 @@ from state import (
     build_not_allowed_message,
     is_path_allowed,
     resolve_active_case_evidence,
+    resolve_allowed_evidence,
 )
 
 mcp = FastMCP(
@@ -2259,7 +2260,12 @@ async def mount_image(e01_path: str = "", evidence_ref: str = "") -> dict:
     """Mount E01/VMDK/raw disk image for file extraction."""
     def fn():
         ref = evidence_ref or e01_path
-        resolved_path = resolve_active_case_evidence(ref) or e01_path
+        image_exts = (".e01", ".ex01", ".vmdk", ".raw", ".dd")
+        resolved_path = (
+            resolve_active_case_evidence(ref)
+            or resolve_allowed_evidence(ref, extensions=image_exts)
+            or e01_path
+        )
         if not (is_path_allowed(resolved_path) or resolve_active_case_evidence(resolved_path)):
             return {"error": build_not_allowed_message(ref or "active_case")}
         old = _connectors.pop("e01", None)
@@ -3244,6 +3250,41 @@ async def auto_triage(
             mitre = {}
             steps.append({"step": "mitre_mapping", "error": str(e)})
 
+        bias_surface: dict[str, Any] = {}
+        try:
+            from core.analysis.bias_remediation import build_bias_remediation_surface
+            bias_surface = build_bias_remediation_surface(
+                c,
+                {"findings": findings},
+                findings=findings,
+                triage_payload=triage,
+            )
+        except Exception as e:
+            bias_surface = {
+                "alert_summary": {"error": str(e)},
+                "candidate_axes": {"error": str(e), "candidate_axes": []},
+                "lane_state_board": {"error": str(e)},
+            }
+        quality_surface: dict[str, Any] = {}
+        causal_surface: dict[str, Any] = {}
+        autonomous_assessment: dict[str, Any] = {}
+        try:
+            from core.analysis.autonomous_assessment import assess_autonomous_case
+            from core.analysis.evidence_quality import build_evidence_quality_surface
+            from core.analysis.causal_chain import build_causal_chain_candidates
+
+            quality_surface = build_evidence_quality_surface(c, {"findings": findings})
+            causal_surface = build_causal_chain_candidates(c)
+            autonomous_assessment = assess_autonomous_case(
+                c,
+                {"findings": findings, **bias_surface, **quality_surface, **causal_surface},
+                triage_payload=triage,
+                anti_forensics=anti_forensics,
+                coverage={"summary": coverage_summary},
+            )
+        except Exception as e:
+            autonomous_assessment = {"error": str(e)}
+
         # ── Step 7: Generate Report ──
         t7 = _t.time()
         try:
@@ -3277,6 +3318,10 @@ async def auto_triage(
                 "coverage_format": coverage_summary.get("case_format", ""),
             },
             "initial_triage": initial_triage_summary,
+            **bias_surface,
+            **quality_surface,
+            **causal_surface,
+            "autonomous_assessment": autonomous_assessment,
             "anti_forensics": anti_forensics,
             "coverage": coverage_summary,
             "steps": steps,

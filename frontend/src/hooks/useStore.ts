@@ -4,6 +4,7 @@ interface CaseInfo {
   case_name: string;
   source_type?: string;
   source_path?: string;
+  case_mode?: string; // 'e01' | 'memory' — set when no AXIOM/KAPE data is loaded
   total_hits: number;
   artifact_type_count: number;
   date_range_start: string;

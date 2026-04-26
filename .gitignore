@@ -81,3 +81,6 @@ backend/hunt_packs/local/
 
 # Regression harness outputs (transcripts, CSVs, markdown reports)
 backend/regression/reports/
+
+# External validation datasets (downloaded evidence/log data, never commit)
+external/dfir_validation/

@@ -20,6 +20,10 @@ async def run_detection(req: DetectionRequest):
     from core.analysis.provenance import attach_provenance
     from core.analysis.suppressions import apply_suppressions
     from core.analysis.rule_coverage import attach_rule_coverage
+    from core.analysis.bias_remediation import build_bias_remediation_surface
+    from core.analysis.autonomous_assessment import assess_autonomous_case
+    from core.analysis.evidence_quality import build_evidence_quality_surface
+    from core.analysis.causal_chain import build_causal_chain_candidates
     try:
         connector = app_state.get_axiom()
         payload = find_suspicious(connector.artifact_queries, rules=req.rules)
@@ -27,6 +31,10 @@ async def run_detection(req: DetectionRequest):
         attach_provenance(payload, app_state._connectors)
         apply_suppressions(payload)
         attach_rule_coverage(payload, app_state._connectors)
+        payload.update(build_bias_remediation_surface(connector, payload))
+        payload.update(build_evidence_quality_surface(connector, payload))
+        payload.update(build_causal_chain_candidates(connector))
+        payload["autonomous_assessment"] = assess_autonomous_case(connector, payload)
         return payload
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

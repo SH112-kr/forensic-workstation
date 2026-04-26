@@ -21,6 +21,14 @@ function formatFindingTitle(ruleName: string) {
   return String(ruleName || '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
 }
 
+function findingTier(finding: any) {
+  return finding?.priority_tier || finding?.severity || 'info';
+}
+
+function findingText(finding: any) {
+  return finding?.display_text || finding?.query_description || finding?.description || '';
+}
+
 function renderSignalLabel(signal: any) {
   if (!signal || typeof signal !== 'object') return String(signal || 'signal');
   return signal.rule_name || signal.artifact_type || signal.kind || 'signal';
@@ -90,6 +98,7 @@ export default function DetectionPanel() {
   const candidateAxes = detection?.candidate_axes?.candidate_axes || [];
   const laneBoard = detection?.lane_state_board || laneStateBoard || null;
   const laneError = laneBoard?.error || '';
+  const autonomousAssessment = detection?.autonomous_assessment || null;
 
   const passesStrength = (finding: any) => {
     if (!minStrength) return true;
@@ -116,7 +125,7 @@ export default function DetectionPanel() {
             gap: 12,
           }}
         >
-          <span className={`badge badge-${finding.severity || 'info'}`}>{String(finding.severity || 'info').toUpperCase()}</span>
+          <span className={`badge badge-${findingTier(finding)}`}>{String(findingTier(finding)).toUpperCase()}</span>
           {finding.overall_strength && (
             <span className={`badge-strength badge-strength-${finding.overall_strength}`} title="Best evidence strength across this finding's details">
               {STRENGTH_LABEL[finding.overall_strength as StrengthTier] || finding.overall_strength}
@@ -126,7 +135,7 @@ export default function DetectionPanel() {
             <div style={{ fontWeight: 600, fontSize: 13 }}>
               {formatFindingTitle(finding.rule_name)}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{finding.description}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{findingText(finding)}</div>
             <div style={{ marginTop: 4 }}>
               {(finding.mitre_techniques || []).map((technique: string) => (
                 <span
@@ -270,6 +279,31 @@ export default function DetectionPanel() {
               {strengthRollup[tier] ?? 0} {STRENGTH_LABEL[tier]}
             </span>
           ))}
+        </div>
+      )}
+
+      {autonomousAssessment && !autonomousAssessment.error && (
+        <div style={{
+          marginBottom: 16,
+          padding: '12px 16px',
+          borderRadius: 10,
+          background: autonomousAssessment.investigation_incomplete ? 'var(--high-bg)' : 'var(--accent-light)',
+          border: `1px solid ${autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)'}`,
+          fontSize: 12,
+        }}>
+          <div style={{ fontWeight: 700, color: autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)', marginBottom: 4 }}>
+            Autonomous assessment: {String(autonomousAssessment.verdict || 'unknown').replace(/_/g, ' ')}
+          </div>
+          <div style={{ color: 'var(--text-dim)' }}>
+            Decision: {String(autonomousAssessment.decision || 'unknown').replace(/_/g, ' ')}
+            {' '}| confidence: {autonomousAssessment.confidence || 'unknown'}
+            {autonomousAssessment.blocked_lanes?.length ? ` | blocked lanes: ${autonomousAssessment.blocked_lanes.join(', ')}` : ''}
+          </div>
+          {(autonomousAssessment.basis || []).length > 0 && (
+            <div style={{ color: 'var(--text-dim)', marginTop: 6 }}>
+              Basis: {(autonomousAssessment.basis || []).slice(0, 3).join('; ')}
+            </div>
+          )}
         </div>
       )}
 
