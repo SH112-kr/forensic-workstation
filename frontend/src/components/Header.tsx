@@ -9,6 +9,20 @@ interface OpenCase {
   total_hits: number;
 }
 
+interface CaseListResponse {
+  active_case_id?: string;
+  cases?: Array<{
+    case_id: string;
+    case_name?: string;
+    source_type?: string;
+    total_hits?: number;
+    metadata?: {
+      source_type?: string;
+      total_hits?: number;
+    };
+  }>;
+}
+
 export default function Header() {
   const {
     theme, toggleTheme, copilotOpen, toggleCopilot, caseInfo, setCaseInfo,
@@ -18,12 +32,10 @@ export default function Header() {
   const [cases, setCases] = useState<OpenCase[]>([]);
   const [activeCase, setActiveCase] = useState('');
 
-  // Fetch open cases. Use the backend-provided active_case_id so we don't have
-  // to guess which case is active from metadata fields.
   useEffect(() => {
     if (!caseInfo) return;
-    get('/api/cases/list').then(data => {
-      const list: OpenCase[] = (data.cases || []).map((c: any) => ({
+    get<CaseListResponse>('/api/cases/list').then(data => {
+      const list: OpenCase[] = (data.cases || []).map((c) => ({
         case_id: c.case_id,
         case_name: c.case_name || c.case_id,
         source_type: c.source_type || c.metadata?.source_type || '?',
@@ -36,12 +48,12 @@ export default function Header() {
         setActiveCase(list[list.length - 1].case_id);
       }
     }).catch(() => {});
-  }, [caseInfo]);
+  }, [caseInfo, activeCase]);
 
   const switchCase = async (caseId: string) => {
     if (caseId === activeCase) return;
     try {
-      setActiveCase(caseId); // Update UI immediately
+      setActiveCase(caseId);
       await post(`/api/cases/switch?case_id=${encodeURIComponent(caseId)}`, {});
       const summary = await get('/api/cases/summary');
       setCaseInfo(summary);
@@ -54,115 +66,198 @@ export default function Header() {
 
   const sourceTag = (type: string) => {
     if (type === 'kape') return { label: 'KAPE', color: '#60a5fa' };
-    return { label: 'MFDB', color: '#4ade80' };
+    if (type === 'mfdb') return { label: 'MFDB', color: '#3fb950' };
+    return { label: type?.toUpperCase?.() || 'CASE', color: 'var(--text-muted)' };
   };
+
+  const activeCaseName = cases.find(c => c.case_id === activeCase)?.case_name || caseInfo?.case_name || '-';
+  const statusLabel = caseInfo?.case_mode
+    ? `${caseInfo.case_mode.toUpperCase()} DIRECT MODE`
+    : 'LOCAL ANALYSIS READY';
 
   return (
     <header style={{
-      height: 'var(--header-h)', background: 'var(--surface)', borderBottom: '1px solid var(--border)',
-      display: 'flex', alignItems: 'center', padding: '0 16px', gap: 12, flexShrink: 0,
+      height: 'var(--header-h)',
+      background: 'var(--surface)',
+      borderBottom: '1px solid var(--border)',
+      display: 'flex',
+      alignItems: 'center',
+      padding: '0 16px',
+      gap: 14,
+      flexShrink: 0,
+      minWidth: 0,
     }}>
-      <span style={{ fontWeight: 700, fontSize: 13, color: 'var(--text-dim)' }}>
-        FORENSIC WORKSTATION
-      </span>
+      <button
+        onClick={() => setActiveView('dashboard')}
+        title="Dashboard"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          background: 'transparent',
+          border: 0,
+          padding: 0,
+          cursor: 'pointer',
+          color: 'var(--text)',
+        }}
+      >
+        <span style={{
+          fontFamily: 'var(--mono)',
+          fontSize: 11,
+          fontWeight: 700,
+          color: 'var(--critical)',
+          letterSpacing: '0.1em',
+          border: '1px solid var(--critical-border)',
+          padding: '1px 6px',
+          borderRadius: 2,
+        }}>
+          FSEC
+        </span>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em' }}>
+          DFIR Workstation
+        </span>
+      </button>
 
-      {/* Case Selector — always visible so "+ Add case" stays discoverable
-          even in single-case sessions. */}
+      <div style={{ width: 1, height: 18, background: 'var(--border)' }} />
+
       {caseInfo && (
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          {cases.map(c => {
-            const tag = sourceTag(c.source_type);
-            const isActive = c.case_id === activeCase;
-            const label = c.case_name || c.case_id;
-            return (
-              <button key={c.case_id} onClick={() => switchCase(c.case_id)}
-                style={{
-                  padding: '3px 10px', borderRadius: 5, border: 'none', fontSize: 11,
-                  cursor: 'pointer', fontWeight: isActive ? 700 : 400,
-                  background: isActive ? `${tag.color}22` : 'transparent',
-                  color: isActive ? tag.color : 'var(--text-dim)',
-                  outline: isActive ? `1px solid ${tag.color}44` : 'none',
-                }}
-                title={`${c.case_id} · ${c.source_type.toUpperCase()} · ${c.total_hits.toLocaleString()} hits`}
-              >
-                <span style={{
-                  fontSize: 9, fontWeight: 700, marginRight: 4,
-                  padding: '1px 4px', borderRadius: 3,
-                  background: `${tag.color}22`, color: tag.color,
-                }}>{tag.label}</span>
-                {label.length > 22 ? label.slice(0, 22) + '…' : label}
-              </button>
-            );
-          })}
-          {cases.length === 0 && (
-            <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
-              {caseInfo.case_name}
-            </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <Meta label="Case" value={activeCaseName} />
+          <Meta label="Artifacts" value={(caseInfo.total_hits || 0).toLocaleString()} />
+          <Meta label="Types" value={String(caseInfo.artifact_type_count || 0)} />
+
+          {cases.length > 0 && (
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center', minWidth: 0 }}>
+              {cases.slice(0, 4).map(c => {
+                const tag = sourceTag(c.source_type);
+                const isActive = c.case_id === activeCase;
+                const label = c.case_name || c.case_id;
+                return (
+                  <button
+                    key={c.case_id}
+                    onClick={() => switchCase(c.case_id)}
+                    title={`${c.case_id} | ${c.source_type.toUpperCase()} | ${c.total_hits.toLocaleString()} hits`}
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 3,
+                      border: `1px solid ${isActive ? tag.color : 'var(--border)'}`,
+                      background: isActive ? `${tag.color}22` : 'transparent',
+                      color: isActive ? tag.color : 'var(--text-muted)',
+                      fontFamily: 'var(--mono)',
+                      fontSize: 10,
+                      cursor: 'pointer',
+                      maxWidth: 150,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {tag.label} {label.length > 18 ? `${label.slice(0, 18)}...` : label}
+                  </button>
+                );
+              })}
+            </div>
           )}
-          <button
-            onClick={() => setCaseManagerOpen(true)}
-            title="Open another case alongside the current one"
-            style={{
-              padding: '3px 8px', borderRadius: 5, border: '1px dashed var(--border)',
-              fontSize: 11, cursor: 'pointer', background: 'transparent',
-              color: 'var(--accent)', fontWeight: 600,
-            }}
-          >
-            + Add case
+
+          <button className="btn btn-sm" onClick={() => setCaseManagerOpen(true)} title="Open another case">
+            Add Case
           </button>
           {cases.length >= 2 && (
-            <button
-              onClick={() => setActiveView('compare')}
-              title="Side-by-side comparison across all loaded cases"
-              style={{
-                padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border)',
-                fontSize: 11, cursor: 'pointer', background: 'transparent',
-                color: 'var(--text-dim)', fontWeight: 600,
-              }}
-            >
-              ⇄ Compare
+            <button className="btn btn-sm" onClick={() => setActiveView('compare')} title="Compare loaded cases">
+              Compare
             </button>
           )}
         </div>
       )}
 
       <div style={{ flex: 1 }} />
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: caseInfo?.case_mode ? 'var(--high)' : 'var(--low)',
+        }} />
+        <span style={{
+          fontFamily: 'var(--mono)',
+          fontSize: 10,
+          color: caseInfo?.case_mode ? 'var(--high)' : 'var(--low)',
+          fontWeight: 700,
+          letterSpacing: '0.06em',
+          whiteSpace: 'nowrap',
+        }}>
+          {statusLabel}
+        </span>
+      </div>
+
+      <div style={{ width: 1, height: 18, background: 'var(--border)' }} />
+
       <div style={{ position: 'relative' }}>
-        <button
-          className="btn btn-sm"
-          onClick={() => setShowShortcuts(!showShortcuts)}
-          title="Keyboard shortcuts"
-          style={{ minWidth: 28 }}
-        >
+        <button className="btn btn-sm" onClick={() => setShowShortcuts(!showShortcuts)} title="Keyboard shortcuts">
           ?
         </button>
         {showShortcuts && (
           <div style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 4,
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 8, padding: '12px 16px', zIndex: 1000,
-            fontSize: 12, whiteSpace: 'nowrap', minWidth: 200,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            position: 'absolute',
+            top: '100%',
+            right: 0,
+            marginTop: 6,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            padding: '10px 12px',
+            zIndex: 1000,
+            fontSize: 12,
+            whiteSpace: 'nowrap',
+            minWidth: 210,
+            boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
           }}>
             <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Keyboard Shortcuts</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, color: 'var(--text-dim)' }}>
-              <div><kbd style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--text)' }}>Ctrl+1~9</kbd> Switch tabs</div>
-              <div><kbd style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--text)' }}>Ctrl+K</kbd> Search</div>
-              <div><kbd style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--text)' }}>Ctrl+B</kbd> Co-pilot</div>
-              <div><kbd style={{ fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--text)' }}>Esc</kbd> Close panels</div>
-            </div>
+            <Shortcut keys="Ctrl+1-9" label="Switch views" />
+            <Shortcut keys="Ctrl+K" label="Search artifacts" />
+            <Shortcut keys="Ctrl+B" label="MCP monitor" />
+            <Shortcut keys="Esc" label="Close panels" />
           </div>
         )}
       </div>
-      <button className="btn btn-sm" onClick={toggleTheme}>
-        {theme === 'light' ? 'Dark' : 'Light'}
+
+      <button className="btn btn-sm" onClick={toggleTheme} title="Toggle theme">
+        {theme === 'dark' ? 'Light' : 'Dark'}
       </button>
-      <button
-        className={`btn btn-sm ${copilotOpen ? 'btn-primary' : ''}`}
-        onClick={toggleCopilot}
-      >
-        AI Co-pilot
+      <button className={`btn btn-sm ${copilotOpen ? 'btn-primary' : ''}`} onClick={toggleCopilot} title="Toggle MCP monitor">
+        MCP Monitor
       </button>
     </header>
+  );
+}
+
+function Meta({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', gap: 5, alignItems: 'center', minWidth: 0 }}>
+      <span style={{ fontSize: 10, color: 'var(--text-subtle)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        {label}
+      </span>
+      <span style={{
+        fontFamily: 'var(--mono)',
+        fontSize: 11,
+        color: 'var(--text-muted)',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        maxWidth: 180,
+      }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function Shortcut({ keys, label }: { keys: string; label: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, color: 'var(--text-muted)', marginTop: 4 }}>
+      <kbd style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--text)' }}>{keys}</kbd>
+      <span>{label}</span>
+    </div>
   );
 }

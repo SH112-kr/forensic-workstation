@@ -112,3 +112,13 @@ def test_filter_evtx_records_applies_event_keyword_date_and_pagination():
     assert result["returned"] == 1
     assert result["records"][0]["fields"]["ServiceName"] == "uploadmgr"
     assert result["query_semantics"]["event_ids"] == [7045]
+
+
+def test_get_winevent_no_matching_events_is_not_parser_failure():
+    from core.analysis.evtx_semantic import _get_winevent_no_matching_events
+
+    assert _get_winevent_no_matching_events(
+        "FullyQualifiedErrorId : NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand"
+    )
+    assert _get_winevent_no_matching_events("지정한 선택 조건과 일치하는 이벤트를 찾을 수 없습니다.")
+    assert not _get_winevent_no_matching_events("The event log file is corrupted")

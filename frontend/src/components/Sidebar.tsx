@@ -4,7 +4,7 @@ import { useStore } from '../hooks/useStore';
 interface NavItem {
   id: string;
   label: string;
-  icon: string;
+  code: string;
 }
 
 interface NavSection {
@@ -15,41 +15,41 @@ interface NavSection {
 
 const SECTIONS: NavSection[] = [
   {
-    title: 'Case Analysis',
+    title: 'Investigation',
     items: [
-      { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-      { id: 'artifacts', label: 'Artifacts', icon: '🔍' },
-      { id: 'timeline', label: 'Timeline', icon: '⏱' },
-      { id: 'detection', label: 'Detection', icon: '🛡' },
-      { id: 'ioc', label: 'IOC', icon: '🎯' },
-      { id: 'coverage', label: 'Coverage', icon: '🧾' },
-      { id: 'compare', label: 'Compare', icon: '⇄' },
-      { id: 'pivot', label: 'Pivot', icon: '🎯' },
+      { id: 'dashboard', label: 'Dashboard', code: 'DASH' },
+      { id: 'detection', label: 'Detections', code: 'DET' },
+      { id: 'timeline', label: 'Timeline', code: 'TIME' },
+      { id: 'coverage', label: 'Coverage', code: 'COV' },
+      { id: 'pivot', label: 'Pivot', code: 'PIV' },
+      { id: 'compare', label: 'Compare', code: 'CMP' },
+    ],
+  },
+  {
+    title: 'Artifacts',
+    items: [
+      { id: 'artifacts', label: 'Artifact Browser', code: 'ART' },
+      { id: 'ioc', label: 'IOC Tracker', code: 'IOC' },
+      { id: 'logs', label: 'EVTX Logs', code: 'EVT' },
+      { id: 'registry', label: 'Registry', code: 'REG' },
+      { id: 'network', label: 'Network', code: 'NET' },
     ],
   },
   {
     title: 'Advanced Tools',
     defaultCollapsed: true,
     items: [
-      { id: 'memory', label: 'Memory', icon: '🧠' },
-      { id: 'binary', label: 'Binary', icon: '⚙' },
-      { id: 'logs', label: 'EVTX Logs', icon: '📋' },
-      { id: 'network', label: 'Network', icon: '🌐' },
-      { id: 'yara', label: 'YARA', icon: '🎯' },
-      { id: 'registry', label: 'Registry', icon: '🗂' },
+      { id: 'memory', label: 'Memory', code: 'MEM' },
+      { id: 'binary', label: 'Binary', code: 'BIN' },
+      { id: 'yara', label: 'YARA', code: 'YARA' },
     ],
   },
   {
     title: 'Output',
     items: [
-      { id: 'report', label: 'Report', icon: '📄' },
-    ],
-  },
-  {
-    title: 'System',
-    items: [
-      { id: 'kape', label: 'KAPE', icon: '\u25B6' },
-      { id: 'settings', label: 'Settings', icon: '\u2699' },
+      { id: 'report', label: 'Report', code: 'RPT' },
+      { id: 'kape', label: 'KAPE', code: 'KAPE' },
+      { id: 'settings', label: 'Settings', code: 'SET' },
     ],
   },
 ];
@@ -68,78 +68,133 @@ export default function Sidebar() {
 
   return (
     <aside style={{
-      width: 'var(--sidebar-w)', background: 'var(--surface)', borderRight: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden',
+      width: 'var(--sidebar-w)',
+      background: 'var(--surface)',
+      borderRight: '1px solid var(--border)',
+      display: 'flex',
+      flexDirection: 'column',
+      flexShrink: 0,
+      overflow: 'hidden',
     }}>
-      {/* Logo */}
-      <div style={{
-        padding: '14px 16px', borderBottom: '1px solid var(--border)',
-        fontWeight: 700, fontSize: 14,
-      }}>
-        Forensic Workstation
+      <div style={{ padding: '14px 16px 12px', position: 'relative' }}>
+        <div style={{
+          fontFamily: 'var(--mono)',
+          fontSize: 12,
+          fontWeight: 700,
+          color: 'var(--text)',
+          letterSpacing: '0.03em',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          paddingRight: 16,
+        }}>
+          {caseInfo?.case_name || 'No case loaded'}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+          {caseInfo?.source_type ? `${caseInfo.source_type.toUpperCase()} case` : 'Workspace'}
+          {caseInfo?.case_mode ? ` | ${caseInfo.case_mode.toUpperCase()}` : ''}
+        </div>
+        <span style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+          background: caseInfo ? 'var(--low)' : 'var(--text-subtle)',
+        }} />
       </div>
 
-      {/* Nav */}
-      <nav style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
-        {SECTIONS.map((section) => (
-          <div key={section.title} style={{ marginBottom: 4 }}>
-            <div
+      <div style={{ borderTop: '1px solid var(--border)', margin: '0 12px' }} />
+
+      <nav style={{ flex: 1, overflowY: 'auto', paddingTop: 4 }}>
+        {SECTIONS.map(section => (
+          <div key={section.title} style={{ marginTop: 4 }}>
+            <button
               onClick={() => toggleSection(section.title)}
               style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '6px 12px', cursor: 'pointer', userSelect: 'none',
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                letterSpacing: '0.05em', color: 'var(--text-dim)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                padding: '5px 16px',
+                background: 'transparent',
+                border: 0,
+                cursor: 'pointer',
+                color: 'var(--text-subtle)',
+                fontSize: 10,
+                fontFamily: 'var(--font)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                fontWeight: 700,
               }}
             >
               <span>{section.title}</span>
-              <span style={{ fontSize: 10 }}>{collapsed[section.title] ? '▸' : '▾'}</span>
-            </div>
-            {!collapsed[section.title] && section.items.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => setActiveView(item.id)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '8px 12px', borderRadius: 6, cursor: 'pointer',
-                  fontSize: 13, fontWeight: activeView === item.id ? 600 : 400,
-                  background: activeView === item.id ? 'var(--accent-light)' : 'transparent',
-                  color: activeView === item.id ? 'var(--accent)' : 'var(--text)',
-                  transition: 'all 0.1s',
-                  marginBottom: 2,
-                }}
-              >
-                <span>{item.icon}</span>
-                <span>{item.label}</span>
-              </div>
-            ))}
+              <span style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 9,
+                transform: collapsed[section.title] ? 'rotate(-90deg)' : 'none',
+                transition: 'transform 100ms',
+              }}>
+                v
+              </span>
+            </button>
+            {!collapsed[section.title] && section.items.map(item => {
+              const active = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveView(item.id)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    width: '100%',
+                    padding: '6px 16px',
+                    background: active ? 'var(--surface-2)' : 'transparent',
+                    border: 0,
+                    borderLeft: active ? '2px solid var(--medium)' : '2px solid transparent',
+                    cursor: 'pointer',
+                    color: active ? 'var(--text)' : 'var(--text-muted)',
+                    fontSize: 13,
+                    fontFamily: 'var(--font)',
+                    textAlign: 'left',
+                  }}
+                >
+                  <span style={{
+                    width: 34,
+                    fontFamily: 'var(--mono)',
+                    fontSize: 9,
+                    color: active ? 'var(--medium)' : 'var(--text-subtle)',
+                  }}>
+                    {item.code}
+                  </span>
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
           </div>
         ))}
       </nav>
 
-      {/* Case info */}
       {caseInfo && (
-        <div style={{
-          padding: '12px 16px', borderTop: '1px solid var(--border)',
-          fontSize: 11, color: 'var(--text-dim)',
-        }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4,
-          }}>
-            {caseInfo.source_type && (
-              <span style={{
-                fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
-                background: caseInfo.source_type === 'kape' ? 'rgba(96,165,250,0.15)' : 'rgba(74,222,128,0.15)',
-                color: caseInfo.source_type === 'kape' ? '#60a5fa' : '#4ade80',
-              }}>{caseInfo.source_type.toUpperCase()}</span>
-            )}
-            <span style={{ fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {caseInfo.case_name}
-            </span>
+        <>
+          <div style={{ borderTop: '1px solid var(--border)', margin: '0 12px' }} />
+          <div style={{ padding: '10px 16px', fontSize: 11 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ color: 'var(--text-subtle)' }}>Artifacts</span>
+              <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-muted)' }}>
+                {caseInfo.total_hits?.toLocaleString()}
+              </span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-subtle)' }}>Families</span>
+              <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-muted)' }}>
+                {caseInfo.artifact_type_count}
+              </span>
+            </div>
           </div>
-          <div>{caseInfo.total_hits?.toLocaleString()} artifacts</div>
-          <div>{caseInfo.artifact_type_count} types</div>
-        </div>
+        </>
       )}
     </aside>
   );

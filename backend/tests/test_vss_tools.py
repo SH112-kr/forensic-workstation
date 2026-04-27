@@ -170,3 +170,56 @@ def test_safe_vss_rglob_skips_bad_directories_and_returns_matches():
     matches = list(connector._safe_vss_rglob(root, "*.tmp", limit=10))
 
     assert [match.name for match in matches] == ["sample.tmp"]
+
+
+class _FakeVolumePath:
+    def __init__(self, exists):
+        self._exists = exists
+
+    def exists(self):
+        return self._exists
+
+
+class _FakeVolumeFs:
+    def __init__(self, paths):
+        self._paths = set(paths)
+
+    def path(self, path):
+        return _FakeVolumePath(path in self._paths)
+
+    def __str__(self):
+        return "ntfs"
+
+
+class _FakeVolume:
+    def __init__(self, *, size, paths=(), drive_letter=""):
+        self.fs = _FakeVolumeFs(paths)
+        self.size = size
+        self.drive_letter = drive_letter
+        self.guid = ""
+
+
+class _FakeTarget:
+    def __init__(self, volumes):
+        self.volumes = volumes
+
+
+def test_resolve_volume_prefers_windows_partition_for_c_drive_without_letter():
+    small_ntfs = _FakeVolume(size=523238912)
+    os_ntfs = _FakeVolume(
+        size=511464963584,
+        paths={"/Windows", "/Windows/System32/config/SYSTEM"},
+    )
+    connector = E01ImageConnector()
+    connector._target = _FakeTarget([small_ntfs, os_ntfs])
+
+    assert connector._resolve_volume("/c:") is os_ntfs
+
+
+def test_resolve_volume_falls_back_to_largest_ntfs_for_c_drive():
+    small_ntfs = _FakeVolume(size=100)
+    large_ntfs = _FakeVolume(size=1000)
+    connector = E01ImageConnector()
+    connector._target = _FakeTarget([small_ntfs, large_ntfs])
+
+    assert connector._resolve_volume("c:") is large_ntfs

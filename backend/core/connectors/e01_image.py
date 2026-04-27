@@ -535,10 +535,44 @@ class E01ImageConnector(BaseConnector):
             if guid and guid in ref:
                 return volume
         if wanted_drive == "c" and candidates:
-            return candidates[0]
+            os_volume = self._select_windows_volume(candidates)
+            if os_volume is not None:
+                return os_volume
+            return max(candidates, key=self._volume_size)
         if len(candidates) == 1:
             return candidates[0]
+        os_volume = self._select_windows_volume(candidates)
+        if os_volume is not None:
+            return os_volume
         raise ValueError(f"Unable to resolve NTFS volume for {volume_ref!r}")
+
+    def _select_windows_volume(self, volumes: list[Any]) -> Any | None:
+        for volume in volumes:
+            if self._volume_has_path(volume, "/Windows/System32/config/SYSTEM"):
+                return volume
+        for volume in volumes:
+            if self._volume_has_path(volume, "/Windows"):
+                return volume
+        return None
+
+    def _volume_has_path(self, volume: Any, path: str) -> bool:
+        fs = getattr(volume, "fs", None)
+        if fs is None:
+            return False
+        try:
+            return bool(fs.path(path).exists())
+        except Exception:
+            return False
+
+    def _volume_size(self, volume: Any) -> int:
+        for attr in ("size", "length"):
+            value = getattr(volume, attr, None)
+            if isinstance(value, int):
+                return value
+        try:
+            return int(len(volume))
+        except Exception:
+            return 0
 
     def _patch_vss_stores(self, vss: Any) -> None:
         """Patch VSS sparse-block fallback to read from the active volume.

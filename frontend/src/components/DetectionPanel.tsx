@@ -113,55 +113,72 @@ export default function DetectionPanel() {
 
   const renderFindingRows = (rows: any[], scope: DetectionTab) => rows.map((finding: any, index: number) => {
     const rowId = `${scope}-${index}`;
+    const severity = findingTier(finding);
+    const techniques = finding.mitre_techniques || [];
     return (
-      <div key={rowId} className="card" style={{ marginBottom: 8, padding: 0, overflow: 'hidden' }}>
+      <div key={rowId} style={{
+        marginBottom: 4,
+        background: 'var(--surface)',
+        border: '1px solid var(--border-muted)',
+        borderRadius: 3,
+        overflow: 'hidden',
+      }}>
         <div
           onClick={() => setOpenRow(openRow === rowId ? null : rowId)}
           style={{
-            padding: '12px 16px',
+            display: 'grid',
+            gridTemplateColumns: '4px minmax(86px, 96px) minmax(220px, 1fr) minmax(92px, 130px) minmax(100px, 150px) minmax(78px, 96px) 70px',
+            minHeight: 46,
             cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 12,
+            alignItems: 'stretch',
           }}
         >
-          <span className={`badge badge-${findingTier(finding)}`}>{String(findingTier(finding)).toUpperCase()}</span>
-          {finding.overall_strength && (
-            <span className={`badge-strength badge-strength-${finding.overall_strength}`} title="Best evidence strength across this finding's details">
-              {STRENGTH_LABEL[finding.overall_strength as StrengthTier] || finding.overall_strength}
-            </span>
-          )}
-          <div style={{ flex: 1 }}>
+          <div style={{ background: `var(--${severity})` }} />
+          <div style={{ padding: '10px 10px', display: 'flex', alignItems: 'center' }}>
+            <span className={`badge badge-${severity}`}>{String(severity).toUpperCase()}</span>
+          </div>
+          <div style={{ padding: '8px 10px', minWidth: 0 }}>
             <div style={{ fontWeight: 600, fontSize: 13 }}>
               {formatFindingTitle(finding.rule_name)}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{findingText(finding)}</div>
-            <div style={{ marginTop: 4 }}>
-              {(finding.mitre_techniques || []).map((technique: string) => (
-                <span
-                  key={technique}
-                  style={{
-                    display: 'inline-block',
-                    padding: '0 5px',
-                    margin: '2px 3px 0 0',
-                    background: 'var(--accent-light)',
-                    borderRadius: 3,
-                    fontSize: 10,
-                    fontFamily: 'var(--mono)',
-                  }}
-                >
-                  {technique}
-                </span>
-              ))}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {findingText(finding)}
             </div>
           </div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-dim)' }}>
+          <div style={{ padding: '10px', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+            {techniques.slice(0, 2).map((technique: string) => (
+              <span key={technique} style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                background: 'var(--surface-3)',
+                border: '1px solid var(--border)',
+                padding: '1px 5px',
+                borderRadius: 3,
+              }}>
+                {technique}
+              </span>
+            ))}
+          </div>
+          <div style={{ padding: '10px', fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+            {(finding.mitre_tactics || finding.tactics || []).slice?.(0, 1)?.[0] || finding.tactic || '-'}
+          </div>
+          <div style={{ padding: '10px', display: 'flex', alignItems: 'center' }}>
+            {finding.overall_strength ? (
+              <span className={`badge-strength badge-strength-${finding.overall_strength}`} title="Best evidence strength across this finding's details">
+                {STRENGTH_LABEL[finding.overall_strength as StrengthTier] || finding.overall_strength}
+              </span>
+            ) : (
+              <span style={{ color: 'var(--text-subtle)', fontSize: 11 }}>-</span>
+            )}
+          </div>
+          <div style={{ padding: '8px 10px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', fontFamily: 'var(--mono)', fontSize: 18, fontWeight: 700, color: 'var(--text-muted)' }}>
             {(finding.matching_count || 0).toLocaleString()}
           </div>
         </div>
 
         {openRow === rowId && (
-          <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border-light)' }}>
+          <div style={{ padding: '0 16px 16px 20px', borderTop: '1px solid var(--border-muted)' }}>
             <div style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600, margin: '10px 0 6px', textTransform: 'uppercase' }}>
               Detection evidence
             </div>
@@ -174,8 +191,8 @@ export default function DetectionPanel() {
                     borderRadius: 4,
                     fontSize: 11,
                     fontFamily: 'var(--mono)',
-                    background: 'var(--surface2)',
-                    border: '1px solid var(--border-light)',
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--border)',
                   }}
                 >
                   {pattern} <span style={{ color: 'var(--text-light)', fontSize: 10 }}>x{count}</span>
@@ -186,9 +203,9 @@ export default function DetectionPanel() {
               <div
                 key={detailIndex}
                 style={{
-                  background: 'var(--surface2)',
-                  border: '1px solid var(--border-light)',
-                  borderRadius: 6,
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
                   padding: 10,
                   marginTop: 6,
                   fontSize: 11,
@@ -230,9 +247,14 @@ export default function DetectionPanel() {
   });
 
   return (
-    <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600 }}>Threat Detection</h2>
+    <div style={{ padding: 16, overflowY: 'auto', height: '100%' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div>
+          <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Threat Detection</h2>
+          <div style={{ fontSize: 11, color: 'var(--text-subtle)', marginTop: 2 }}>
+            Balanced findings, evidence strength, and raw rule output share the same detection cache.
+          </div>
+        </div>
         <button className="btn btn-primary btn-sm" onClick={runDetection} disabled={loading}>
           {loading ? 'Running...' : 'Re-run Detection'}
         </button>
@@ -376,17 +398,23 @@ export default function DetectionPanel() {
         </>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{
+        display: 'flex',
+        gap: 4,
+        marginBottom: 12,
+        borderBottom: '1px solid var(--border)',
+      }}>
         {(Object.keys(TAB_LABELS) as DetectionTab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             style={{
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: `1px solid ${activeTab === tab ? 'var(--accent)' : 'var(--border)'}`,
-              background: activeTab === tab ? 'var(--accent-light)' : 'var(--surface)',
-              color: activeTab === tab ? 'var(--accent)' : 'var(--text)',
+              padding: '8px 10px',
+              borderRadius: '3px 3px 0 0',
+              border: '1px solid transparent',
+              borderBottom: activeTab === tab ? '2px solid var(--medium)' : '2px solid transparent',
+              background: activeTab === tab ? 'var(--surface-2)' : 'transparent',
+              color: activeTab === tab ? 'var(--text)' : 'var(--text-muted)',
               fontSize: 12,
               fontWeight: 600,
               cursor: 'pointer',
@@ -418,6 +446,27 @@ export default function DetectionPanel() {
             <option value="strong">Strong or above</option>
             <option value="confirmed">Confirmed only</option>
           </select>
+        </div>
+      )}
+
+      {activeTab !== 'axes' && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '4px minmax(86px, 96px) minmax(220px, 1fr) minmax(92px, 130px) minmax(100px, 150px) minmax(78px, 96px) 70px',
+          padding: '0 0 6px',
+          color: 'var(--text-subtle)',
+          fontSize: 10,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          fontWeight: 700,
+        }}>
+          <div />
+          <div style={{ padding: '0 10px' }}>Severity</div>
+          <div style={{ padding: '0 10px' }}>Title</div>
+          <div style={{ padding: '0 10px' }}>Technique</div>
+          <div style={{ padding: '0 10px' }}>Tactic</div>
+          <div style={{ padding: '0 10px' }}>Strength</div>
+          <div style={{ padding: '0 10px', textAlign: 'right' }}>Hits</div>
         </div>
       )}
 

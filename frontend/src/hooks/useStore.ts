@@ -78,7 +78,7 @@ export const useStore = create<AppState>((set) => ({
 
   theme: (() => {
     const saved = localStorage.getItem('theme') as 'light' | 'dark' | null;
-    const initial = saved === 'dark' || saved === 'light' ? saved : 'light';
+    const initial = saved === 'dark' || saved === 'light' ? saved : 'dark';
     document.documentElement.setAttribute('data-theme', initial);
     return initial;
   })(),

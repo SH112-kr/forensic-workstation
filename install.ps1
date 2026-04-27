@@ -36,26 +36,34 @@ try {
     exit 1
 }
 
+$VenvDir = Join-Path $ProjectDir ".venv"
+$PythonExe = Join-Path $VenvDir "Scripts\python.exe"
+if (-not (Test-Path $PythonExe)) {
+    Write-Host "  Creating project virtual environment..." -ForegroundColor Gray
+    python -m venv $VenvDir
+}
+
 # ── 2. Backend Dependencies ──
 Write-Host "[2/7] Installing backend dependencies..." -ForegroundColor Yellow
 $reqFile = Join-Path $ProjectDir "backend\requirements.txt"
-pip install -r $reqFile 2>&1 | Out-Null
+& $PythonExe -m pip install --upgrade pip 2>&1 | Out-Null
+& $PythonExe -m pip install -r $reqFile 2>&1 | Out-Null
 Write-Host "  Core: FastAPI, uvicorn, mcp, pydantic" -ForegroundColor Green
 
 if ($Full -or $Memory) {
-    pip install volatility3 yara-python regipy 2>&1 | Out-Null
+    & $PythonExe -m pip install volatility3 yara-python regipy 2>&1 | Out-Null
     Write-Host "  Memory: volatility3, yara-python, regipy" -ForegroundColor Green
 }
 if ($Full -or $Ghidra) {
-    pip install pyhidra 2>&1 | Out-Null
+    & $PythonExe -m pip install pyhidra 2>&1 | Out-Null
     Write-Host "  Ghidra: pyhidra" -ForegroundColor Green
 }
 if ($Full -or $Network) {
-    pip install pyshark 2>&1 | Out-Null
+    & $PythonExe -m pip install pyshark 2>&1 | Out-Null
     Write-Host "  Network: pyshark" -ForegroundColor Green
 }
 if ($Full) {
-    pip install volatility3 yara-python regipy pyhidra pyshark 2>&1 | Out-Null
+    & $PythonExe -m pip install volatility3 yara-python regipy pyhidra pyshark 2>&1 | Out-Null
     Write-Host "  Full: All optional packages installed" -ForegroundColor Green
 }
 
@@ -333,7 +341,11 @@ echo.
 echo   Forensic Workstation starting...
 echo.
 cd /d "%~dp0"
-python backend\main.py
+if exist ".venv\Scripts\python.exe" (
+  ".venv\Scripts\python.exe" backend\main.py
+) else (
+  python backend\main.py
+)
 pause
 "@
 Set-Content (Join-Path $ProjectDir "start.bat") -Value $startScript -Encoding ASCII
@@ -343,6 +355,7 @@ Write-Host "  Created start.bat" -ForegroundColor Green
 Write-Host "[6/7] Registering MCP server for Claude Code..." -ForegroundColor Yellow
 $claudeSettingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
 $mcpBridgePath = (Join-Path $ProjectDir "backend\mcp_bridge.py") -replace '\\', '\\\\'
+$mcpPythonPath = $PythonExe -replace '\\', '\\\\'
 
 $claudeDir = Split-Path $claudeSettingsPath -Parent
 if (-not (Test-Path $claudeDir)) {
@@ -356,7 +369,7 @@ if (Test-Path $claudeSettingsPath) {
             $settings | Add-Member -NotePropertyName "mcpServers" -NotePropertyValue @{} -Force
         }
         $settings.mcpServers | Add-Member -NotePropertyName "forensic-workstation" -NotePropertyValue @{
-            command = "python"
+            command = $PythonExe
             args = @($mcpBridgePath -replace '\\\\', '\')
             env = @{}
         } -Force
@@ -368,9 +381,9 @@ if (Test-Path $claudeSettingsPath) {
 } else {
     $newSettings = @"
 {
-  "mcpServers": {
+    "mcpServers": {
     "forensic-workstation": {
-      "command": "python",
+      "command": "$mcpPythonPath",
       "args": ["$mcpBridgePath"],
       "env": {}
     }
@@ -393,7 +406,7 @@ if ($codexInstalled) {
             & codex mcp remove forensic-workstation *> $null
         }
 
-        $codexArgs = @("mcp", "add", "forensic-workstation", "--", "python", (Join-Path $ProjectDir "backend\mcp_bridge.py"))
+        $codexArgs = @("mcp", "add", "forensic-workstation", "--", $PythonExe, (Join-Path $ProjectDir "backend\mcp_bridge.py"))
         & codex @codexArgs *> $null
 
         if ($LASTEXITCODE -eq 0) {

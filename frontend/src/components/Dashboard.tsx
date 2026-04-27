@@ -57,7 +57,6 @@ export default function Dashboard() {
     kapeDiagnostics,
     setKapeDiagnostics,
   } = useStore();
-  const [topTypes, setTopTypes] = useState<any[]>([]);
   const [coverageSummary, setCoverageSummary] = useState<{ searched: number; available_not_loaded: number; structurally_unavailable: number; case_format: string } | null>(null);
   const [antiForensics, setAntiForensics] = useState<any>(null);
   const [caseCount, setCaseCount] = useState(1);
@@ -97,8 +96,6 @@ export default function Dashboard() {
         if (shouldLoadDetection) setDetectionLoading(false);
       });
     }
-
-    get('/api/cases/types').then((data) => setTopTypes((data.artifact_types || []).slice(0, 10))).catch(() => {});
 
     get('/api/cases/coverage').then((d) => {
       if (d && d.summary) {
@@ -243,9 +240,14 @@ export default function Dashboard() {
 
   const phases = mitre?.narrative || [];
   const activePhases = new Set(phases.map((p: any) => p.tactic));
-  const clickableCardStyle: React.CSSProperties = { cursor: 'pointer', transition: 'transform 0.1s' };
-
   const criticalCount = findings.filter((f: any) => findingTier(f) === 'critical').length;
+  const severityCounts = {
+    critical: criticalCount,
+    high: findings.filter((f: any) => findingTier(f) === 'high').length,
+    medium: findings.filter((f: any) => findingTier(f) === 'medium').length,
+    low: findings.filter((f: any) => findingTier(f) === 'low').length,
+  };
+  const maxSeverityCount = Math.max(1, ...Object.values(severityCounts));
   const nextSteps: { text: string; cta: string; onClick: () => void }[] = [];
   if (criticalCount > 0) {
     nextSteps.push({
@@ -383,52 +385,6 @@ export default function Dashboard() {
           color: 'var(--text-dim)',
         }}>
           <strong style={{ color: 'var(--text)' }}>Lane state unavailable.</strong> {laneError}
-        </div>
-      )}
-
-      {hasLaneBoard && !laneError && (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-          gap: 10,
-          marginBottom: 12,
-        }}>
-          {LANE_ORDER.map((lane) => {
-            const entry = laneBoard?.[lane] || {};
-            const state = entry.state || 'not_seen';
-            const style = LANE_STATE_STYLES[state] || LANE_STATE_STYLES.not_seen;
-            const basis = (entry.basis || []).slice(0, 2).join(', ') || 'No supporting signals surfaced';
-            return (
-              <div
-                key={lane}
-                onClick={() => setActiveView('detection')}
-                style={{
-                  padding: '12px 14px',
-                  borderRadius: 10,
-                  background: style.bg,
-                  border: `1px solid ${style.border}`,
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'uppercase', fontWeight: 700, marginBottom: 8 }}>
-                  {LANE_LABELS[lane]}
-                </div>
-                <div style={{
-                  display: 'inline-block',
-                  padding: '2px 8px',
-                  borderRadius: 999,
-                  fontSize: 10,
-                  fontWeight: 700,
-                  marginBottom: 8,
-                  color: style.color,
-                  background: 'rgba(255,255,255,0.45)',
-                }}>
-                  {String(state).toUpperCase()}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{basis}</div>
-              </div>
-            );
-          })}
         </div>
       )}
 
@@ -612,147 +568,182 @@ export default function Dashboard() {
         </div>
       )}
 
-      {loading ? (
-        <div style={{
-          padding: '16px 20px',
-          borderRadius: 10,
-          marginBottom: 20,
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-        }}>
-          <div style={{
-            width: 18,
-            height: 18,
-            border: '3px solid var(--border)',
-            borderTopColor: 'var(--accent)',
-            borderRadius: '50%',
-            animation: 'spin 0.8s linear infinite',
-          }} />
-          <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>Running threat detection...</span>
-          <style>{'@keyframes spin { to { transform: rotate(360deg); } }'}</style>
-        </div>
-      ) : riskLevel && (
-        <div style={{
-          padding: '16px 20px',
-          borderRadius: 10,
-          marginBottom: 20,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          background: `var(--${riskLevel}-bg)`,
-          border: `1px solid var(--${riskLevel})`,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 28, fontWeight: 800, color: `var(--${riskLevel})` }}>
-              {riskLabels[riskLevel]}
-            </span>
-            {riskDowngraded && (
-              <span style={{
-                fontSize: 10,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-                padding: '3px 8px',
-                borderRadius: 999,
-                background: 'rgba(255,255,255,0.5)',
-                color: `var(--${riskLevel})`,
-              }}>
-                incomplete
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-            <strong style={{ color: 'var(--text)' }}>Risk assessment</strong>
-            <br />
-            {findings.length} detection rules triggered, {findings.reduce((sum: number, finding: any) => sum + (finding.matching_count || 0), 0).toLocaleString()} total evidence hits
-          </div>
-        </div>
-      )}
-
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-        gap: 10,
-        marginBottom: 24,
-      }}>
-        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
-          <div className="card-label">Artifacts</div>
-          <div className="card-value">{caseInfo.total_hits?.toLocaleString()}</div>
-        </div>
-        <div className="card" onClick={() => setActiveView('artifacts')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
-          <div className="card-label">Types</div>
-          <div className="card-value">{caseInfo.artifact_type_count}</div>
-        </div>
-        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
-          <div className="card-label">Findings</div>
-          <div className="card-value" style={{ color: 'var(--critical)' }}>{loading ? '...' : detection?.total_findings ?? '0'}</div>
-        </div>
-        <div className="card" onClick={() => setActiveView('detection')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
-          <div className="card-label">ATT&CK</div>
-          <div className="card-value" style={{ color: 'var(--high)' }}>{loading ? '...' : mitre?.attack_phases ?? '0'}</div>
-        </div>
-        <div className="card" onClick={() => setActiveView('timeline')} style={clickableCardStyle} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; }}>
-          <div className="card-label">Period</div>
-          <div className="card-value" style={{ fontSize: 13 }}>
-            {(caseInfo.date_range_start || '?').slice(0, 10)} ~ {(caseInfo.date_range_end || '?').slice(0, 10)}
-          </div>
-        </div>
-      </div>
-
-      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Attack kill chain
-      </h3>
-      <div style={{ display: 'flex', gap: 3, marginBottom: 24, overflowX: 'auto', paddingBottom: 4 }}>
-        {KILL_CHAIN_PHASES.map((phase, index) => {
-          const isHit = activePhases.has(phase);
-          return (
-            <div key={phase} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-              <div style={{
-                flex: '1 0 80px',
-                minWidth: 80,
-                padding: '8px 6px',
-                borderRadius: 6,
-                textAlign: 'center',
-                fontSize: 9,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                border: `1px solid ${isHit ? 'var(--high)' : 'var(--border-light)'}`,
-                background: isHit ? 'var(--high-bg)' : 'var(--surface)',
-                color: isHit ? 'var(--high)' : 'var(--text-dim)',
-              }}>
-                <div style={{ fontSize: 8, opacity: 0.6 }}>{index + 1}</div>
-                {phase.replace('Command and Control', 'C2')}
-              </div>
-              {index < KILL_CHAIN_PHASES.length - 1 && (
-                <span style={{ color: 'var(--border)', fontSize: 8 }}>{'>'}</span>
-              )}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <div className="card" style={{ width: 190, flexShrink: 0 }}>
+          <div className="card-label">Risk Level</div>
+          {loading ? (
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
+              <span className="spinner" />
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Running detection</span>
             </div>
-          );
-        })}
+          ) : riskLevel ? (
+            <>
+              <div style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 28,
+                lineHeight: 1.1,
+                fontWeight: 800,
+                color: `var(--${riskLevel})`,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                marginTop: 6,
+              }}>
+                {riskLabels[riskLevel]}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-subtle)', marginTop: 4 }}>
+                {riskDowngraded ? 'Strong conclusion blocked by lane state' : `${findings.length} detection rules triggered`}
+              </div>
+            </>
+          ) : (
+            <div style={{ color: 'var(--text-muted)', marginTop: 10 }}>Not assessed</div>
+          )}
+        </div>
+
+        <div className="card" style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <div className="card-label">Finding Distribution</div>
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-sm" onClick={() => setActiveView('detection')}>
+              View all {findings.length}
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, height: 58, alignItems: 'end' }}>
+            {(['critical', 'high', 'medium', 'low'] as const).map(level => (
+              <div key={level} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <div style={{
+                  width: '100%',
+                  height: Math.max(4, (severityCounts[level] / maxSeverityCount) * 30),
+                  background: `var(--${level})`,
+                  opacity: 0.75,
+                  borderRadius: 2,
+                }} />
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text)' }}>{severityCounts[level]}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-subtle)', textTransform: 'uppercase' }}>{level}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card" style={{ width: 230, flexShrink: 0 }}>
+          <div className="card-label" style={{ marginBottom: 6 }}>Case Metadata</div>
+          {[
+            ['Source', caseInfo.source_type || caseInfo.case_mode || 'case'],
+            ['Artifacts', (caseInfo.total_hits || 0).toLocaleString()],
+            ['Types', String(caseInfo.artifact_type_count || 0)],
+            ['Opened', (caseInfo.date_range_start || '?').slice(0, 10)],
+            ['Status', allowStrongConclusion ? 'reviewable' : 'incomplete'],
+          ].map(([label, value]) => (
+            <div key={label} style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              gap: 10,
+              padding: '4px 0',
+              borderBottom: '1px solid var(--border-muted)',
+              fontSize: 11,
+            }}>
+              <span style={{ color: 'var(--text-subtle)' }}>{label}</span>
+              <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {value}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Top artifact types
-      </h3>
-      {topTypes.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          {topTypes.map((artifact, index) => {
-            const maxCount = topTypes[0]?.count || 1;
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+          <div className="card-label">MITRE ATT&CK Kill Chain Coverage</div>
+          <div style={{ flex: 1 }} />
+          <LegendDot color="var(--high)" label="seen" />
+          <LegendDot color="var(--text-subtle)" label="not seen" />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(84px, 1fr))', gap: 4 }}>
+          {KILL_CHAIN_PHASES.map((phase, index) => {
+            const isHit = activePhases.has(phase);
             return (
-              <div key={index} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <span style={{ width: 180, fontSize: 11, color: 'var(--text-dim)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                  {artifact.artifact_type}
-                </span>
-                <div style={{ flex: 1, background: 'var(--surface)', borderRadius: 4, height: 16 }}>
-                  <div style={{ width: `${(artifact.count / maxCount) * 100}%`, background: 'var(--accent)', height: '100%', borderRadius: 4, minWidth: 2 }} />
+              <div
+                key={phase}
+                style={{
+                  minHeight: 48,
+                  padding: '5px 4px',
+                  borderRadius: 3,
+                  border: `1px solid ${isHit ? 'var(--high-border)' : 'var(--border-muted)'}`,
+                  background: isHit ? 'var(--high-bg)' : 'transparent',
+                  textAlign: 'center',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  gap: 2,
+                }}
+              >
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: isHit ? 'var(--high)' : 'var(--text-subtle)' }}>
+                  {String(index + 1).padStart(2, '0')}
                 </div>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)', minWidth: 60, textAlign: 'right' }}>{artifact.count.toLocaleString()}</span>
+                <div style={{ fontSize: 10, fontWeight: isHit ? 700 : 600, color: isHit ? 'var(--text)' : 'var(--text-muted)' }}>
+                  {phase.replace('Command and Control', 'C2').replace('Resource Development', 'Resource Dev.')}
+                </div>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 9, color: isHit ? 'var(--high)' : 'var(--text-subtle)' }}>
+                  {isHit ? 'SEEN' : ''}
+                </div>
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {hasLaneBoard && !laneError && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-label" style={{ marginBottom: 10 }}>Investigative Lanes</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+            {LANE_ORDER.map((lane) => {
+              const entry = laneBoard?.[lane] || {};
+              const state = entry.state || 'not_seen';
+              const style = LANE_STATE_STYLES[state] || LANE_STATE_STYLES.not_seen;
+              const basis = (entry.basis || []).slice(0, 2).join(', ') || 'No supporting signals surfaced';
+              return (
+                <div
+                  key={lane}
+                  onClick={() => setActiveView('detection')}
+                  style={{
+                    padding: '12px 12px 10px',
+                    borderRadius: '0 4px 4px 0',
+                    background: 'var(--surface-2)',
+                    border: '1px solid var(--border)',
+                    borderLeft: `3px solid ${style.color}`,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{LANE_LABELS[lane]}</div>
+                    <span style={{
+                      fontFamily: 'var(--mono)',
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: '0.06em',
+                      color: style.color,
+                      border: `1px solid ${style.color}`,
+                      borderRadius: 3,
+                      padding: '1px 5px',
+                    }}>
+                      {String(state).toUpperCase()}
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 3, marginBottom: 8 }}>
+                    {[0, 1, 2, 3].map((slot) => (
+                      <div key={slot} style={{
+                        height: 3,
+                        borderRadius: 2,
+                        background: slot === 0 ? style.color : 'rgba(139,148,158,0.25)',
+                      }} />
+                    ))}
+                  </div>
+                  <div style={{ borderTop: '1px solid var(--border-muted)', paddingTop: 8, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    {basis}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -818,5 +809,14 @@ export default function Dashboard() {
         </div>
       )}
     </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 10, fontSize: 10, color: 'var(--text-subtle)', textTransform: 'uppercase' }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {label}
+    </span>
   );
 }

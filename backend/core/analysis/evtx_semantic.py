@@ -265,6 +265,19 @@ $Events | ForEach-Object {{
             "parser_backend": "unavailable",
         }
     if proc.returncode != 0:
+        if _get_winevent_no_matching_events(proc.stderr):
+            return {
+                "ok": True,
+                "records": [],
+                "record_count": 0,
+                "event_id_counts": {},
+                "parser_failures": [],
+                "parser_backend": "get-winevent",
+                "fallback_note": (
+                    "python-evtx was unavailable; Get-WinEvent parsed the offline EVTX "
+                    "but found no records matching the requested event filter."
+                ),
+            }
         return {
             "ok": False,
             "records": [],
@@ -299,3 +312,14 @@ $Events | ForEach-Object {{
         "parser_backend": "get-winevent",
         "fallback_note": "python-evtx was unavailable; parsed offline EVTX via Get-WinEvent -Path.",
     }
+
+
+def _get_winevent_no_matching_events(stderr: str) -> bool:
+    text = str(stderr or "")
+    markers = (
+        "NoMatchingEventsFound",
+        "No events were found that match the specified selection criteria",
+        "No events were found",
+        "지정한 선택 조건과 일치하는 이벤트를 찾을 수 없습니다",
+    )
+    return any(marker.lower() in text.lower() for marker in markers)
