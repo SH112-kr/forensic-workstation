@@ -2,6 +2,8 @@
 
 Local-first DFIR workstation for Windows endpoint investigations. The project combines a FastAPI backend, React UI, and a Claude/Codex MCP bridge so analysts can inspect parsed cases, mounted disk images, memory dumps, logs, and binaries without sending evidence to external services.
 
+Korean documentation: [README.ko.md](README.ko.md)
+
 ## What It Does
 
 - Opens AXIOM `.mfdb` cases and KAPE CSV output directories.
