@@ -4,6 +4,8 @@ Windows 엔드포인트 침해사고 대응과 디지털 포렌식을 위한 로
 
 English documentation: [README.md](README.md)
 
+MCP 민감정보 공개 게이트 제안서: [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+
 ## 주요 기능
 
 - AXIOM `.mfdb` 케이스와 KAPE CSV 출력 디렉터리를 엽니다.

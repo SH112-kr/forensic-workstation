@@ -4,6 +4,8 @@ Local-first DFIR workstation for Windows endpoint investigations. The project co
 
 Korean documentation: [README.ko.md](README.ko.md)
 
+Privacy and MCP disclosure gate proposal: [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+
 ## What It Does
 
 - Opens AXIOM `.mfdb` cases and KAPE CSV output directories.
