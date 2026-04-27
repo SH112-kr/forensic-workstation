@@ -22,11 +22,14 @@ def test_attach_runtime_warning_when_code_is_stale(monkeypatch):
             "latest_code_mtime": datetime.now(timezone.utc).isoformat(),
         },
     )
-    result = mcp_bridge._attach_runtime_warning({"status": "ok"})
+    result = mcp_bridge._attach_runtime_warning({"status": "ok"}, tool_name="service_persistence_gate")
     assert result["status"] == "ok"
     assert result["server_runtime"]["pid"] == 1234
     assert result["server_runtime"]["stale_code_detected"] is True
     assert result["runtime_warnings"]
+    assert result["runtime_status"]["severity"] == "critical"
+    assert result["runtime_status"]["restart_required_before_relying_on_result"] is True
+    assert result["analysis_blockers"]
 
 
 def test_attach_runtime_warning_noop_when_fresh(monkeypatch):

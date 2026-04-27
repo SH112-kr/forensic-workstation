@@ -1,272 +1,69 @@
 ---
 name: incident-response
-description: 安全事件响应的专业技能和方法论
-version: 1.0.0
+description: Windows endpoint incident response, evidence coverage checks, timeline building, and hypothesis refutation
+version: 1.1.1
 ---
 
-# 安全事件响应
+# Incident Response
 
-## 概述
+Use this skill for Windows endpoint incident response when the goal is to
+reduce missed evidence and confirmation bias. The workflow is coverage-first:
+record what was checked, what was unavailable, and what still needs
+corroboration before drawing conclusions.
 
-安全事件响应是处理安全事件的关键流程。本技能提供安全事件响应的方法、工具和最佳实践。
+## Core Rules
 
-## 响应流程
+- Keep evidence sources separate: parsed case, mounted image, exported file,
+  and imported log are not interchangeable.
+- Do not treat missing event logs as proof that the behavior did not happen.
+  Cross-check services, scheduled tasks, Run keys, file timestamps, Prefetch,
+  SRUM, WER, and other artifacts.
+- Automated detections are leads, not verdicts.
+- A zero-result query means no parsed item matched the current source and
+  filters. Check coverage, parser failures, date filters, and alternate
+  artifacts before interpreting it.
+- Long-running analysis should expose current phase and resulting artifacts.
 
-### 1. 准备阶段
+## Windows Endpoint Triage
 
-**准备工作：**
-- 建立响应团队
-- 制定响应计划
-- 准备工具和资源
-- 建立通信渠道
+1. Confirm scope and evidence state first.
+   - With a parsed AXIOM/KAPE case, start with `case_health`,
+     `coverage_explainer`, and `initial_triage_pack`.
+   - With only a raw image, start with `raw_image_triage_gate`,
+     `service_persistence_gate`, `query_evtx_file`,
+     `query_prefetch_files`, and `query_registry_hive`.
 
-### 2. 识别阶段
+2. Review persistence without relying only on EVTX.
+   - Services: SYSTEM hive `ControlSet*\\Services`; for svchost services,
+     follow `Parameters\\ServiceDll`.
+   - Scheduled tasks: TaskCache registry keys and task XML files.
+   - Startup: Run/RunOnce keys and Startup folders.
+   - Drivers: service Type 1/2 entries.
 
-**识别事件：**
-- 监控告警
-- 异常检测
-- 日志分析
-- 用户报告
+3. Corroborate execution from multiple families.
+   - Prefetch is strong execution evidence when enabled, but can be disabled
+     or cleaned.
+   - AmCache, ShimCache, and UserAssist should not be used as standalone
+     verdicts.
+   - Combine SRUM, EVTX, WER, LNK, JumpList, and filesystem timestamps.
 
-### 3. 遏制阶段
+4. Analyze files statically first.
+   - Hash, signature, version info, and timestamps come before reverse
+     engineering.
+   - Never execute extracted evidence.
+   - Ghidra, strings, and import analysis describe capability; keep that
+     separate from execution or load evidence.
 
-**遏制措施：**
-- 隔离受影响系统
-- 禁用账户
-- 阻断网络连接
-- 备份证据
+5. Build timelines by hypothesis.
+   - Separate initial access, execution, persistence, privilege escalation,
+     defense evasion, lateral movement, exfiltration, and cleanup.
+   - Temporal proximity is not causation. Items in the same time window are
+     candidates until token-linked or artifact-linked evidence supports them.
 
-### 4. 清除阶段
+## Report Checklist
 
-**清除威胁：**
-- 移除恶意软件
-- 修复漏洞
-- 重置凭证
-- 清理后门
-
-### 5. 恢复阶段
-
-**恢复系统：**
-- 恢复备份
-- 验证系统完整性
-- 监控系统
-- 逐步恢复服务
-
-### 6. 总结阶段
-
-**总结经验：**
-- 事件报告
-- 经验教训
-- 改进措施
-- 更新流程
-
-## 工具使用
-
-### 日志分析
-
-**使用Splunk：**
-```bash
-# 搜索日志
-index=security event_type="failed_login"
-
-# 统计分析
-index=security | stats count by src_ip
-
-# 时间序列分析
-index=security | timechart count by event_type
-```
-
-**使用ELK：**
-```bash
-# Elasticsearch查询
-GET /logs/_search
-{
-  "query": {
-    "match": {
-      "event_type": "malware"
-    }
-  }
-}
-```
-
-### 取证工具
-
-**使用Volatility：**
-```bash
-# 分析内存镜像
-volatility -f memory.dump imageinfo
-
-# 列出进程
-volatility -f memory.dump --profile=Win7SP1x64 pslist
-
-# 提取进程内存
-volatility -f memory.dump --profile=Win7SP1x64 memdump -p 1234 -D output/
-```
-
-**使用Autopsy：**
-```bash
-# 启动Autopsy
-# 创建案例
-# 添加证据
-# 分析数据
-```
-
-### 网络分析
-
-**使用Wireshark：**
-```bash
-# 捕获流量
-wireshark -i eth0
-
-# 分析PCAP文件
-wireshark -r capture.pcap
-
-# 过滤流量
-# 显示过滤器: ip.addr == 192.168.1.100
-# 捕获过滤器: host 192.168.1.100
-```
-
-**使用tcpdump：**
-```bash
-# 捕获流量
-tcpdump -i eth0 -w capture.pcap
-
-# 分析流量
-tcpdump -r capture.pcap -A
-```
-
-## 事件类型
-
-### 恶意软件
-
-**响应步骤：**
-1. 隔离受影响系统
-2. 收集样本
-3. 分析恶意软件
-4. 清除威胁
-5. 修复漏洞
-
-**工具：**
-- VirusTotal
-- Cuckoo Sandbox
-- YARA规则
-
-### 数据泄露
-
-**响应步骤：**
-1. 确认泄露范围
-2. 遏制泄露
-3. 评估影响
-4. 通知相关方
-5. 修复漏洞
-
-**检查项目：**
-- 泄露数据量
-- 受影响用户
-- 泄露渠道
-- 数据敏感性
-
-### 拒绝服务
-
-**响应步骤：**
-1. 确认攻击类型
-2. 启用防护措施
-3. 过滤恶意流量
-4. 监控系统状态
-5. 恢复正常服务
-
-**防护措施：**
-- DDoS防护服务
-- 流量清洗
-- 限流措施
-- CDN防护
-
-### 未授权访问
-
-**响应步骤：**
-1. 禁用受影响账户
-2. 重置凭证
-3. 检查访问日志
-4. 评估数据访问
-5. 修复漏洞
-
-**检查项目：**
-- 访问时间
-- 访问内容
-- 访问来源
-- 数据修改
-
-## 响应清单
-
-### 准备阶段
-- [ ] 建立响应团队
-- [ ] 制定响应计划
-- [ ] 准备工具
-- [ ] 建立通信渠道
-
-### 识别阶段
-- [ ] 确认事件
-- [ ] 收集信息
-- [ ] 评估影响
-- [ ] 记录时间线
-
-### 遏制阶段
-- [ ] 隔离系统
-- [ ] 禁用账户
-- [ ] 阻断连接
-- [ ] 备份证据
-
-### 清除阶段
-- [ ] 移除威胁
-- [ ] 修复漏洞
-- [ ] 重置凭证
-- [ ] 验证清除
-
-### 恢复阶段
-- [ ] 恢复系统
-- [ ] 验证完整性
-- [ ] 监控系统
-- [ ] 恢复服务
-
-### 总结阶段
-- [ ] 编写报告
-- [ ] 总结经验
-- [ ] 改进措施
-- [ ] 更新流程
-
-## 最佳实践
-
-### 1. 准备
-
-- 建立响应团队
-- 制定响应计划
-- 定期演练
-- 准备工具
-
-### 2. 响应
-
-- 快速响应
-- 系统化处理
-- 记录所有操作
-- 保护证据
-
-### 3. 沟通
-
-- 内部沟通
-- 外部通知
-- 状态更新
-- 事后报告
-
-### 4. 改进
-
-- 事件分析
-- 流程改进
-- 工具更新
-- 培训提升
-
-## 注意事项
-
-- 快速响应
-- 保护证据
-- 记录操作
-- 遵守法律法规
+- Evidence source names, paths, and active image/case identifiers.
+- Parser failures, missing artifact families, and shadow copy status.
+- Strong evidence vs weak/contextual evidence.
+- Alternative hypotheses that were not fully refuted.
+- Reproducible MCP calls or original artifact paths.

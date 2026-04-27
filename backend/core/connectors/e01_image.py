@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import os
 import re
 import struct
+import types
+from datetime import datetime, timezone
 from typing import Any
 
 from core.connectors.base import BaseConnector
@@ -23,6 +26,7 @@ class E01ImageConnector(BaseConnector):
         self._fhs: list = []  # Keep file handles alive
         self._path: str = ""
         self._fat_fallback = None
+        self._vss_cache: dict[str, Any] = {}
 
     def connect(self, path: str, **kwargs: Any) -> dict:
         """Open a disk image (E01, VMDK, raw, etc.)."""
@@ -75,6 +79,7 @@ class E01ImageConnector(BaseConnector):
     def disconnect(self) -> None:
         self._target = None
         self._fat_fallback = None
+        self._vss_cache = {}
         for fh in self._fhs:
             try:
                 fh.close()
@@ -319,7 +324,383 @@ class E01ImageConnector(BaseConnector):
             return {"path": str(fp), "error": str(e)}
 
     def get_capabilities(self) -> list[str]:
-        return ["search", "list_directory", "find_files", "extract_file"]
+        return [
+            "search",
+            "list_directory",
+            "find_files",
+            "extract_file",
+            "list_vss_snapshots",
+            "vss_list_directory",
+            "vss_find_files",
+            "vss_extract_file",
+            "vss_get_file_info",
+        ]
+
+    def list_vss_snapshots(self, volume: str = "/c:") -> dict[str, Any]:
+        """List VSS stores on a mounted NTFS volume."""
+        try:
+            vss, _volume = self._get_vss_for_volume(volume)
+        except Exception as e:
+            return {
+                "ok": False,
+                "volume": volume,
+                "error": str(e),
+                "snapshots": [],
+            }
+        snapshots = [self._snapshot_metadata(store, volume) for store in vss.catalog.stores]
+        return {
+            "ok": True,
+            "volume": volume,
+            "snapshot_count": len(snapshots),
+            "snapshots": snapshots,
+            "guardrails": _vss_connector_guardrails(),
+        }
+
+    def vss_list_directory(self, snapshot_id: str, path: str = "/", volume: str = "/c:") -> list[dict]:
+        snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
+        p = fs.path(self._normalize_volume_relative_path(path))
+        results = []
+        try:
+            for entry in sorted(p.iterdir()):
+                info: dict[str, Any] = {
+                    "name": entry.name,
+                    "path": _vss_display_path(volume, str(entry)),
+                    "is_dir": entry.is_dir(),
+                    "temporal_layer": snapshot["temporal_layer"],
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "snapshot_creation_time": snapshot["snapshot_creation_time"],
+                }
+                if not entry.is_dir():
+                    try:
+                        info["size"] = entry.stat().st_size
+                    except Exception:
+                        info["size"] = -1
+                results.append(info)
+        except Exception as e:
+            return [{"error": str(e)}]
+        return results
+
+    def vss_find_files(
+        self,
+        snapshot_id: str,
+        pattern: str,
+        path: str = "/",
+        volume: str = "/c:",
+        limit: int = 100,
+    ) -> list[dict]:
+        snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
+        base = fs.path(self._normalize_volume_relative_path(path))
+        results = []
+        try:
+            for entry in self._safe_vss_rglob(base, pattern, limit=limit):
+                info: dict[str, Any] = {
+                    "path": _vss_display_path(volume, str(entry)),
+                    "is_dir": entry.is_dir(),
+                    "temporal_layer": snapshot["temporal_layer"],
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "snapshot_creation_time": snapshot["snapshot_creation_time"],
+                }
+                if not entry.is_dir():
+                    try:
+                        info["size"] = entry.stat().st_size
+                    except Exception:
+                        info["size"] = -1
+                results.append(info)
+                if len(results) >= limit:
+                    break
+        except Exception as e:
+            return [{"error": str(e)}]
+        return results
+
+    def vss_get_file_info(self, snapshot_id: str, internal_path: str, volume: str = "/c:") -> dict:
+        snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
+        norm = self._normalize_volume_relative_path(internal_path)
+        fp = fs.path(norm)
+        if not fp.exists():
+            return {
+                "error": f"File not found in VSS snapshot {snapshot['snapshot_id']}: {internal_path}",
+                **snapshot,
+                "path": _vss_display_path(volume, norm),
+            }
+        try:
+            return {
+                **self._file_info_from_path(fp),
+                **snapshot,
+                "path": _vss_display_path(volume, str(fp)),
+            }
+        except Exception as e:
+            return {
+                "path": _vss_display_path(volume, str(fp)),
+                "error": str(e),
+                **snapshot,
+            }
+
+    def vss_extract_file(
+        self,
+        snapshot_id: str,
+        internal_path: str,
+        output_path: str,
+        volume: str = "/c:",
+    ) -> dict:
+        """Extract a file from a VSS snapshot for static analysis only."""
+        snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
+        norm = self._normalize_volume_relative_path(internal_path)
+        fp = fs.path(norm)
+        if not fp.exists():
+            raise FileNotFoundError(
+                f"File not found in VSS snapshot {snapshot['snapshot_id']}: {internal_path}"
+            )
+        result = self._copy_fs_path_to_output(fp, internal_path, output_path)
+        result.update(snapshot)
+        result["source"] = "vss_snapshot"
+        result["volume"] = volume
+        return result
+
+    def vss_read_file_content(
+        self,
+        snapshot_id: str,
+        internal_path: str,
+        volume: str = "/c:",
+        max_size: int = 1048576,
+    ) -> bytes:
+        _snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
+        fp = fs.path(self._normalize_volume_relative_path(internal_path))
+        if not fp.exists():
+            raise FileNotFoundError(f"File not found in VSS snapshot: {internal_path}")
+        data = b""
+        with fp.open("rb") as src:
+            while len(data) < max_size:
+                chunk = src.read(min(65536, max_size - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+        return data
+
+    def _get_vss_for_volume(self, volume_ref: str = "/c:"):
+        if not self._target:
+            raise RuntimeError("No disk image mounted")
+        volume = self._resolve_volume(volume_ref)
+        cache_key = str(getattr(volume, "guid", "")) or str(getattr(volume, "offset", ""))
+        cached = self._vss_cache.get(cache_key)
+        if cached:
+            return cached["vss"], volume
+        try:
+            from dissect.volume.vss import VSS
+        except Exception as e:
+            raise RuntimeError(f"dissect.volume.vss is unavailable: {e}") from e
+        try:
+            volume.seek(0)
+            vss = VSS(volume)
+        except Exception as e:
+            raise RuntimeError(f"No readable VSS catalog on volume {volume_ref}: {e}") from e
+        self._patch_vss_stores(vss)
+        self._vss_cache[cache_key] = {"vss": vss}
+        return vss, volume
+
+    def _get_vss_snapshot_fs(self, snapshot_id: str, volume: str = "/c:"):
+        from dissect.target.filesystems.ntfs import NtfsFilesystem
+
+        vss, _volume = self._get_vss_for_volume(volume)
+        token = str(snapshot_id or "").strip().lower()
+        for store in vss.catalog.stores:
+            aliases = {
+                str(store.index).lower(),
+                f"vss{store.index}".lower(),
+                str(store.copy_identifier).lower(),
+            }
+            if token in aliases:
+                meta = self._snapshot_metadata(store, volume)
+                return meta, NtfsFilesystem(store.open())
+        valid = [str(store.copy_identifier) for store in vss.catalog.stores]
+        raise ValueError(f"VSS snapshot not found: {snapshot_id}. Valid snapshot_ids: {valid}")
+
+    def _resolve_volume(self, volume_ref: str):
+        ref = str(volume_ref or "/c:").strip().lower().replace("\\", "/")
+        wanted_drive = ""
+        if len(ref) >= 2 and ref[1] == ":":
+            wanted_drive = ref[0]
+        elif ref.startswith("/") and len(ref) >= 3 and ref[2] == ":":
+            wanted_drive = ref[1]
+
+        candidates = []
+        for volume in self._target.volumes:
+            fs = getattr(volume, "fs", None)
+            if fs is None or str(fs).lower().find("ntfs") < 0:
+                continue
+            candidates.append(volume)
+            drive = str(getattr(volume, "drive_letter", "") or "").lower().rstrip(":")
+            if wanted_drive and drive == wanted_drive:
+                return volume
+            guid = str(getattr(volume, "guid", "") or "").lower()
+            if guid and guid in ref:
+                return volume
+        if wanted_drive == "c" and candidates:
+            return candidates[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ValueError(f"Unable to resolve NTFS volume for {volume_ref!r}")
+
+    def _patch_vss_stores(self, vss: Any) -> None:
+        """Patch VSS sparse-block fallback to read from the active volume.
+
+        The installed dissect.volume.vss StoreStream returns zeroes for some
+        sparse/unchanged blocks. For filesystem mounting we need the complete
+        virtual volume, so unchanged blocks fall back to the active volume bytes.
+        Overlay and forwarded blocks still come from the VSS store chain.
+        """
+        try:
+            from dissect.volume.vss import BLOCK_SIZE
+        except Exception:
+            BLOCK_SIZE = 0x4000
+
+        def read_block(store_self, block: int, active_store: Any | None = None) -> bytes:
+            descriptor = store_self.block_list.map.map.get(block)
+            buf = None
+            if descriptor:
+                if descriptor.is_forwarder:
+                    if store_self.next_store:
+                        buf = store_self.next_store.read_block(
+                            descriptor.relative_offset // BLOCK_SIZE,
+                            store_self,
+                        )
+                    else:
+                        store_self.fh.seek(descriptor.relative_offset)
+                        buf = store_self.fh.read(BLOCK_SIZE)
+                elif not descriptor.is_overlay:
+                    store_self.fh.seek(descriptor.store_offset)
+                    buf = store_self.fh.read(BLOCK_SIZE)
+            if not descriptor or descriptor.is_overlay:
+                if store_self.next_store:
+                    buf = store_self.next_store.read_block(block, store_self)
+                else:
+                    store_self.fh.seek(block * BLOCK_SIZE)
+                    buf = store_self.fh.read(BLOCK_SIZE)
+            if not buf:
+                raise ValueError(f"Error reading VSS block {block}")
+            return buf
+
+        for store in getattr(getattr(vss, "catalog", None), "stores", []) or []:
+            store.read_block = types.MethodType(read_block, store)
+
+    def _snapshot_metadata(self, store: Any, volume: str) -> dict[str, Any]:
+        copy_id = str(store.copy_identifier)
+        return {
+            "temporal_layer": f"vss:{store.index}:{copy_id}",
+            "snapshot_id": copy_id,
+            "snapshot_index": int(store.index),
+            "snapshot_creation_time": _filetime_to_iso(getattr(store, "creation_time", None)),
+            "volume": volume,
+            "integrity_note": "VSS contents are historical layers, not verified-clean baseline state.",
+        }
+
+    def _file_info_from_path(self, fp: Any) -> dict[str, Any]:
+        st = fp.stat()
+        result: dict[str, Any] = {
+            "path": str(fp),
+            "size": st.st_size,
+        }
+
+        result["created"] = _format_fs_ts(
+            getattr(st, "st_birthtime", None) or getattr(st, "st_ctime", None)
+        )
+        result["modified"] = _format_fs_ts(st.st_mtime)
+        result["accessed"] = _format_fs_ts(st.st_atime)
+
+        try:
+            entry = fp.get()
+            si = getattr(entry, "stdinfo", None)
+            fn = getattr(entry, "filename", None)
+            if si:
+                result["$SI_created"] = _format_fs_ts(getattr(si, "creation_time", None))
+                result["$SI_modified"] = _format_fs_ts(getattr(si, "modification_time", None))
+                result["$SI_mft_modified"] = _format_fs_ts(getattr(si, "mft_modification_time", None))
+                result["$SI_accessed"] = _format_fs_ts(getattr(si, "access_time", None))
+            if fn:
+                result["$FN_created"] = _format_fs_ts(getattr(fn, "creation_time", None))
+                result["$FN_modified"] = _format_fs_ts(getattr(fn, "modification_time", None))
+        except Exception:
+            pass
+        return result
+
+    def _copy_fs_path_to_output(self, fp: Any, internal_path: str, output_path: str) -> dict:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        warn_path = os.path.join(os.path.dirname(output_path), "_WARNING_MALWARE_DO_NOT_EXECUTE.txt")
+        if not os.path.exists(warn_path):
+            with open(warn_path, "w", encoding="utf-8") as wf:
+                wf.write(
+                    "WARNING: This directory contains files extracted from a forensic disk image.\n"
+                    "These files may be MALWARE. DO NOT EXECUTE any file in this directory.\n"
+                    "Use only static analysis tools (e.g., Ghidra, strings, hex editors).\n"
+                )
+
+        sha256 = hashlib.sha256()
+        size = 0
+        with fp.open("rb") as src, open(output_path, "wb") as dst:
+            while True:
+                chunk = src.read(65536)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                sha256.update(chunk)
+                size += len(chunk)
+        try:
+            current = os.stat(output_path).st_mode
+            os.chmod(output_path, current & 0o666)
+        except Exception:
+            pass
+        return {
+            "internal_path": internal_path,
+            "output_path": output_path,
+            "size": size,
+            "sha256": sha256.hexdigest(),
+            "execute_allowed": False,
+            "warning": "STATIC ANALYSIS ONLY - do not execute this file",
+        }
+
+    def _safe_vss_rglob(self, base: Any, pattern: str, limit: int = 100):
+        """Walk a VSS filesystem tree without letting one bad path abort search."""
+        pattern_lc = str(pattern or "*").lower()
+        stack: list[Any] = [base]
+        visited_dirs = 0
+        max_dirs = 20000
+        yielded = 0
+
+        while stack and yielded < limit and visited_dirs < max_dirs:
+            current = stack.pop()
+            visited_dirs += 1
+            try:
+                entries = sorted(
+                    list(current.iterdir()),
+                    key=lambda entry: str(getattr(entry, "name", "") or "").lower(),
+                )
+            except Exception:
+                continue
+
+            for entry in entries:
+                try:
+                    name = str(getattr(entry, "name", "") or "")
+                    entry_path = str(entry).replace("\\", "/")
+                    is_match = (
+                        fnmatch.fnmatchcase(name.lower(), pattern_lc)
+                        or fnmatch.fnmatchcase(entry_path.lower(), pattern_lc)
+                    )
+                    is_dir = entry.is_dir()
+                except Exception:
+                    continue
+                if is_match:
+                    yielded += 1
+                    yield entry
+                    if yielded >= limit:
+                        break
+                if is_dir:
+                    stack.append(entry)
+
+    def _normalize_volume_relative_path(self, path: str) -> str:
+        path = self._normalize_path(path)
+        m = re.match(r"^/[a-z]:/?", path, flags=re.IGNORECASE)
+        if m:
+            path = "/" + path[m.end():].lstrip("/")
+        return path or "/"
 
     def _open_fat_fallback(self):
         try:
@@ -342,7 +723,7 @@ class E01ImageConnector(BaseConnector):
         """Convert Windows/AXIOM-style path to dissect internal format."""
         path = path.replace("\\", "/")
         # Strip AXIOM partition description prefix
-        # e.g. "E01Capture.E01 - Partition 3 (Microsoft NTFS, 237.57 GB)/Windows/..."
+        # e.g. "Evidence.E01 - Partition 3 (Microsoft NTFS, 237.57 GB)/Windows/..."
         m = re.match(r'^[^)]+Partition\s+\d+\s*\([^)]+\)\s*/?\s*', path, flags=re.IGNORECASE)
         if m:
             path = path[m.end():]
@@ -355,6 +736,53 @@ class E01ImageConnector(BaseConnector):
             # No drive letter after AXIOM prefix strip — default to /c:/
             path = "/c:/" + path.lstrip("/")
         return path
+
+
+def _format_fs_ts(ts: Any) -> str:
+    if ts is None:
+        return ""
+    try:
+        if isinstance(ts, (int, float)):
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        else:
+            dt = ts
+        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    except Exception:
+        return str(ts)
+
+
+def _filetime_to_iso(value: Any) -> str:
+    try:
+        if value is None:
+            return ""
+        seconds = (int(value) - 116444736000000000) / 10_000_000
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return str(value or "")
+
+
+def _vss_display_path(volume: str, path: str) -> str:
+    vol = str(volume or "/c:").replace("\\", "/").strip()
+    if not vol.startswith("/"):
+        vol = "/" + vol
+    vol = vol.rstrip("/")
+    rel = str(path or "/").replace("\\", "/")
+    if len(rel) >= 3 and rel.startswith("/") and rel[2] == ":":
+        return rel
+    return f"{vol}/{rel.lstrip('/')}"
+
+
+def _vss_connector_guardrails() -> dict[str, Any]:
+    return {
+        "temporal_layer_required": True,
+        "merge_with_current_fs_allowed": False,
+        "absence_is_negative_evidence": False,
+        "vss_is_verified_clean_baseline": False,
+        "interpretation": (
+            "VSS snapshots are historical filesystem layers. Treat them as "
+            "separate evidence sources and compare explicitly."
+        ),
+    }
 
 
 class _FatRootFallback:

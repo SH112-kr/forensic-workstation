@@ -22,6 +22,8 @@ import os
 import json
 import re
 import asyncio
+import hashlib
+import subprocess
 from datetime import datetime, timezone
 import inspect
 from typing import Any, Callable
@@ -43,17 +45,22 @@ from state import (
     app_state,
     build_not_allowed_message,
     is_path_allowed,
+    load_active_case,
+    load_allowed_evidence,
     resolve_active_case_evidence,
     resolve_allowed_evidence,
+    resolve_image_evidence,
 )
 
 mcp = FastMCP(
     name="forensic-workstation",
     instructions=(
-        "Forensic Workstation — DFIR 침해사고조사 플랫폼입니다. "
-        "웹 UI(http://localhost:8001)와 연동됩니다. "
-        "도구 호출 시 결과가 웹 UI에도 실시간으로 표시됩니다.\n\n"
-        "먼저 open_case로 .mfdb 파일 또는 KAPE 결과 디렉토리를 열고, 분석 도구를 사용하세요."
+        "Forensic Workstation exposes offline DFIR tools for the user-selected "
+        "evidence set. Before analysis, inspect the selected evidence context. "
+        "If no parsed AXIOM/KAPE case is loaded but a selected disk image is "
+        "available, use mount_image(evidence_ref='active_image') and raw-image "
+        "tools. Never search the workspace for replacement evidence; open_case "
+        "and mount_image are constrained to user-selected allowlisted evidence."
     ),
 )
 
@@ -86,6 +93,26 @@ _SERVER_CODE_MTIME_AT_START = {
     path: os.path.getmtime(path)
     for path in _WATCHED_CODE_FILES
     if os.path.exists(path)
+}
+_STALE_SENSITIVE_TOOLS = {
+    "initial_triage_pack",
+    "service_persistence_gate",
+    "find_suspicious",
+    "baseline_diff",
+    "detect_anti_forensics",
+    "hunt_evtx_rules",
+    "query_evtx_file",
+    "list_vss_snapshots",
+    "vss_list_files",
+    "vss_get_file_timestamps",
+    "vss_extract_file",
+    "vss_query_evtx_file",
+    "vss_query_registry_hive",
+    "query_registry_hive",
+    "query_prefetch_files",
+    "inspect_pe_file",
+    "analyze_binary",
+    "auto_triage",
 }
 
 
@@ -186,7 +213,7 @@ def _runtime_status() -> dict[str, Any]:
     }
 
 
-def _attach_runtime_warning(result: Any) -> Any:
+def _attach_runtime_warning(result: Any, tool_name: str = "") -> Any:
     if not isinstance(result, dict):
         return result
     status = _runtime_status()
@@ -207,6 +234,24 @@ def _attach_runtime_warning(result: Any) -> Any:
         "started_at": status["started_at"],
         "stale_code_detected": True,
     }
+    severity = "critical" if tool_name in _STALE_SENSITIVE_TOOLS else "warning"
+    out["runtime_status"] = {
+        "state": "stale_code",
+        "severity": severity,
+        "tool_name": tool_name,
+        "stale_files": status.get("stale_files", []),
+        "latest_code_mtime": status.get("latest_code_mtime", ""),
+        "restart_required_before_relying_on_result": tool_name in _STALE_SENSITIVE_TOOLS,
+    }
+    if tool_name in _STALE_SENSITIVE_TOOLS:
+        blockers = list(out.get("analysis_blockers", []))
+        blocker = (
+            f"{tool_name} ran on a stale MCP server process. Restart the "
+            "forensic-workstation MCP server before relying on this result."
+        )
+        if blocker not in blockers:
+            blockers.append(blocker)
+        out["analysis_blockers"] = blockers
     return out
 
 
@@ -415,6 +460,14 @@ def _get_axiom() -> AxiomMfdbConnector:
 
 # ── Masking Tools ──
 
+def _parsed_case_loaded() -> bool:
+    return any(
+        (name == "axiom" or name.startswith("axiom:"))
+        and getattr(connector, "is_connected", lambda: False)()
+        for name, connector in _connectors.items()
+    )
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -489,7 +542,7 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
             timeout=timeout_seconds
         )
         result = _localize_timestamps(result)
-        result = _attach_runtime_warning(result)
+        result = _attach_runtime_warning(result, tool_name=tool_name)
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
         return result
@@ -503,8 +556,15 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
                 f"dataset legitimately needs more time."}
     except Exception as e:
         elapsed = _time.time() - t0
-        _log_event("error", tool_name, data={"error": str(e)}, duration=elapsed)
-        return {"error": str(e)}
+        error_payload: dict[str, Any] = {"error": str(e)}
+        try:
+            guidance = _selected_evidence_guidance()
+            if guidance.get("evidence_mode") != "no_selected_evidence":
+                error_payload["selected_evidence_guidance"] = guidance
+        except Exception:
+            pass
+        _log_event("error", tool_name, data=error_payload, duration=elapsed)
+        return error_payload
 
 
 @mcp.tool()
@@ -512,7 +572,15 @@ async def open_case(path: str, case_name: str = "") -> dict:
     """Open an AXIOM case (.mfdb) file or KAPE output directory."""
     def fn():
         if not is_path_allowed(path):
-            return {"error": build_not_allowed_message(path)}
+            return {
+                "ok": False,
+                "error": build_not_allowed_message(path),
+                "guardrail": {
+                    "reason": "path_not_in_user_selected_allowlist",
+                    "blocked_path": path,
+                    "selected_evidence_guidance": _selected_evidence_guidance(),
+                },
+            }
         _connectors.pop("axiom", None)
         if os.path.isdir(path):
             c = KapeCsvConnector()
@@ -549,9 +617,37 @@ async def server_runtime_info() -> dict:
 
 
 @mcp.tool()
+async def get_evidence_context() -> dict:
+    """Show selected evidence, mounted image state, and the required next source action."""
+    return await _traced(
+        "get_evidence_context",
+        {},
+        lambda: _mask(_selected_evidence_guidance()),
+        timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
 async def get_summary() -> dict:
     """Get case overview."""
-    return await _traced("get_summary", {}, lambda: _mask(_get_axiom().get_metadata()), timeout_seconds=TIMEOUT_LIGHT)
+    def fn():
+        if not _parsed_case_loaded():
+            guidance = _selected_evidence_guidance()
+            if guidance.get("evidence_mode") != "no_selected_evidence":
+                return _mask({
+                    "ok": True,
+                    "mode": guidance.get("evidence_mode"),
+                    "summary_scope": "selected_evidence_context",
+                    "parsed_case_loaded": False,
+                    "message": (
+                        "No parsed AXIOM/KAPE case is loaded, but user-selected "
+                        "evidence exists. Follow next_required_action instead of "
+                        "searching the workspace for another case."
+                    ),
+                    "selected_evidence_guidance": guidance,
+                })
+        return _mask(_get_axiom().get_metadata())
+    return await _traced("get_summary", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -697,7 +793,8 @@ async def coverage_explainer(artifact_types: str = "") -> dict:
         requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
         # Pass only the axiom:* connectors — coverage never touches E01/Vol/Ghidra.
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-        return _mask(build_coverage_report(axiom_conns, artifact_types=requested))
+        report = build_coverage_report(axiom_conns, artifact_types=requested)
+        return _mask(_attach_selected_evidence_guidance(report))
     return await _traced("coverage_explainer", {"artifact_types": artifact_types}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
@@ -898,6 +995,265 @@ async def date_anchor_triage(
 
 
 @mcp.tool()
+async def temporal_anchor_correlation(
+    anchor_ts: str,
+    anchor_label: str = "",
+    anchor_entities: str = "",
+    window_before_minutes: int = 30,
+    window_after_minutes: int = 30,
+    source_filter: str = "",
+    limit_per_source: int = 50,
+    anchor_timezone_offset_hours: int = 0,
+) -> dict:
+    """Correlate PF/WER/browser/timeline evidence around one analyst anchor.
+
+    This is a hypothesis-building helper, not a verdict engine. It takes a
+    timestamped anchor such as a browser-cache IOC and surfaces nearby Prefetch
+    last-run slots, WER reports/temp files, browser cache/code-cache files,
+    Crashpad files, and loaded-case timeline rows. Temporal proximity is always
+    labelled as non-causal unless direct evidence is present.
+
+    Args:
+        anchor_ts: Anchor timestamp. Prefer ISO-8601 with timezone
+                   (e.g. 2025-09-26T14:11:32+09:00). If no timezone is present,
+                   anchor_timezone_offset_hours is applied.
+        anchor_label: Human-readable anchor description.
+        anchor_entities: Comma-separated tokens to match against nearby evidence
+                         (e.g. winsystem.kr,module.js,whale).
+        window_before_minutes: Minutes before anchor to inspect.
+        window_after_minutes: Minutes after anchor to inspect.
+        source_filter: Optional comma-separated subset:
+                       prefetch,wer,browser_cache,crashpad,axiom_timeline.
+        limit_per_source: Max events kept per source.
+        anchor_timezone_offset_hours: Offset for naive anchor_ts values.
+    """
+    params = {
+        "anchor_ts": anchor_ts,
+        "anchor_label": anchor_label,
+        "anchor_entities": anchor_entities,
+        "window_before_minutes": window_before_minutes,
+        "window_after_minutes": window_after_minutes,
+        "source_filter": source_filter,
+        "limit_per_source": limit_per_source,
+        "anchor_timezone_offset_hours": anchor_timezone_offset_hours,
+    }
+
+    def fn():
+        from core.analysis.temporal_anchor_correlation import temporal_anchor_correlation as _anchor_corr
+
+        e01 = _connectors.get("e01")
+        if e01 is not None and not e01.is_connected():
+            e01 = None
+
+        axiom = None
+        try:
+            axiom = _get_axiom()
+        except Exception:
+            axiom = None
+
+        return _mask(_anchor_corr(
+            anchor_ts=anchor_ts,
+            anchor_label=anchor_label,
+            anchor_entities=anchor_entities,
+            e01_connector=e01,
+            axiom_connector=axiom,
+            window_before_minutes=window_before_minutes,
+            window_after_minutes=window_after_minutes,
+            source_filter=source_filter,
+            limit_per_source=limit_per_source,
+            anchor_timezone_offset_hours=anchor_timezone_offset_hours,
+        ))
+
+    return await _traced("temporal_anchor_correlation", params, fn, timeout_seconds=TIMEOUT_HEAVY)
+
+
+@mcp.tool()
+async def hypothesis_refutation_pack(
+    scenario: str = "",
+    hypotheses_json: str = "",
+    anchor_correlation_json: str = "",
+    findings_json: str = "",
+    coverage_json: str = "",
+) -> dict:
+    """Build a refutation-first worklist from hypotheses/correlations.
+
+    This tool forces verification questions and benign/unrelated alternatives;
+    it never authorizes a strong incident conclusion. Use it after tools such
+    as temporal_anchor_correlation, competing_hypotheses, find_suspicious, or
+    coverage_explainer when an artifact combination is tempting to interpret as
+    a causal chain.
+
+    Args:
+        scenario: Optional analyst-facing scenario label.
+        hypotheses_json: JSON output from a competing-hypotheses payload.
+        anchor_correlation_json: JSON output from temporal_anchor_correlation.
+        findings_json: JSON output from find_suspicious or a compatible payload.
+        coverage_json: JSON output from coverage_explainer or a compatible payload.
+
+    Reading guide for AI consumers:
+    - This is not a detector and not a verdict engine.
+    - Treat hypotheses[].refutation_tasks as the next worklist.
+    - strong_conclusion_allowed is intentionally false on every hypothesis.
+    - Missing sources are gaps, not evidence that activity did not occur.
+    - Proximity-only evidence must stay separate from token-linked evidence.
+    """
+    params = {
+        "scenario": scenario,
+        "hypotheses_json": hypotheses_json[:200],
+        "anchor_correlation_json": anchor_correlation_json[:200],
+        "findings_json": findings_json[:200],
+        "coverage_json": coverage_json[:200],
+    }
+
+    def fn():
+        from core.analysis.hypothesis_refutation import hypothesis_refutation_pack as _pack
+
+        return _mask(_pack(
+            scenario=scenario,
+            hypotheses_payload=hypotheses_json,
+            anchor_correlation_payload=anchor_correlation_json,
+            findings_payload=findings_json,
+            coverage_payload=coverage_json,
+        ))
+
+    return await _traced("hypothesis_refutation_pack", params, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+def _raw_image_triage_gate(system_hive_path: str = "/c:/Windows/System32/config/SYSTEM") -> dict[str, Any]:
+    """Evidence-coverage gate for raw-image-only endpoint triage."""
+    e01 = _get_e01()
+    context = _evidence_context(system_hive_path, "mounted_image", internal_path=system_hive_path)
+    evtx_paths = [
+        "/c:/Windows/System32/winevt/Logs/System.evtx",
+        "/c:/Windows/System32/winevt/Logs/Security.evtx",
+        "/c:/Windows/System32/winevt/Logs/Microsoft-Windows-PowerShell%4Operational.evtx",
+        "/c:/Windows/System32/winevt/Logs/Windows PowerShell.evtx",
+    ]
+    evtx_sources = []
+    for path in evtx_paths:
+        info = e01.get_file_info(path)
+        evtx_sources.append({
+            "path": path,
+            "status": "available" if "error" not in info else "missing_or_unreadable",
+            "check_type": "file_presence_only",
+            "parse_status": "not_checked",
+            "size": info.get("size"),
+            "error": info.get("error", ""),
+        })
+
+    try:
+        prefetch_listing = e01.list_directory("/c:/Windows/Prefetch")
+        prefetch_files = [
+            item for item in prefetch_listing
+            if not item.get("is_dir") and str(item.get("name", item.get("path", ""))).lower().endswith(".pf")
+        ]
+        prefetch_status = {
+            "status": "available" if prefetch_files else "empty_or_unavailable",
+            "pf_count_sampled": len(prefetch_files),
+            "listing_errors": [item.get("error") for item in prefetch_listing if item.get("error")],
+        }
+    except Exception as e:
+        prefetch_status = {"status": "error", "error": str(e)}
+
+    service_gate = {"ok": False, "gate_status": "unavailable"}
+    service_source = {"source": "mounted_image_system_hive", "status": "unavailable"}
+    try:
+        from core.analysis.service_persistence import (
+            build_service_persistence_gate as _build_service_gate,
+            services_from_system_hive as _services_from_system_hive,
+        )
+        hive_out = _evidence_bound_export_path("raw_image_triage_gate", system_hive_path, "SYSTEM.hive")
+        extraction = e01.extract_file(system_hive_path, hive_out)
+        hive_services, hive_meta = _services_from_system_hive(hive_out)
+        service_gate = _build_service_gate(
+            hive_services,
+            limit=20,
+            file_info_lookup=e01.get_file_info,
+        )
+        service_source = {
+            "source": "mounted_image_system_hive",
+            "status": "checked",
+            "system_hive_path": system_hive_path,
+            "extracted_to": extraction.get("output_path", hive_out),
+            "sha256": extraction.get("sha256", ""),
+            "metadata": hive_meta,
+        }
+    except Exception as e:
+        service_source = {
+            "source": "mounted_image_system_hive",
+            "status": "error",
+            "system_hive_path": system_hive_path,
+            "error": str(e),
+        }
+
+    gaps = []
+    if not any(item["status"] == "available" for item in evtx_sources):
+        gaps.append("event_logs_unavailable")
+    if prefetch_status.get("status") != "available":
+        gaps.append("prefetch_unavailable_or_empty")
+    if service_source.get("status") != "checked":
+        gaps.append("system_hive_services_unchecked")
+
+    coverage_status = "complete_for_gate" if not gaps else "degraded"
+    return {
+        "ok": True,
+        "schema": "fw.raw_image_triage_gate.v1",
+        "mode": "raw_image_gate",
+        "coverage_status": coverage_status,
+        "strong_conclusion_allowed": False,
+        "verdict_authorized": False,
+        "evidence_context": context,
+        "coverage": {
+            "parsed_case_required_for_full_auto_triage": True,
+            "parsed_case_available": context["source_separation"]["parsed_case_available"],
+            "evtx_sources": evtx_sources,
+            "prefetch": prefetch_status,
+            "service_registry_source": service_source,
+            "gaps": gaps,
+        },
+        "service_persistence_gate": {
+            "summary": service_gate.get("summary", {}),
+            "gates": service_gate.get("gates", []),
+            "candidates": service_gate.get("candidates", []),
+            "source_conflicts": service_gate.get("source_conflicts", []),
+            "zero_result_interpretation": service_gate.get("zero_result_interpretation", ""),
+        },
+        "analysis_limits": [
+            "This raw-image gate checks source availability and selected high-value artifacts only.",
+            "EVTX entries are not parsed in this gate; run query_evtx_file for parser status and event-level matches.",
+            "A clean gate does not prove the host is clean.",
+        ],
+        "required_followups": [
+            {
+                "tool_name": "service_persistence_gate",
+                "reason": "Registry state must be checked even when service-install EVTX is absent.",
+                "params": {"include_mounted_image": True, "system_hive_path": system_hive_path},
+            },
+            {
+                "tool_name": "query_evtx_file",
+                "reason": "EVTX availability and parser failures must be separated from activity absence.",
+                "params": {"evtx_path": "/c:/Windows/System32/winevt/Logs/System.evtx", "event_ids": "7045,104"},
+            },
+            {
+                "tool_name": "query_prefetch_files",
+                "reason": "Execution traces should be checked independently of EVTX.",
+                "params": {"directory": "/c:/Windows/Prefetch"},
+            },
+            {
+                "tool_name": "query_registry_hive",
+                "reason": "Direct registry state can survive when event logs are missing or incomplete.",
+                "params": {"hive_path": system_hive_path, "key_path": "\\ControlSet001\\Services"},
+            },
+        ],
+        "reading_guide": [
+            "This gate is coverage-first. It does not classify compromise.",
+            "A missing EVTX source is a coverage gap, not evidence that a service was never installed.",
+            "Service registry candidates are leads; verify payload files, timestamps, execution traces, and source consistency.",
+        ],
+    }
+
+
+@mcp.tool()
 async def initial_triage_pack(
     scope_mode: str = "recent_14d",
     start_date: str = "",
@@ -963,8 +1319,29 @@ async def initial_triage_pack(
                 }
             ref_aq = ref.artifact_queries
 
-        return _mask(_initial_triage(
-            _get_axiom(),
+        try:
+            axiom = _get_axiom()
+        except Exception as e:
+            try:
+                fallback = _raw_image_triage_gate()
+            except Exception as raw_e:
+                return _mask({
+                    "ok": False,
+                    "error": str(e),
+                    "raw_image_fallback_error": str(raw_e),
+                    "analysis_blockers": [
+                        "No parsed case is loaded, and raw image triage could not run.",
+                    ],
+                })
+            fallback["mode"] = "raw_image_fallback_for_initial_triage"
+            fallback["parsed_case_error"] = str(e)
+            fallback["analysis_blockers"] = [
+                "Full initial_triage_pack requires a parsed AXIOM/KAPE case.",
+                "Raw-image fallback ran coverage gates only; do not treat this as full automated triage.",
+            ]
+            return _mask(fallback)
+        result = _initial_triage(
+            axiom,
             scope_mode=scope_mode,
             start_date=start_date,
             end_date=end_date,
@@ -973,9 +1350,68 @@ async def initial_triage_pack(
             timeline_scan_limit=max(200, min(timeline_scan_limit, 4000)),
             include_baseline_diff=include_baseline_diff,
             reference_aq=ref_aq,
-        ))
+        )
+        try:
+            from core.analysis.service_persistence import (
+                build_service_persistence_gate as _build_service_gate,
+                services_from_artifact_rows as _services_from_artifact_rows,
+            )
+            rows = axiom.artifact_queries.query_services(limit=0) or []
+            gate = _build_service_gate(
+                _services_from_artifact_rows(rows),
+                limit=20,
+            )
+            result["service_persistence_gate"] = {
+                "status": "summary_only",
+                "summary": gate.get("summary", {}),
+                "gates": gate.get("gates", []),
+                "drilldown": {
+                    "tool_name": "service_persistence_gate",
+                    "params": {"limit": 50},
+                    "reason": (
+                        "Full service candidates are intentionally omitted from initial_triage "
+                        "to reduce anchoring. Run the gate explicitly for service persistence review."
+                    ),
+                },
+            }
+        except Exception as e:
+            result["service_persistence_gate"] = {
+                "ok": False,
+                "error": str(e),
+                "gate_status": "unavailable",
+            }
+        return _mask(result)
 
     return await _traced("initial_triage_pack", params, fn, timeout_seconds=TIMEOUT_HEAVY)
+
+
+@mcp.tool()
+async def raw_image_triage_gate(
+    system_hive_path: str = "/c:/Windows/System32/config/SYSTEM",
+) -> dict:
+    """Run coverage-first triage gates when only a raw disk image is loaded.
+
+    This tool is intentionally narrower than initial_triage_pack. It checks
+    whether high-value raw sources are present and forces service-registry
+    review from the SYSTEM hive so EVTX absence is not mistaken for absence of
+    persistence.
+
+    Args:
+        system_hive_path: Mounted-image internal path to the SYSTEM hive.
+
+    Reading guide for AI consumers:
+        - This is not a compromise detector and not a replacement for a parsed
+          AXIOM/KAPE case.
+        - Use gaps[] and required_followups[] as a worklist before finalizing a
+          timeline from raw-image evidence.
+        - A missing EVTX source is a coverage gap, not negative evidence.
+    """
+    return await _traced(
+        "raw_image_triage_gate",
+        {"system_hive_path": system_hive_path},
+        lambda: _mask(_raw_image_triage_gate(system_hive_path)),
+        timeout_seconds=TIMEOUT_MEDIUM,
+    )
 
 
 @mcp.tool()
@@ -1238,7 +1674,8 @@ async def case_health() -> dict:
         from state import app_state
         from core.analysis.case_health import case_health as _health
         _ensure_cases_hydrated()
-        return _mask(_health(app_state._connectors))
+        health = _health(app_state._connectors)
+        return _mask(_attach_selected_evidence_guidance(health))
     return await _traced("case_health", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
@@ -1390,6 +1827,149 @@ async def baseline_diff(
         {"reference_case_id": reference_case_id, "categories": categories},
         fn, timeout_seconds=TIMEOUT_MEDIUM,
     )
+
+
+@mcp.tool()
+async def service_persistence_gate(
+    service_filter: str = "",
+    include_parsed_case: bool = True,
+    include_mounted_image: bool = True,
+    verify_payload_files: bool = True,
+    system_hive_path: str = "/c:/Windows/System32/config/SYSTEM",
+    limit: int = 50,
+) -> dict:
+    """Gate service persistence analysis before finalizing an IR timeline.
+
+    This tool is designed to prevent the specific miss where an analyst checks
+    only EID 7045 and overlooks service registry state. It inspects System
+    Services artifacts when a parsed case is loaded and, when an E01 is
+    mounted, extracts and parses the SYSTEM hive directly. For svchost services
+    it follows Parameters\\ServiceDll and can verify payload presence/timestamps
+    against the mounted image.
+
+    Args:
+        service_filter: Optional substring to narrow returned candidates by
+            service name, image path, ServiceDll, or registry path.
+        include_parsed_case: Use the active parsed case's System Services
+            artifact if available.
+        include_mounted_image: Use the mounted E01/VMDK/raw image SYSTEM hive
+            if available.
+        verify_payload_files: Re-check candidate payload paths with the
+            mounted image using get_file_info-style timestamp evidence.
+        system_hive_path: Internal mounted-image path to the SYSTEM hive.
+        limit: Max candidate services returned after scoring.
+
+    Reading guide for AI consumers:
+        - EID 7045 absence is not service-persistence absence. Registry state
+          is the primary source for installed service configuration.
+        - For svchost services, ImagePath is incomplete without
+          Parameters\\ServiceDll. Treat this tool's ServiceDll chain as the
+          pivot to payload timestamps, hash, signature, and static analysis.
+        - Built-in service-name baseline checks are noise reduction only.
+          A net-new service is a lead, not a verdict.
+        - If this gate is blocked or partial, do not present a final attack
+          timeline as complete for persistence.
+    """
+    params = {
+        "service_filter": service_filter,
+        "include_parsed_case": include_parsed_case,
+        "include_mounted_image": include_mounted_image,
+        "verify_payload_files": verify_payload_files,
+        "system_hive_path": system_hive_path,
+        "limit": limit,
+    }
+
+    def fn():
+        from core.analysis.service_persistence import (
+            build_service_persistence_gate as _build_gate,
+            services_from_artifact_rows as _services_from_artifact_rows,
+            services_from_system_hive as _services_from_system_hive,
+        )
+
+        services: list[dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
+
+        if include_parsed_case:
+            try:
+                _ensure_cases_hydrated()
+            except Exception:
+                pass
+            c = _connectors.get("axiom")
+            if c is not None and c.is_connected():
+                try:
+                    rows = c.artifact_queries.query_services(limit=0) or []
+                    parsed_services = _services_from_artifact_rows(rows)
+                    services.extend(parsed_services)
+                    sources.append({
+                        "source": "parsed_case",
+                        "status": "checked",
+                        "raw_rows": len(rows),
+                        "normalized_services": len(parsed_services),
+                    })
+                except Exception as e:
+                    sources.append({"source": "parsed_case", "status": "error", "error": str(e)})
+            else:
+                sources.append({
+                    "source": "parsed_case",
+                    "status": "unavailable",
+                    "note": "No active parsed case. open_case is optional but improves coverage.",
+                })
+
+        e01 = _connectors.get("e01")
+        e01_connected = e01 is not None and e01.is_connected()
+        if include_mounted_image:
+            if e01_connected:
+                try:
+                    hive_out = _evidence_bound_export_path(
+                        "service_persistence_gate",
+                        system_hive_path,
+                        "SYSTEM.hive",
+                    )
+                    extraction = e01.extract_file(system_hive_path, hive_out)
+                    hive_services, hive_meta = _services_from_system_hive(hive_out)
+                    services.extend(hive_services)
+                    sources.append({
+                        "source": "mounted_image_system_hive",
+                        "status": "checked",
+                        "system_hive_path": system_hive_path,
+                        "extracted_to": extraction.get("output_path", hive_out),
+                        "sha256": extraction.get("sha256", ""),
+                        "normalized_services": len(hive_services),
+                        "metadata": hive_meta,
+                    })
+                except Exception as e:
+                    sources.append({
+                        "source": "mounted_image_system_hive",
+                        "status": "error",
+                        "system_hive_path": system_hive_path,
+                        "error": str(e),
+                    })
+            else:
+                sources.append({
+                    "source": "mounted_image_system_hive",
+                    "status": "unavailable",
+                    "note": "No mounted image. mount_image enables direct SYSTEM hive service review.",
+                })
+
+        file_lookup = None
+        if verify_payload_files and e01_connected:
+            file_lookup = e01.get_file_info
+
+        result = _build_gate(
+            services,
+            service_filter=service_filter,
+            limit=limit,
+            file_info_lookup=file_lookup,
+        )
+        result["sources"] = sources
+        result["evidence_context"] = _evidence_context(
+            system_hive_path,
+            "mounted_image_system_hive" if e01_connected else "parsed_case",
+            internal_path=system_hive_path,
+        )
+        return _mask(result)
+
+    return await _traced("service_persistence_gate", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 @mcp.tool()
@@ -2238,7 +2818,650 @@ def _get_e01() -> E01ImageConnector:
     c = _connectors.get("e01")
     if c and c.is_connected():
         return c
+    _ensure_e01_hydrated()
+    c = _connectors.get("e01")
+    if c and c.is_connected():
+        return c
     raise RuntimeError("E01 이미지가 열려있지 않습니다. mount_image를 먼저 실행하세요.")
+
+
+def _ensure_e01_hydrated(evidence_ref: str = "") -> dict[str, Any]:
+    """Attach the selected disk image to this MCP process when possible."""
+    c = _connectors.get("e01")
+    if c and c.is_connected():
+        return {"status": "already_mounted", **c.get_metadata()}
+
+    resolved = resolve_image_evidence(evidence_ref)
+    path = resolved.get("path", "")
+    if not path:
+        return {"status": "unavailable", "error": "No uniquely selected disk image evidence."}
+    if not (is_path_allowed(path) or resolve_active_case_evidence(path)):
+        return {"status": "blocked", "error": build_not_allowed_message(evidence_ref or path)}
+
+    c = E01ImageConnector()
+    meta = c.connect(path)
+    _connectors["e01"] = c
+    return {"status": "mounted", "resolved_from": resolved.get("source", ""), **meta}
+
+
+def _workspace_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _evidence_context(
+    input_ref: str = "",
+    result_source: str = "",
+    *,
+    local_path: str = "",
+    internal_path: str = "",
+) -> dict[str, Any]:
+    """Return explicit source context for raw and parsed evidence outputs."""
+    mounted: dict[str, Any] = {"available": False}
+    e01 = _connectors.get("e01")
+    if e01 is not None and e01.is_connected():
+        meta = e01.get_metadata()
+        mounted = {
+            "available": True,
+            "image_path": meta.get("image_path", ""),
+            "hostname": meta.get("hostname", ""),
+            "volumes": meta.get("volumes", []),
+        }
+
+    active = load_active_case()
+    parsed_connector_loaded = any(
+        (name == "axiom" or name.startswith("axiom:")) and getattr(connector, "is_connected", lambda: False)()
+        for name, connector in _connectors.items()
+    )
+    active_case = {
+        "configured": bool(active),
+        "connector_loaded": parsed_connector_loaded,
+        "path": active.get("path", ""),
+        "source_type": active.get("source_type", ""),
+        "evidence_sources": active.get("evidence_sources", []),
+        "evidence_locations": active.get("evidence_locations", []),
+    }
+    allowed_images = [
+        path for path in load_allowed_evidence().get("paths", [])
+        if str(path).lower().endswith((".e01", ".ex01", ".vmdk", ".raw", ".dd"))
+    ]
+    selected_image = resolve_image_evidence(input_ref)
+    warnings: list[str] = []
+    if result_source == "local_file":
+        warnings.append(
+            "Result came from a local/workspace file. Verify it belongs to the current evidence set before correlating."
+        )
+    if active_case["configured"] and mounted["available"]:
+        case_locations = {str(v).lower() for v in active_case["evidence_locations"]}
+        mounted_path = str(mounted.get("image_path", "")).lower()
+        if mounted_path and case_locations and mounted_path not in case_locations:
+            warnings.append(
+                "Mounted image path differs from active parsed-case evidence locations; keep these sources separate."
+            )
+
+    return {
+        "input_ref": input_ref,
+        "internal_path": internal_path,
+        "local_path": local_path,
+        "result_source": result_source,
+        "selected_image": selected_image,
+        "mounted_image": mounted,
+        "active_parsed_case": active_case,
+        "allowed_image_count": len(allowed_images),
+        "source_separation": {
+            "parsed_case_configured": active_case["configured"],
+            "parsed_case_loaded": parsed_connector_loaded,
+            "parsed_case_available": parsed_connector_loaded,
+            "mounted_image_available": mounted["available"],
+            "raw_image_only_mode": mounted["available"] and not parsed_connector_loaded,
+        },
+        "warnings": warnings,
+    }
+
+
+def _selected_evidence_guidance(input_ref: str = "active_image") -> dict[str, Any]:
+    """Describe the user-selected evidence and the only valid next source action.
+
+    This is deliberately code-side guidance, not a prompt convention: tools that
+    can be called before a parsed case exists attach this block so an agent sees
+    the selected image path and the required ``active_image`` alias instead of
+    guessing from files in the workspace.
+    """
+    ctx = _evidence_context(input_ref)
+    selected_image = ctx.get("selected_image") or {}
+    mounted_image = ctx.get("mounted_image") or {}
+    separation = ctx.get("source_separation") or {}
+    allowed = load_allowed_evidence().get("paths", [])
+    allowed_images = [
+        path for path in allowed
+        if str(path).lower().endswith((".e01", ".ex01", ".vmdk", ".raw", ".dd"))
+    ]
+    allowed_cases = [
+        path for path in allowed
+        if str(path).lower().endswith(".mfdb") or os.path.isdir(str(path))
+    ]
+    parsed_loaded = bool(separation.get("parsed_case_loaded"))
+
+    next_action: dict[str, Any] | None = None
+    evidence_mode = "parsed_case_loaded" if parsed_loaded else "no_selected_evidence"
+    if not parsed_loaded and len(allowed_cases) == 1:
+        evidence_mode = "parsed_case_selected_unopened"
+        next_action = {
+            "tool": "open_case",
+            "args": {"path": allowed_cases[0]},
+            "reason": "Open the user-selected allowlisted parsed case; do not search for another case path.",
+        }
+    elif not parsed_loaded and selected_image:
+        if mounted_image.get("available"):
+            evidence_mode = "raw_image_mounted"
+            next_action = {
+                "tool": "raw_image_triage_gate",
+                "args": {"system_hive_path": "/c:/Windows/System32/config/SYSTEM"},
+                "reason": "Selected disk image is mounted and no parsed case is loaded.",
+            }
+        else:
+            evidence_mode = "raw_image_selected_unmounted"
+            next_action = {
+                "tool": "mount_image",
+                "args": {"evidence_ref": "active_image"},
+                "reason": "Use the user-selected allowlisted disk image; do not search for another case path.",
+            }
+    elif not parsed_loaded and len(allowed_images) > 1:
+        evidence_mode = "multiple_raw_images_selected"
+        next_action = {
+            "tool": "mount_image",
+            "args": {"evidence_ref": "<one selected image basename>"},
+            "reason": "Multiple selected disk images exist; choose one from the allowlist, not from a filesystem scan.",
+        }
+    elif not parsed_loaded and allowed:
+        evidence_mode = "selected_non_image_evidence"
+
+    return {
+        "evidence_mode": evidence_mode,
+        "selected_evidence": {
+            "allowlist_count": len(allowed),
+            "allowed_image_count": len(allowed_images),
+            "allowed_case_count": len(allowed_cases),
+            "selected_image": selected_image,
+        },
+        "next_required_action": next_action,
+        "enforcement": {
+            "allowlisted_evidence_only": True,
+            "do_not_search_workspace_for_replacement_evidence": True,
+            "valid_selected_image_aliases": ["active_image", "loaded_image"],
+        },
+        "evidence_context": ctx,
+    }
+
+
+def _attach_selected_evidence_guidance(payload: dict[str, Any]) -> dict[str, Any]:
+    guidance = _selected_evidence_guidance()
+    if guidance.get("evidence_mode") in {
+        "parsed_case_selected_unopened",
+        "raw_image_selected_unmounted",
+        "raw_image_mounted",
+        "multiple_raw_images_selected",
+        "selected_non_image_evidence",
+    }:
+        payload = dict(payload)
+        payload["selected_evidence_guidance"] = guidance
+    return payload
+
+
+def _is_safe_local_analysis_path(path: str) -> bool:
+    if not path:
+        return False
+    norm = os.path.normcase(os.path.abspath(path))
+    root = os.path.normcase(_workspace_root())
+    return is_path_allowed(path) or norm.startswith(root)
+
+
+def _safe_artifact_filename(path: str, fallback: str = "artifact") -> str:
+    name = os.path.basename(str(path).replace("\\", "/").rstrip("/")) or fallback
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    digest = hashlib.sha1(str(path).encode("utf-8", errors="ignore")).hexdigest()[:10]
+    base, ext = os.path.splitext(name)
+    return f"{base or fallback}_{digest}{ext}"
+
+
+def _evidence_bound_export_path(subdir: str, internal_path: str, fallback: str) -> str:
+    """Build an export path that is bound to the mounted evidence identity."""
+    e01 = _connectors.get("e01")
+    image_path = ""
+    if e01 is not None and e01.is_connected():
+        try:
+            image_path = str(e01.get_metadata().get("image_path", ""))
+        except Exception:
+            image_path = ""
+    out_dir = os.path.join(_workspace_root(), "export", subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    filename = _safe_artifact_filename(f"{image_path}::{internal_path}", fallback=fallback)
+    fallback_ext = os.path.splitext(fallback)[1]
+    if fallback_ext and not os.path.splitext(filename)[1]:
+        filename = f"{filename}{fallback_ext}"
+    return os.path.join(out_dir, filename)
+
+
+def _materialize_local_artifact(path: str, subdir: str) -> dict[str, Any]:
+    """Return a local path for either a local file or a mounted-image path."""
+    if os.path.exists(path):
+        if not _is_safe_local_analysis_path(path):
+            return {
+                "ok": False,
+                "error": build_not_allowed_message(path),
+                "evidence_context": _evidence_context(path, "blocked_local_file", local_path=path),
+            }
+        local_path = os.path.abspath(path)
+        return {
+            "ok": True,
+            "source": "local_file",
+            "local_path": local_path,
+            "evidence_context": _evidence_context(path, "local_file", local_path=local_path),
+        }
+
+    e01 = _get_e01()
+    out_dir = os.path.join(_workspace_root(), "export", subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    output_path = os.path.join(out_dir, _safe_artifact_filename(path))
+    try:
+        extraction = e01.extract_file(path, output_path)
+    except Exception as e:
+        return {
+            "ok": False,
+            "source": "mounted_image",
+            "error": str(e),
+            "evidence_context": _evidence_context(path, "mounted_image", internal_path=path),
+        }
+    return {
+        "ok": True,
+        "source": "mounted_image",
+        "local_path": extraction.get("output_path", output_path),
+        "extraction": extraction,
+        "evidence_context": _evidence_context(
+            path,
+            "mounted_image",
+            local_path=extraction.get("output_path", output_path),
+            internal_path=path,
+        ),
+    }
+
+
+def _vss_snapshot_guardrails(total: int | None = None, parser_failures: list | None = None) -> dict[str, Any]:
+    guardrail = {
+        "evidence_role": "historical_filesystem_layer",
+        "temporal_layer_required": True,
+        "strong_conclusion_allowed": False,
+        "absence_is_negative_evidence": False,
+        "merge_with_current_fs_allowed": False,
+        "vss_is_verified_clean_baseline": False,
+        "bias_risks": [
+            "cross_layer_merge_without_provenance",
+            "vss_as_clean_baseline_assumption",
+            "absence_as_negative_evidence",
+        ],
+        "interpretation": (
+            "VSS results are historical snapshot observations. Keep them "
+            "separate from current mounted-image results unless an explicit "
+            "cross-layer comparison is performed."
+        ),
+    }
+    if total == 0:
+        guardrail["zero_result_guidance"] = (
+            "0 matched records in a VSS snapshot means no parsed item matched "
+            "this snapshot and filter. It does not prove the file or behavior "
+            "never existed in other snapshots or the live layer."
+        )
+    if parser_failures:
+        guardrail["parser_failure_guidance"] = (
+            "Parser failures are VSS coverage gaps. Do not interpret failed "
+            "snapshot parsing as absence of matching activity."
+        )
+    return guardrail
+
+
+def _vss_context(snapshot: dict[str, Any], input_ref: str, local_path: str = "") -> dict[str, Any]:
+    ctx = _evidence_context(
+        input_ref,
+        "vss_snapshot",
+        local_path=local_path,
+        internal_path=input_ref,
+    )
+    ctx["temporal_layer"] = snapshot.get("temporal_layer", "")
+    ctx["snapshot_id"] = snapshot.get("snapshot_id", "")
+    ctx["snapshot_index"] = snapshot.get("snapshot_index", "")
+    ctx["snapshot_creation_time"] = snapshot.get("snapshot_creation_time", "")
+    ctx["source_separation_note"] = (
+        "VSS snapshot evidence must remain separate from current mounted-image "
+        "evidence unless compared explicitly."
+    )
+    return ctx
+
+
+def _vss_export_path(snapshot_id: str, subdir: str, internal_path: str, fallback: str) -> str:
+    safe_snapshot = re.sub(r"[^A-Za-z0-9._-]", "_", str(snapshot_id or "snapshot"))
+    out_dir = os.path.join(_workspace_root(), "export", "vss", safe_snapshot, subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    e01 = _connectors.get("e01")
+    image_path = ""
+    if e01 is not None and e01.is_connected():
+        try:
+            image_path = str(e01.get_metadata().get("image_path", ""))
+        except Exception:
+            image_path = ""
+    filename = _safe_artifact_filename(f"{image_path}::{snapshot_id}::{internal_path}", fallback=fallback)
+    fallback_ext = os.path.splitext(fallback)[1]
+    if fallback_ext and not os.path.splitext(filename)[1]:
+        filename = f"{filename}{fallback_ext}"
+    return os.path.join(out_dir, filename)
+
+
+def _vss_unique_output_path(snapshot_id: str, subdir: str, internal_path: str, fallback: str) -> str:
+    output_path = _vss_export_path(snapshot_id, subdir, internal_path, fallback)
+    base, ext = os.path.splitext(output_path)
+    counter = 1
+    while os.path.exists(output_path):
+        output_path = f"{base}_{counter}{ext}"
+        counter += 1
+    return output_path
+
+
+def _normalize_registry_key_path(key_path: str, hive_path: str = "") -> str:
+    key = str(key_path or "").strip().replace("/", "\\")
+    if not key:
+        return ""
+    while "\\\\" in key:
+        key = key.replace("\\\\", "\\")
+    lower = key.lower()
+    prefixes = [
+        "hkey_local_machine\\system\\",
+        "hklm\\system\\",
+        "computer\\hkey_local_machine\\system\\",
+        "hkey_current_user\\",
+        "hkcu\\",
+        "hkey_local_machine\\software\\",
+        "hklm\\software\\",
+    ]
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            key = key[len(prefix):]
+            break
+    key = "\\" + key.lstrip("\\")
+    if "\\currentcontrolset\\" in key.lower() and hive_path:
+        current = _current_control_set_name(hive_path)
+        if current:
+            key = re.sub(
+                r"\\CurrentControlSet\\",
+                lambda _m: f"\\{current}\\",
+                key,
+                flags=re.IGNORECASE,
+            )
+    return key
+
+
+def _current_control_set_name(hive_path: str) -> str:
+    try:
+        from regipy.registry import RegistryHive
+        hive = RegistryHive(hive_path)
+        select = hive.get_key("\\Select")
+        values = []
+        try:
+            values = list(select.iter_values())
+        except Exception:
+            values = list(getattr(select, "values", []) or [])
+        for value in values:
+            if str(value.name).lower() == "current":
+                return f"ControlSet{int(value.value):03d}"
+    except Exception:
+        return ""
+    return ""
+
+
+def _search_registry_subtree(
+    hive_path: str,
+    root_key_path: str,
+    keyword: str,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    max_scan_keys: int = 10000,
+) -> dict[str, Any]:
+    """Bounded registry subtree search.
+
+    This avoids whole-hive scans from raw MCP calls. Whole-hive keyword search
+    is both slow on large SYSTEM/SOFTWARE hives and easy to misread as strong
+    negative evidence when it times out or stops early.
+    """
+    from regipy.registry import RegistryHive
+    from core.connectors.registry import _iter_registry_values
+
+    safe_limit = max(0, int(limit or 0))
+    safe_offset = max(0, int(offset or 0))
+    safe_max = max(1, int(max_scan_keys or 1))
+    kw_lower = str(keyword or "").lower()
+    if not kw_lower:
+        return {"error": "keyword is required for registry subtree search"}
+
+    hive = RegistryHive(hive_path)
+    try:
+        root = hive.get_key(root_key_path)
+    except Exception as e:
+        return {"error": f"Search root not found or error: {e}", "root_key_path": root_key_path}
+
+    stack: list[tuple[Any, str]] = [(root, root_key_path)]
+    visited = 0
+    matched_total = 0
+    entries: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    while stack and visited < safe_max:
+        key, path = stack.pop()
+        visited += 1
+
+        values: list[dict[str, str]] = []
+        matched_fields: list[str] = []
+        if kw_lower in path.lower():
+            matched_fields.append("path")
+        try:
+            raw_values = _iter_registry_values(key)
+        except Exception as e:
+            raw_values = []
+            failures.append({"path": path, "stage": "values", "error": str(e)})
+        for value in raw_values:
+            name = str(getattr(value, "name", ""))
+            value_type = str(getattr(value, "value_type", ""))
+            value_text = str(getattr(value, "value", ""))[:500]
+            if kw_lower in name.lower():
+                matched_fields.append(f"value_name:{name}")
+            if kw_lower in value_text.lower():
+                matched_fields.append(f"value_data:{name}")
+            values.append({"name": name, "type": value_type, "value": value_text})
+
+        if matched_fields:
+            matched_total += 1
+            if matched_total > safe_offset and len(entries) < safe_limit:
+                timestamp = ""
+                try:
+                    timestamp = str(key.header.last_modified)
+                except Exception:
+                    pass
+                entries.append({
+                    "path": path,
+                    "timestamp": timestamp,
+                    "values_count": len(values),
+                    "values": values[:10],
+                    "matched_fields": matched_fields[:20],
+                })
+
+        try:
+            subkeys = list(key.iter_subkeys()) if hasattr(key, "iter_subkeys") else []
+        except Exception as e:
+            subkeys = []
+            failures.append({"path": path, "stage": "subkeys", "error": str(e)})
+        for subkey in reversed(subkeys):
+            name = str(getattr(subkey, "name", ""))
+            parent_path = path.rstrip("\\")
+            child_path = f"{parent_path}\\{name}" if path != "\\" else f"\\{name}"
+            stack.append((subkey, child_path))
+
+    scan_truncated = bool(stack)
+    result = {
+        "total": matched_total,
+        "returned": len(entries),
+        "entries": entries,
+        "root_key_path": root_key_path,
+        "visited_keys": visited,
+        "max_scan_keys": safe_max,
+        "scan_truncated": scan_truncated,
+        "parse_failures": failures[:50],
+        "parse_failure_count": len(failures),
+    }
+    if scan_truncated:
+        result["coverage_warnings"] = [
+            (
+                "Registry subtree scan stopped at max_scan_keys before exhausting the root. "
+                "Treat 0 or low matches as incomplete coverage, not absence of the key/value."
+            )
+        ]
+    return result
+
+
+def _hash_local_file(path: str) -> dict[str, str]:
+    hashers = {
+        "md5": hashlib.md5(),
+        "sha1": hashlib.sha1(),
+        "sha256": hashlib.sha256(),
+    }
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            for h in hashers.values():
+                h.update(chunk)
+    return {name: h.hexdigest() for name, h in hashers.items()}
+
+
+def _powershell_pe_metadata(path: str) -> dict[str, Any]:
+    if os.name != "nt":
+        return {"errors": ["Authenticode/version metadata requires Windows PowerShell on this host."]}
+    script = r"""
+$Path = $env:FW_PE_INSPECT_PATH
+$Item = Get-Item -LiteralPath $Path -ErrorAction Stop
+$Sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction SilentlyContinue
+$VI = $Item.VersionInfo
+[PSCustomObject]@{
+  authenticode = [PSCustomObject]@{
+    status = [string]$Sig.Status
+    status_message = [string]$Sig.StatusMessage
+    signer_subject = if ($Sig.SignerCertificate) { [string]$Sig.SignerCertificate.Subject } else { "" }
+    signer_issuer = if ($Sig.SignerCertificate) { [string]$Sig.SignerCertificate.Issuer } else { "" }
+    signer_thumbprint = if ($Sig.SignerCertificate) { [string]$Sig.SignerCertificate.Thumbprint } else { "" }
+  }
+  version_info = [PSCustomObject]@{
+    file_description = [string]$VI.FileDescription
+    original_filename = [string]$VI.OriginalFilename
+    internal_name = [string]$VI.InternalName
+    product_name = [string]$VI.ProductName
+    company_name = [string]$VI.CompanyName
+    file_version = [string]$VI.FileVersion
+    product_version = [string]$VI.ProductVersion
+  }
+} | ConvertTo-Json -Depth 5
+"""
+    env = dict(os.environ)
+    env["FW_PE_INSPECT_PATH"] = path
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=env,
+        )
+    except Exception as e:
+        return {"errors": [str(e)]}
+    if proc.returncode != 0:
+        return {"errors": [proc.stderr.strip() or f"PowerShell exited {proc.returncode}"]}
+    try:
+        return json.loads(proc.stdout or "{}")
+    except Exception as e:
+        return {"errors": [f"Failed to parse PowerShell metadata JSON: {e}"], "raw_stdout": proc.stdout[:500]}
+
+
+def _raw_artifact_guardrails(
+    artifact_type: str,
+    *,
+    total: int | None = None,
+    parser_failures: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Bias guardrails for raw artifact extraction tools.
+
+    These tools expose observations, not incident verdicts. Keep this block
+    close to every raw-artifact result so consumers do not have to remember the
+    caveats from a separate document.
+    """
+    kind = artifact_type.lower()
+    templates: dict[str, dict[str, Any]] = {
+        "evtx": {
+            "artifact_label": "offline Windows event log",
+            "corroboration_required": [
+                "registry/file artifacts for persistence claims",
+                "process execution artifacts for execution claims",
+                "coverage and parser failure review before treating 0 hits as meaningful",
+            ],
+            "bias_risks": ["absence_as_negative_evidence", "event_log_availability_bias", "date_filter_tunnel_vision"],
+        },
+        "prefetch": {
+            "artifact_label": "Windows Prefetch",
+            "corroboration_required": [
+                "file timestamps or MFT evidence",
+                "SRUM, AmCache, EVTX process/service context, or application logs",
+                "host policy check because Prefetch can be disabled or cleaned",
+            ],
+            "bias_risks": ["execution_overstatement", "referenced_path_overstatement", "absence_as_negative_evidence"],
+        },
+        "registry": {
+            "artifact_label": "offline registry hive",
+            "corroboration_required": [
+                "hive/control-set coverage review",
+                "file timestamps for payload paths",
+                "EVTX/service/task context where available",
+            ],
+            "bias_risks": ["configuration_equals_execution", "lastwrite_equals_creation", "controlset_tunnel_vision"],
+        },
+        "pe": {
+            "artifact_label": "static PE metadata",
+            "corroboration_required": [
+                "file timestamps and source path",
+                "execution or load evidence",
+                "signature-chain validation and static/dynamic malware analysis when needed",
+            ],
+            "bias_risks": ["unsigned_equals_malicious", "signed_equals_benign", "versioninfo_keyword_anchoring"],
+        },
+    }
+    tmpl = templates.get(kind, {"artifact_label": artifact_type, "corroboration_required": [], "bias_risks": []})
+    guardrail = {
+        "evidence_role": "extraction_only",
+        "artifact_label": tmpl["artifact_label"],
+        "strong_conclusion_allowed": False,
+        "absence_is_negative_evidence": False,
+        "bias_risks": tmpl["bias_risks"],
+        "corroboration_required": tmpl["corroboration_required"],
+        "interpretation": (
+            "This tool returns raw/offline artifact observations. Treat them as leads "
+            "to verify, not as a standalone incident conclusion."
+        ),
+    }
+    if total == 0:
+        guardrail["zero_result_guidance"] = (
+            "0 matched records means no parsed item matched this source and filter. "
+            "It does not prove the behavior did not occur. Recheck source coverage, "
+            "parser failures, date filters, alternate artifacts, and whether the "
+            "artifact family was disabled or cleaned."
+        )
+    if parser_failures:
+        guardrail["parser_failure_guidance"] = (
+            "Parser failures are coverage gaps. Do not interpret failed parsing as "
+            "absence of matching activity."
+        )
+    return guardrail
 
 
 def _get_ghidra() -> GhidraConnector:
@@ -2260,12 +3483,8 @@ async def mount_image(e01_path: str = "", evidence_ref: str = "") -> dict:
     """Mount E01/VMDK/raw disk image for file extraction."""
     def fn():
         ref = evidence_ref or e01_path
-        image_exts = (".e01", ".ex01", ".vmdk", ".raw", ".dd")
-        resolved_path = (
-            resolve_active_case_evidence(ref)
-            or resolve_allowed_evidence(ref, extensions=image_exts)
-            or e01_path
-        )
+        resolved = resolve_image_evidence(ref)
+        resolved_path = resolved.get("path") or e01_path
         if not (is_path_allowed(resolved_path) or resolve_active_case_evidence(resolved_path)):
             return {"error": build_not_allowed_message(ref or "active_case")}
         old = _connectors.pop("e01", None)
@@ -2274,7 +3493,12 @@ async def mount_image(e01_path: str = "", evidence_ref: str = "") -> dict:
         c = E01ImageConnector()
         meta = c.connect(resolved_path)
         _connectors["e01"] = c
-        return _mask({"status": "mounted", "resolved_from": ref or "active_case", **meta})
+        return _mask({
+            "status": "mounted",
+            "resolved_from": resolved.get("source") or ref or "active_image",
+            **meta,
+            "evidence_context": _evidence_context(ref, "mounted_image", local_path=resolved_path),
+        })
     return await _traced("mount_image", {"e01_path": e01_path, "evidence_ref": evidence_ref}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
@@ -2448,18 +3672,938 @@ async def get_file_timestamps(internal_path: str) -> dict:
     return await _traced("get_file_timestamps", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
+@mcp.tool()
+async def list_vss_snapshots(volume: str = "/c:") -> dict:
+    """List VSS snapshots in the mounted image.
+
+    Reading guide for AI consumers:
+        - VSS snapshots are historical layers, not a verified-clean baseline.
+        - Keep VSS results separate from current mounted-image results.
+        - An empty or unreadable VSS catalog is a coverage gap, not evidence
+          that deleted files or historical logs never existed.
+    """
+    params = {"volume": volume}
+
+    def fn():
+        e01 = _get_e01()
+        result = e01.list_vss_snapshots(volume)
+        result["source"] = "mounted_image_vss"
+        result["evidence_context"] = _evidence_context(volume, "vss_catalog", internal_path=volume)
+        result["interpretation_guardrails"] = _vss_snapshot_guardrails(
+            total=int(result.get("snapshot_count", 0) or 0)
+        )
+        return _mask(result)
+
+    return await _traced("list_vss_snapshots", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_list_files(
+    snapshot_id: str,
+    path: str = "/",
+    pattern: str = "",
+    volume: str = "/c:",
+    limit: int = 100,
+) -> dict:
+    """List or search files inside one VSS snapshot.
+
+    Results describe only the selected snapshot's historical layer. A missing
+    file in one snapshot does not prove it never existed.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "path": path,
+        "pattern": pattern,
+        "volume": volume,
+        "limit": limit,
+    }
+
+    def fn():
+        e01 = _get_e01()
+        if pattern:
+            files = e01.vss_find_files(snapshot_id, pattern, path=path, volume=volume, limit=max(1, limit))
+        else:
+            files = e01.vss_list_directory(snapshot_id, path, volume=volume)
+            files = files[:max(0, limit)]
+        first = files[0] if files else {}
+        snapshot = {k: first.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        if not snapshot.get("snapshot_id"):
+            info = e01.vss_get_file_info(snapshot_id, path, volume=volume)
+            snapshot = {k: info.get(k, "") for k in (
+                "temporal_layer",
+                "snapshot_id",
+                "snapshot_index",
+                "snapshot_creation_time",
+                "volume",
+                "integrity_note",
+            )}
+        return _mask({
+            "ok": not any("error" in item for item in files[:1]),
+            "source": "vss_snapshot",
+            "path": path,
+            "pattern": pattern,
+            "count": len(files),
+            "files": files,
+            **snapshot,
+            "evidence_context": _vss_context(snapshot, path),
+            "interpretation_guardrails": _vss_snapshot_guardrails(total=len(files)),
+        })
+
+    return await _traced("vss_list_files", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_get_file_timestamps(
+    snapshot_id: str,
+    internal_path: str,
+    volume: str = "/c:",
+) -> dict:
+    """Get NTFS timestamps for a file inside one VSS snapshot.
+
+    These timestamps belong to the selected snapshot layer. Compare with
+    current-FS timestamps only when both layers are named.
+    """
+    params = {"snapshot_id": snapshot_id, "internal_path": internal_path, "volume": volume}
+
+    def fn():
+        e01 = _get_e01()
+        info = e01.vss_get_file_info(snapshot_id, internal_path, volume=volume)
+        snapshot = {k: info.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        if "error" in info:
+            return _mask({
+                **info,
+                "ok": False,
+                "source": "vss_snapshot",
+                "evidence_context": _vss_context(snapshot, internal_path),
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
+
+        result = {
+            "ok": True,
+            "source": "vss_snapshot",
+            "path": info.get("path", internal_path),
+            "size": info.get("size", 0),
+            "timestamps": {},
+            "forensic_notes": [],
+            **snapshot,
+        }
+        ts = result["timestamps"]
+        notes = result["forensic_notes"]
+        ts["created"] = info.get("created", "")
+        ts["modified"] = info.get("modified", "")
+        ts["accessed"] = info.get("accessed", "")
+        if info.get("$SI_created"):
+            ts["$SI_created"] = info["$SI_created"]
+            ts["$SI_modified"] = info.get("$SI_modified", "")
+            ts["$SI_mft_modified"] = info.get("$SI_mft_modified", "")
+            ts["$SI_accessed"] = info.get("$SI_accessed", "")
+        if info.get("$FN_created"):
+            ts["$FN_created"] = info["$FN_created"]
+            ts["$FN_modified"] = info.get("$FN_modified", "")
+        si_c = ts.get("$SI_created", "") or ts.get("created", "")
+        fn_c = ts.get("$FN_created", "")
+        si_m = ts.get("$SI_modified", "") or ts.get("modified", "")
+        if si_c and si_m and si_c > si_m:
+            notes.append("ANOMALY: Created > Modified - possible timestomping or file copy")
+        if si_c and fn_c and si_c != fn_c:
+            notes.append(f"$SI and $FN creation times differ - possible timestomping ($SI={si_c}, $FN={fn_c})")
+        if not notes:
+            notes.append("No timestamp anomalies detected in this VSS snapshot")
+        result["evidence_context"] = _vss_context(snapshot, internal_path)
+        result["interpretation_guardrails"] = _vss_snapshot_guardrails()
+        return _mask(result)
+
+    return await _traced("vss_get_file_timestamps", params, fn, timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def vss_extract_file(
+    snapshot_id: str,
+    internal_path: str,
+    output_dir: str = "",
+    volume: str = "/c:",
+) -> dict:
+    """Extract a file from one VSS snapshot for STATIC ANALYSIS ONLY.
+
+    VSS extractions are placed under export/vss/<snapshot_id>/... by default
+    so current-FS and historical-layer files cannot silently overwrite each
+    other. Extracted files may be malware; never execute them.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "internal_path": internal_path,
+        "output_dir": output_dir,
+        "volume": volume,
+    }
+
+    def fn():
+        if output_dir:
+            safe_snapshot = re.sub(r"[^A-Za-z0-9._-]", "_", snapshot_id)
+            out_root = os.path.join(os.path.abspath(output_dir), "vss", safe_snapshot)
+            if not _is_safe_local_analysis_path(out_root):
+                return {"ok": False, "error": build_not_allowed_message(out_root)}
+            os.makedirs(out_root, exist_ok=True)
+            output_path = os.path.join(out_root, _safe_artifact_filename(internal_path))
+            base, ext = os.path.splitext(output_path)
+            counter = 1
+            while os.path.exists(output_path):
+                output_path = f"{base}_{counter}{ext}"
+                counter += 1
+        else:
+            fallback = internal_path.replace("\\", "/").rstrip("/").split("/")[-1] or "artifact"
+            output_path = _vss_unique_output_path(snapshot_id, "extract", internal_path, fallback)
+        e01 = _get_e01()
+        result = e01.vss_extract_file(snapshot_id, internal_path, output_path, volume=volume)
+        snapshot = {k: result.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        result.update({
+            "ok": True,
+            "evidence_context": _vss_context(snapshot, internal_path, local_path=result.get("output_path", "")),
+            "interpretation_guardrails": _vss_snapshot_guardrails(),
+        })
+        return _mask(result)
+
+    return await _traced("vss_extract_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_query_evtx_file(
+    snapshot_id: str,
+    evtx_path: str,
+    event_ids: str = "",
+    keyword: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    volume: str = "/c:",
+) -> dict:
+    """Parse and query an EVTX file from one VSS snapshot.
+
+    Use this to check historical event logs after live logs were cleared.
+    Empty results are snapshot/filter observations, not proof of absence.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "evtx_path": evtx_path,
+        "event_ids": event_ids,
+        "keyword": keyword,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "offset": offset,
+        "volume": volume,
+    }
+
+    def fn():
+        from core.analysis.evtx_semantic import (
+            filter_evtx_records as _filter_evtx_records,
+            parse_evtx_file as _parse_evtx_file,
+        )
+
+        ids: set[int] = set()
+        for part in event_ids.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    ids.add(int(part))
+                except ValueError:
+                    return {"ok": False, "error": f"Invalid event id: {part}"}
+
+        fallback = evtx_path.replace("\\", "/").rstrip("/").split("/")[-1] or "eventlog.evtx"
+        local_path = _vss_unique_output_path(snapshot_id, "evtx_query", evtx_path, fallback)
+        e01 = _get_e01()
+        extraction = e01.vss_extract_file(snapshot_id, evtx_path, local_path, volume=volume)
+        snapshot = {k: extraction.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        parsed = _parse_evtx_file(local_path, target_event_ids=ids or None, limit=0)
+        if not parsed.get("ok"):
+            return _mask({
+                **parsed,
+                "source": "vss_snapshot",
+                "evtx_path": evtx_path,
+                "local_path": local_path,
+                **snapshot,
+                "evidence_context": _vss_context(snapshot, evtx_path, local_path=local_path),
+                "interpretation_guardrails": _vss_snapshot_guardrails(
+                    total=0,
+                    parser_failures=parsed.get("parser_failures", []),
+                ),
+            })
+        filtered = _filter_evtx_records(
+            parsed.get("records", []) or [],
+            event_ids=ids or None,
+            keyword=keyword,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+        return _mask({
+            "ok": True,
+            "source": "vss_snapshot",
+            "evtx_path": evtx_path,
+            "local_path": local_path,
+            **snapshot,
+            "evidence_context": _vss_context(snapshot, evtx_path, local_path=local_path),
+            "parsed_record_count": parsed.get("record_count", 0),
+            "event_id_counts_in_file": parsed.get("event_id_counts", {}),
+            "parser_failures": parsed.get("parser_failures", []),
+            "interpretation_guardrails": _vss_snapshot_guardrails(
+                total=filtered.get("total", 0),
+                parser_failures=parsed.get("parser_failures", []),
+            ),
+            **filtered,
+        })
+
+    return await _traced("vss_query_evtx_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_query_registry_hive(
+    snapshot_id: str,
+    hive_path: str,
+    key_path: str = "",
+    keyword: str = "",
+    search_root: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    max_scan_keys: int = 10000,
+    volume: str = "/c:",
+) -> dict:
+    """Query a registry hive extracted from one VSS snapshot.
+
+    Registry state belongs to the selected snapshot layer. LastWrite proves
+    key state at capture/snapshot time, not original creation unless supported
+    by other artifacts.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "hive_path": hive_path,
+        "key_path": key_path,
+        "keyword": keyword,
+        "search_root": search_root,
+        "limit": limit,
+        "offset": offset,
+        "max_scan_keys": max_scan_keys,
+        "volume": volume,
+    }
+
+    def fn():
+        from core.connectors.registry import RegistryConnector
+
+        fallback = hive_path.replace("\\", "/").rstrip("/").split("/")[-1] or "hive"
+        local_hive = _vss_unique_output_path(snapshot_id, "registry_query", hive_path, fallback)
+        e01 = _get_e01()
+        extraction = e01.vss_extract_file(snapshot_id, hive_path, local_hive, volume=volume)
+        snapshot = {k: extraction.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        if not key_path and keyword and not search_root:
+            return _mask({
+                "ok": False,
+                "error": "keyword search requires search_root or key_path to avoid whole-hive scans",
+                "source": "vss_snapshot",
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                **snapshot,
+                "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
+        if not key_path and not keyword:
+            return _mask({
+                "ok": False,
+                "error": "Provide key_path for direct extraction or keyword plus search_root for bounded search.",
+                "source": "vss_snapshot",
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                **snapshot,
+                "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
+        c = RegistryConnector()
+        meta = c.connect(local_hive)
+        try:
+            resolved_key = _normalize_registry_key_path(key_path, local_hive)
+            if resolved_key:
+                result = c.get_key(resolved_key)
+                result.update({
+                    "ok": "error" not in result,
+                    "source": "vss_snapshot",
+                    "hive_path": hive_path,
+                    "local_hive_path": local_hive,
+                    **snapshot,
+                    "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
+                    "resolved_key_path": resolved_key,
+                    "hive_metadata": meta,
+                    "interpretation_guardrails": _vss_snapshot_guardrails(
+                        total=0 if "error" in result else None,
+                    ),
+                })
+                return _mask(result)
+            resolved_root = _normalize_registry_key_path(search_root, local_hive)
+            result = _search_registry_subtree(
+                local_hive,
+                resolved_root,
+                keyword,
+                limit=limit,
+                offset=offset,
+                max_scan_keys=max_scan_keys,
+            )
+            result.update({
+                "ok": "error" not in result,
+                "source": "vss_snapshot",
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                **snapshot,
+                "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
+                "hive_metadata": meta,
+                "query_semantics": {
+                    "keyword": keyword,
+                    "search_root": search_root,
+                    "resolved_search_root": resolved_root,
+                    "limit": limit,
+                    "offset": offset,
+                    "max_scan_keys": max_scan_keys,
+                    "whole_hive_scan_allowed": False,
+                },
+                "interpretation_guardrails": _vss_snapshot_guardrails(
+                    total=int(result.get("total", 0) or 0),
+                    parser_failures=result.get("parse_failures", []),
+                ),
+            })
+            return _mask(result)
+        finally:
+            c.disconnect()
+
+    return await _traced("vss_query_registry_hive", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
 # ── Ghidra Binary Analysis Tools ──
+
+@mcp.tool()
+async def query_evtx_file(
+    evtx_path: str,
+    event_ids: str = "",
+    keyword: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Parse and query an offline Windows EVTX file.
+
+    Use this instead of hand-running Get-WinEvent -Path during raw-image
+    triage. ``evtx_path`` may be either:
+      - a mounted-image internal path, e.g.
+        /c:/Windows/System32/winevt/Logs/System.evtx
+      - a local EVTX file that is either explicitly allowlisted or already
+        extracted under this workspace.
+
+    Args:
+        evtx_path: Internal mounted-image path or local EVTX path.
+        event_ids: Optional comma-separated Event IDs, e.g. "7045,1102".
+        keyword: Optional case-insensitive keyword across fields/provider/path.
+        start_date / end_date: Optional ISO date filters (YYYY-MM-DD).
+        limit / offset: Pagination over matched records.
+
+    Reading guide for AI consumers:
+        - This parses offline EVTX XML records. It does not query the live host.
+        - Empty results mean no parsed record matched these filters, not that
+          the behavior did not occur. Check parser_failures and date filters.
+        - Event-log absence must be cross-checked with registry/file artifacts
+          for persistence claims.
+    """
+    params = {
+        "evtx_path": evtx_path,
+        "event_ids": event_ids,
+        "keyword": keyword,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    def fn():
+        from core.analysis.evtx_semantic import (
+            filter_evtx_records as _filter_evtx_records,
+            parse_evtx_file as _parse_evtx_file,
+        )
+
+        ids: set[int] = set()
+        for part in event_ids.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    ids.add(int(part))
+                except ValueError:
+                    return {"ok": False, "error": f"Invalid event id: {part}"}
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local_path = evtx_path
+        source = "local_file"
+        if os.path.exists(local_path):
+            norm = os.path.normcase(os.path.abspath(local_path))
+            root_norm = os.path.normcase(root)
+            if not (is_path_allowed(local_path) or norm.startswith(root_norm)):
+                return {"ok": False, "error": build_not_allowed_message(local_path)}
+        else:
+            e01 = _get_e01()
+            out_dir = os.path.join(root, "export", "evtx_query")
+            os.makedirs(out_dir, exist_ok=True)
+            safe_name = evtx_path.replace("\\", "/").rstrip("/").split("/")[-1] or "eventlog.evtx"
+            local_path = os.path.join(out_dir, safe_name)
+            extraction = e01.extract_file(evtx_path, local_path)
+            source = "mounted_image"
+            if extraction.get("error"):
+                return {"ok": False, "error": extraction.get("error"), "source": source}
+
+        parsed = _parse_evtx_file(local_path, target_event_ids=ids or None, limit=0)
+        if not parsed.get("ok"):
+            return {
+                **parsed,
+                "source": source,
+                "local_path": local_path,
+                "evidence_context": _evidence_context(
+                    evtx_path,
+                    source,
+                    local_path=local_path,
+                    internal_path="" if source == "local_file" else evtx_path,
+                ),
+                "interpretation_guardrails": _raw_artifact_guardrails(
+                    "evtx",
+                    total=0,
+                    parser_failures=parsed.get("parser_failures", []),
+                ),
+            }
+        filtered = _filter_evtx_records(
+            parsed.get("records", []) or [],
+            event_ids=ids or None,
+            keyword=keyword,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+        return _mask({
+            "ok": True,
+            "source": source,
+            "evtx_path": evtx_path,
+            "local_path": local_path,
+            "evidence_context": _evidence_context(
+                evtx_path,
+                source,
+                local_path=local_path,
+                internal_path="" if source == "local_file" else evtx_path,
+            ),
+            "parsed_record_count": parsed.get("record_count", 0),
+            "event_id_counts_in_file": parsed.get("event_id_counts", {}),
+            "parser_failures": parsed.get("parser_failures", []),
+            "interpretation_guardrails": _raw_artifact_guardrails(
+                "evtx",
+                total=filtered.get("total", 0),
+                parser_failures=parsed.get("parser_failures", []),
+            ),
+            **filtered,
+        })
+
+    return await _traced("query_evtx_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def query_prefetch_files(
+    prefetch_path: str = "",
+    directory: str = "/c:/Windows/Prefetch",
+    pattern: str = "*.pf",
+    keyword: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    """Parse and query offline Windows Prefetch files from a mounted image.
+
+    Args:
+        prefetch_path: Optional single PF file path. May be a mounted-image
+            internal path or a safe local file under the workspace/allowlist.
+        directory: Mounted-image or local directory to search when
+            prefetch_path is empty. Defaults to Windows Prefetch.
+        pattern: Glob pattern for directory searches.
+        keyword: Optional case-insensitive match across executable name,
+            source path, and raw referenced paths.
+        start_date / end_date: Optional ISO date filters against latest run.
+        limit / offset: Pagination over parsed matching Prefetch records.
+
+    Reading guide for AI consumers:
+        - Prefetch is execution evidence on systems where Prefetch is enabled,
+          but it is not a standalone incident verdict.
+        - Referenced paths inside Prefetch are context, not proof that every
+          referenced file executed.
+        - Empty results may mean Prefetch was disabled, cleared, absent,
+          compressed-parser failed, or filters were too narrow.
+    """
+    params = {
+        "prefetch_path": prefetch_path,
+        "directory": directory,
+        "pattern": pattern,
+        "keyword": keyword,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    def fn():
+        from core.analysis.prefetch_semantic import parse_prefetch_bytes as _parse_pf
+
+        source_paths: list[str] = []
+        source_mode = "mounted_image"
+        if prefetch_path:
+            source_paths = [prefetch_path]
+            if os.path.exists(prefetch_path):
+                source_mode = "local_file"
+        elif os.path.isdir(directory):
+            if not _is_safe_local_analysis_path(directory):
+                return {"ok": False, "error": build_not_allowed_message(directory)}
+            import glob
+            source_mode = "local_directory"
+            source_paths = sorted(glob.glob(os.path.join(directory, pattern)))
+        else:
+            e01 = _get_e01()
+            found = e01.find_files(pattern, path=directory, limit=max(1000, limit + offset))
+            source_paths = [
+                str(item.get("path", ""))
+                for item in found
+                if item.get("path") and not item.get("is_dir") and not item.get("error")
+            ]
+
+        parsed: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for path in source_paths:
+            try:
+                if os.path.exists(path):
+                    if not _is_safe_local_analysis_path(path):
+                        failures.append({"path": path, "error": build_not_allowed_message(path)})
+                        continue
+                    with open(path, "rb") as f:
+                        data = f.read()
+                else:
+                    data = _get_e01().read_file_content(path, max_size=8 * 1024 * 1024)
+                item = _parse_pf(data, source_path=path)
+                if item.get("ok"):
+                    parsed.append(item)
+                else:
+                    failures.append({"path": path, "error": item.get("error", "parse_failed")})
+            except Exception as e:
+                failures.append({"path": path, "error": str(e)})
+
+        keyword_lc = keyword.strip().lower()
+        matches = []
+        for item in parsed:
+            latest = str(item.get("latest_run_time_utc", "") or "")
+            day = latest[:10]
+            if start_date and day and day < start_date:
+                continue
+            if end_date and day and day > end_date:
+                continue
+            if keyword_lc:
+                blob = " ".join([
+                    str(item.get("source_path", "")),
+                    str(item.get("executable_name", "")),
+                    " ".join(str(v) for v in item.get("raw_referenced_paths", []) or []),
+                ]).lower()
+                if keyword_lc not in blob:
+                    continue
+            matches.append(item)
+
+        matches.sort(key=lambda item: str(item.get("latest_run_time_utc", "")), reverse=True)
+        safe_offset = max(0, offset)
+        safe_limit = max(0, limit)
+        returned = matches[safe_offset:safe_offset + safe_limit] if safe_limit else matches[safe_offset:]
+        return _mask({
+            "ok": True,
+            "source_mode": source_mode,
+            "evidence_context": _evidence_context(
+                prefetch_path or directory,
+                source_mode,
+                local_path=prefetch_path if source_mode.startswith("local") else "",
+                internal_path=(prefetch_path or directory) if source_mode == "mounted_image" else "",
+            ),
+            "searched": {
+                "prefetch_path": prefetch_path,
+                "directory": directory,
+                "pattern": pattern,
+                "source_path_count": len(source_paths),
+            },
+            "total": len(matches),
+            "returned": len(returned),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "truncated": safe_offset + len(returned) < len(matches),
+            "records": returned,
+            "parse_failures": failures[:50],
+            "parse_failure_count": len(failures),
+            "interpretation_guardrails": _raw_artifact_guardrails(
+                "prefetch",
+                total=len(matches),
+                parser_failures=failures,
+            ),
+            "guardrails": {
+                "standalone_verdict_allowed": False,
+                "absence_is_negative_evidence": False,
+                "referenced_paths_are_execution_evidence": False,
+            },
+        })
+
+    return await _traced("query_prefetch_files", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def query_registry_hive(
+    hive_path: str = "/c:/Windows/System32/config/SYSTEM",
+    key_path: str = "",
+    keyword: str = "",
+    search_root: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    max_scan_keys: int = 10000,
+) -> dict:
+    """Query an offline Windows registry hive by key path or bounded keyword search.
+
+    Args:
+        hive_path: Mounted-image internal path or safe local hive path.
+            Defaults to the SYSTEM hive in a mounted image.
+        key_path: Optional registry key path. Accepts forms like
+            ``\\ControlSet001\\Services\\uploadmgr`` or
+            ``HKLM\\SYSTEM\\CurrentControlSet\\Services\\uploadmgr``.
+        keyword: Optional keyword search across key paths and values. Keyword
+            search requires search_root to avoid slow whole-hive scans.
+        search_root: Registry subtree root for keyword search, for example
+            ``\\ControlSet001\\Services``.
+        limit / offset: Pagination for keyword search.
+        max_scan_keys: Safety cap for keys visited inside search_root.
+
+    Reading guide for AI consumers:
+        - Registry state proves configuration existed in the captured hive,
+          not when it was originally created unless LastWrite is present.
+        - CurrentControlSet is resolved from the hive's Select\\Current value
+          when possible.
+        - Absence of a key in one hive/control set is not evidence that the
+          behavior never existed; check source coverage and shadow copies.
+    """
+    params = {
+        "hive_path": hive_path,
+        "key_path": key_path,
+        "keyword": keyword,
+        "search_root": search_root,
+        "limit": limit,
+        "offset": offset,
+        "max_scan_keys": max_scan_keys,
+    }
+
+    def fn():
+        from core.connectors.registry import RegistryConnector
+        materialized = _materialize_local_artifact(hive_path, "registry_query")
+        if not materialized.get("ok"):
+            materialized["interpretation_guardrails"] = _raw_artifact_guardrails("registry", total=0)
+            return materialized
+        local_hive = materialized["local_path"]
+        if not key_path and keyword and not search_root:
+            return _mask({
+                "ok": False,
+                "error": (
+                    "keyword search requires search_root or key_path to avoid whole-hive "
+                    "scans and false confidence from timed-out scans"
+                ),
+                "source": materialized.get("source"),
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                "evidence_context": materialized.get("evidence_context", {}),
+                "query_semantics": {
+                    "keyword": keyword,
+                    "search_root_required": True,
+                    "recommended_examples": [
+                        "\\ControlSet001\\Services",
+                        "\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    ],
+                },
+                "interpretation_guardrails": _raw_artifact_guardrails("registry", total=0),
+            })
+        if not key_path and not keyword:
+            return _mask({
+                "ok": False,
+                "error": "Provide key_path for direct extraction or keyword plus search_root for bounded search.",
+                "source": materialized.get("source"),
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                "evidence_context": materialized.get("evidence_context", {}),
+                "interpretation_guardrails": _raw_artifact_guardrails("registry", total=0),
+            })
+        c = RegistryConnector()
+        meta = c.connect(local_hive)
+        try:
+            resolved_key = _normalize_registry_key_path(key_path, local_hive)
+            if resolved_key:
+                result = c.get_key(resolved_key)
+                result.update({
+                    "ok": "error" not in result,
+                    "source": materialized.get("source"),
+                    "hive_path": hive_path,
+                    "local_hive_path": local_hive,
+                    "evidence_context": materialized.get("evidence_context", {}),
+                    "resolved_key_path": resolved_key,
+                    "hive_metadata": meta,
+                    "interpretation_guardrails": _raw_artifact_guardrails(
+                        "registry",
+                        total=0 if "error" in result else None,
+                    ),
+                })
+                return _mask(result)
+            resolved_root = _normalize_registry_key_path(search_root, local_hive)
+            result = _search_registry_subtree(
+                local_hive,
+                resolved_root,
+                keyword,
+                limit=limit,
+                offset=offset,
+                max_scan_keys=max_scan_keys,
+            )
+            result.update({
+                "ok": "error" not in result,
+                "source": materialized.get("source"),
+                "hive_path": hive_path,
+                "local_hive_path": local_hive,
+                "evidence_context": materialized.get("evidence_context", {}),
+                "hive_metadata": meta,
+                "query_semantics": {
+                    "keyword": keyword,
+                    "search_root": search_root,
+                    "resolved_search_root": resolved_root,
+                    "limit": limit,
+                    "offset": offset,
+                    "max_scan_keys": max_scan_keys,
+                    "whole_hive_scan_allowed": False,
+                },
+                "interpretation_guardrails": _raw_artifact_guardrails(
+                    "registry",
+                    total=int(result.get("total", 0) or 0),
+                    parser_failures=result.get("parse_failures", []),
+                ),
+            })
+            return _mask(result)
+        finally:
+            c.disconnect()
+
+    return await _traced("query_registry_hive", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def inspect_pe_file(file_path: str) -> dict:
+    """Hash and inspect a PE file's signature/version metadata without executing it.
+
+    Args:
+        file_path: Mounted-image internal path or safe local file path.
+
+    Reading guide for AI consumers:
+        - This is static metadata only. Unsigned does not automatically mean
+          malicious, and signed does not automatically mean benign.
+        - For mounted-image paths, the file is extracted under the workspace
+          export directory for static inspection only.
+        - Pair this with file timestamps and execution artifacts before
+          making a persistence or malware conclusion.
+    """
+    params = {"file_path": file_path}
+
+    def fn():
+        materialized = _materialize_local_artifact(file_path, "pe_inspect")
+        if not materialized.get("ok"):
+            materialized["interpretation_guardrails"] = _raw_artifact_guardrails("pe", total=0)
+            return materialized
+        local_path = materialized["local_path"]
+        hashes = _hash_local_file(local_path)
+        ps_meta = _powershell_pe_metadata(local_path)
+        return _mask({
+            "ok": True,
+            "source": materialized.get("source"),
+            "input_path": file_path,
+            "local_path": local_path,
+            "evidence_context": materialized.get("evidence_context", {}),
+            "size": os.path.getsize(local_path),
+            "hashes": hashes,
+            "authenticode": ps_meta.get("authenticode", {}),
+            "version_info": ps_meta.get("version_info", {}),
+            "metadata_errors": ps_meta.get("errors", []),
+            "interpretation_guardrails": _raw_artifact_guardrails(
+                "pe",
+                parser_failures=[{"error": e} for e in ps_meta.get("errors", [])],
+            ),
+            "guardrails": {
+                "static_analysis_only": True,
+                "unsigned_is_malice_verdict": False,
+                "signed_is_benign_verdict": False,
+            },
+        })
+
+    return await _traced("inspect_pe_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
 
 @mcp.tool()
 async def analyze_binary(file_path: str, ghidra_install_dir: str = "") -> dict:
     """Load a binary (EXE/DLL) into Ghidra for STATIC reverse engineering (no execution). First call is slow (~1min)."""
     def fn():
+        phases = []
+        def phase(name: str, detail: str = "") -> None:
+            item = {"stage": name, "detail": detail, "timestamp": datetime.now(timezone.utc).isoformat()}
+            phases.append(item)
+            _log_event("progress", "analyze_binary", data=item)
+
+        phase("prepare", "Disconnecting any previous Ghidra program and preparing static load.")
         old = _connectors.get("ghidra")
         if old and old.is_connected():
             old.disconnect()
+            phase("previous_program_closed")
         g = GhidraConnector()
+        phase("ghidra_load_start", "Starting pyhidra/Ghidra import and auto-analysis.")
         meta = g.connect(file_path, ghidra_install_dir=ghidra_install_dir or config.ghidra_install_dir)
+        phase("ghidra_load_complete", "Binary is loaded; imports/strings/functions can now be queried.")
         _connectors["ghidra"] = g
+        meta["analysis_phases"] = phases
+        meta["evidence_context"] = _evidence_context(file_path, "static_binary", local_path=file_path)
+        meta["guardrails"] = {
+            "static_analysis_only": True,
+            "binary_was_executed": False,
+        }
         return _mask(meta)
     return await _traced("analyze_binary", {"file_path": file_path}, fn)
 
@@ -3340,14 +5484,20 @@ def main():
 for _tool_name in (
     "case_health",
     "baseline_diff",
+    "service_persistence_gate",
     "find_suspicious",
     "detect_anti_forensics",
     "hunt_evtx_rules",
     "coverage_explainer",
     "initial_triage_pack",
+    "raw_image_triage_gate",
     "search_artifacts",
     "build_timeline",
     "date_anchor_triage",
+    "query_evtx_file",
+    "query_prefetch_files",
+    "query_registry_hive",
+    "inspect_pe_file",
     "extract_iocs",
     "correlate",
     "map_to_mitre",

@@ -15,6 +15,7 @@ import mcp_bridge
         ("correlate", mcp_bridge.correlate),
         ("behavioral_delta_pack", mcp_bridge.behavioral_delta_pack),
         ("investigation_gap_report", mcp_bridge.investigation_gap_report),
+        ("hypothesis_refutation_pack", mcp_bridge.hypothesis_refutation_pack),
         ("detect_anti_forensics", mcp_bridge.detect_anti_forensics),
     ],
 )

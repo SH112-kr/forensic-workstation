@@ -61,10 +61,10 @@ class RegistryConnector(BaseConnector):
         for entry in self._hive.recurse_subkeys(as_json=True):
             if count >= offset + limit:
                 break
-            path = entry.get("path", "")
+            path = _entry_get(entry, "path", "")
             if kw_lower and kw_lower not in path.lower():
                 # Also check values
-                values = entry.get("values", [])
+                values = _entry_get(entry, "values", [])
                 found = False
                 for v in (values or []):
                     if kw_lower in str(v.get("name", "")).lower() or kw_lower in str(v.get("value", "")).lower():
@@ -76,9 +76,9 @@ class RegistryConnector(BaseConnector):
             if count > offset:
                 results.append({
                     "path": path,
-                    "timestamp": entry.get("timestamp", ""),
-                    "values_count": len(entry.get("values", []) or []),
-                    "values": (entry.get("values", []) or [])[:10],
+                    "timestamp": _entry_get(entry, "timestamp", ""),
+                    "values_count": len(_entry_get(entry, "values", []) or []),
+                    "values": (_entry_get(entry, "values", []) or [])[:10],
                 })
         return {"total": count, "returned": len(results), "entries": results}
 
@@ -95,13 +95,13 @@ class RegistryConnector(BaseConnector):
             return {"entries": [], "error": "No hive loaded."}
         entries: list[dict] = []
         for e in self._hive.recurse_subkeys(as_json=True):
-            ts = e.get("timestamp")
+            ts = _entry_get(e, "timestamp", "")
             if not ts:
                 continue
             entries.append({
-                "path": e.get("path", ""),
+                "path": _entry_get(e, "path", ""),
                 "timestamp": str(ts),
-                "values_count": len(e.get("values", []) or []),
+                "values_count": len(_entry_get(e, "values", []) or []),
             })
             if len(entries) >= 5000:
                 break
@@ -137,13 +137,12 @@ class RegistryConnector(BaseConnector):
         try:
             key = self._hive.get_key(path)
             values = []
-            if key.values:
-                for v in key.values:
-                    values.append({
-                        "name": v.name,
-                        "type": str(v.value_type),
-                        "value": str(v.value)[:500],
-                    })
+            for v in _iter_registry_values(key):
+                values.append({
+                    "name": v.name,
+                    "type": str(v.value_type),
+                    "value": str(v.value)[:500],
+                })
             subkeys = [sk.name for sk in (key.iter_subkeys() if hasattr(key, 'iter_subkeys') else [])]
             return {
                 "path": path,
@@ -172,3 +171,24 @@ class RegistryConnector(BaseConnector):
         elif "AMCACHE" in name:
             return "Amcache.hve"
         return "Unknown"
+
+
+def _iter_registry_values(key: Any) -> list[Any]:
+    try:
+        return list(key.iter_values())
+    except Exception:
+        pass
+    try:
+        return list(key.get_values())
+    except Exception:
+        pass
+    try:
+        return list(key.values or [])
+    except Exception:
+        return []
+
+
+def _entry_get(entry: Any, name: str, default: Any = None) -> Any:
+    if isinstance(entry, dict):
+        return entry.get(name, default)
+    return getattr(entry, name, default)

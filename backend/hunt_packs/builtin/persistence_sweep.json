@@ -3,6 +3,7 @@
   "description": "Enumerate common persistence vectors — service installs, scheduled tasks, suspicious MSI installs, and new user / group modifications.",
   "params_schema": {},
   "steps": [
+    {"tool": "service_persistence_gate", "args": {}},
     {"tool": "find_suspicious", "args": {"rules": "evtx_eid_7045_service_installs,evtx_eid_4698_scheduled_task_events,amcache_remote_access_tool_names,services_nonstandard_binary_paths"}},
     {"tool": "hunt_evtx_rules", "args": {"rule_ids": "fw-evtx-002,fw-evtx-003,fw-evtx-009", "severity_min": "low"}}
   ]

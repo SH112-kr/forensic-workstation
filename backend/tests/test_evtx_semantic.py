@@ -70,3 +70,45 @@ def test_summarize_semantic_events_counts_entities():
 
     assert summary["semantic_counts"]["failed_logon"] == 2
     assert ("TargetUserName:Administrator", 2) in summary["top_entities"]
+
+
+def test_filter_evtx_records_applies_event_keyword_date_and_pagination():
+    from core.analysis.evtx_semantic import filter_evtx_records
+
+    records = [
+        {
+            "event_id": 7045,
+            "timestamp": "2026-02-11T08:00:07Z",
+            "provider": "Service Control Manager",
+            "fields": {"ServiceName": "uploadmgr", "ImagePath": "svchost.exe"},
+            "semantic": {"label": "service_install"},
+        },
+        {
+            "event_id": 7045,
+            "timestamp": "2026-02-12T08:00:07Z",
+            "provider": "Service Control Manager",
+            "fields": {"ServiceName": "benignsvc"},
+            "semantic": {"label": "service_install"},
+        },
+        {
+            "event_id": 1102,
+            "timestamp": "2026-02-11T09:00:00Z",
+            "provider": "Microsoft-Windows-Eventlog",
+            "fields": {},
+            "semantic": {"label": "audit_log_cleared"},
+        },
+    ]
+
+    result = filter_evtx_records(
+        records,
+        event_ids={7045},
+        keyword="uploadmgr",
+        start_date="2026-02-11",
+        end_date="2026-02-11",
+        limit=1,
+    )
+
+    assert result["total"] == 1
+    assert result["returned"] == 1
+    assert result["records"][0]["fields"]["ServiceName"] == "uploadmgr"
+    assert result["query_semantics"]["event_ids"] == [7045]

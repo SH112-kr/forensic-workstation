@@ -10,6 +10,7 @@ from typing import Any
 _STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 _ACTIVE_CASE_FILE = os.path.join(_STATE_DIR, ".active_case.json")
 _ALLOWED_EVIDENCE_FILE = os.path.join(_STATE_DIR, ".allowed_evidence.json")
+IMAGE_EXTENSIONS = (".e01", ".ex01", ".vmdk", ".raw", ".dd")
 
 
 def normalize_path(path: str) -> str:
@@ -188,6 +189,47 @@ def resolve_allowed_evidence(path_or_ref: str = "", extensions: tuple[str, ...] 
         if raw_lc == os.path.basename(path).lower()
     ]
     return matches[0] if len(matches) == 1 else ""
+
+
+def resolve_image_evidence(path_or_ref: str = "") -> dict[str, str]:
+    """Resolve disk-image evidence with image-first semantics.
+
+    Empty input means "the image the user selected/loaded", not "whatever
+    parsed case was active in a previous workflow". This avoids the MCP bridge
+    trying stale AXIOM/MFDB evidence first and hitting the guardrail before it
+    eventually finds the loaded image.
+
+    Use ``active_case`` explicitly when the desired image should come from the
+    active parsed case metadata.
+    """
+    raw = str(path_or_ref or "").strip()
+
+    def _as_result(path: str, source: str) -> dict[str, str]:
+        return {"path": path, "source": source} if path else {}
+
+    if raw in {"", "active_image", "loaded_image"}:
+        allowed = resolve_allowed_evidence("", extensions=IMAGE_EXTENSIONS)
+        if allowed:
+            return _as_result(allowed, "allowed_evidence")
+        active = resolve_active_case_evidence("")
+        if active and active.lower().endswith(IMAGE_EXTENSIONS):
+            return _as_result(active, "active_case")
+        return {}
+
+    if raw == "active_case":
+        active = resolve_active_case_evidence(raw)
+        if active and active.lower().endswith(IMAGE_EXTENSIONS):
+            return _as_result(active, "active_case")
+        allowed = resolve_allowed_evidence("", extensions=IMAGE_EXTENSIONS)
+        return _as_result(allowed, "allowed_evidence")
+
+    allowed = resolve_allowed_evidence(raw, extensions=IMAGE_EXTENSIONS)
+    if allowed:
+        return _as_result(allowed, "allowed_evidence")
+    active = resolve_active_case_evidence(raw)
+    if active and active.lower().endswith(IMAGE_EXTENSIONS):
+        return _as_result(active, "active_case")
+    return {}
 
 
 def is_path_allowed(path: str) -> bool:

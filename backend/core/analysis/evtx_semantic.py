@@ -56,17 +56,20 @@ def parse_event_xml(xml_text: str, *, source_file: str = "") -> dict[str, Any]:
 
 def parse_evtx_file(path: str | Path, *, target_event_ids: set[int] | None = None, limit: int = 0) -> dict[str, Any]:
     """Parse high-value records from an EVTX file using python-evtx if present."""
+    target_event_ids = target_event_ids or TARGET_EVENT_IDS
     try:
         import Evtx.Evtx as evtx  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "records": [],
-            "event_id_counts": {},
-            "parser_failures": [{"path": str(path), "error": f"python-evtx unavailable: {exc}"}],
-        }
+        fallback = _parse_evtx_file_with_get_winevent(
+            path,
+            target_event_ids=target_event_ids,
+            limit=limit,
+            prior_error=str(exc),
+        )
+        if fallback.get("ok"):
+            return fallback
+        return fallback
 
-    target_event_ids = target_event_ids or TARGET_EVENT_IDS
     records: list[dict[str, Any]] = []
     counts: Counter[int | str] = Counter()
     failures: list[dict[str, str]] = []
@@ -88,6 +91,7 @@ def parse_evtx_file(path: str | Path, *, target_event_ids: set[int] | None = Non
         "record_count": len(records),
         "event_id_counts": dict(counts),
         "parser_failures": failures,
+        "parser_backend": "python-evtx",
     }
 
 
@@ -106,6 +110,54 @@ def summarize_semantic_events(records: list[dict[str, Any]]) -> dict[str, Any]:
         "semantic_counts": dict(labels),
         "event_id_counts": dict(event_ids),
         "top_entities": entities.most_common(25),
+    }
+
+
+def filter_evtx_records(
+    records: list[dict[str, Any]],
+    *,
+    event_ids: set[int] | None = None,
+    keyword: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Filter parsed EVTX records with explicit query semantics."""
+    keyword_lc = keyword.strip().lower()
+    matched: list[dict[str, Any]] = []
+    for record in records:
+        event_id = record.get("event_id")
+        if event_ids and event_id not in event_ids:
+            continue
+        ts = str(record.get("timestamp", "") or "")
+        day = ts[:10]
+        if start_date and day and day < start_date:
+            continue
+        if end_date and day and day > end_date:
+            continue
+        if keyword_lc and keyword_lc not in _record_search_text(record):
+            continue
+        matched.append(record)
+
+    safe_limit = max(0, limit)
+    safe_offset = max(0, offset)
+    returned = matched[safe_offset:safe_offset + safe_limit] if safe_limit else matched[safe_offset:]
+    return {
+        "total": len(matched),
+        "returned": len(returned),
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "truncated": safe_offset + len(returned) < len(matched),
+        "records": returned,
+        "summary": summarize_semantic_events(matched),
+        "query_semantics": {
+            "event_ids": sorted(event_ids) if event_ids else [],
+            "keyword": keyword,
+            "start_date": start_date,
+            "end_date": end_date,
+            "note": "Filters apply to parsed EVTX XML records, not live host event logs.",
+        },
     }
 
 
@@ -134,3 +186,116 @@ def _text(node: Any) -> str:
 
 def _strip_ns(tag: str) -> str:
     return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _record_search_text(record: dict[str, Any]) -> str:
+    parts = [
+        str(record.get("event_id", "")),
+        str(record.get("provider", "")),
+        str(record.get("channel", "")),
+        str(record.get("computer", "")),
+        str(record.get("source_file", "")),
+    ]
+    fields = record.get("fields", {}) or {}
+    parts.extend(str(k) for k in fields.keys())
+    parts.extend(str(v) for v in fields.values())
+    semantic = record.get("semantic", {}) or {}
+    parts.extend(str(v) for v in semantic.values())
+    return " ".join(parts).lower()
+
+
+def _parse_evtx_file_with_get_winevent(
+    path: str | Path,
+    *,
+    target_event_ids: set[int],
+    limit: int = 0,
+    prior_error: str = "",
+) -> dict[str, Any]:
+    """Fallback EVTX parser for Windows hosts using Get-WinEvent -Path."""
+    import base64
+    import os
+    import subprocess
+
+    if os.name != "nt":
+        return {
+            "ok": False,
+            "records": [],
+            "event_id_counts": {},
+            "parser_failures": [{
+                "path": str(path),
+                "error": f"python-evtx unavailable: {prior_error}; Get-WinEvent fallback requires Windows",
+            }],
+            "parser_backend": "unavailable",
+        }
+
+    ids = sorted(int(v) for v in target_event_ids)
+    id_expr = " or ".join(f"EventID={event_id}" for event_id in ids)
+    limit_int = max(0, int(limit or 0))
+    script = f"""
+$Path = $env:FW_EVTX_QUERY_PATH
+$Filter = '*[System[({id_expr})]]'
+$Events = Get-WinEvent -Path $Path -FilterXPath $Filter -ErrorAction Stop
+if ({limit_int} -gt 0) {{
+  $Events = $Events | Select-Object -First {limit_int}
+}}
+$Events | ForEach-Object {{
+  [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.ToXml()))
+}}
+"""
+    try:
+        env = dict(os.environ)
+        env["FW_EVTX_QUERY_PATH"] = str(path)
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env=env,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "records": [],
+            "event_id_counts": {},
+            "parser_failures": [{
+                "path": str(path),
+                "error": f"python-evtx unavailable: {prior_error}; Get-WinEvent fallback failed: {exc}",
+            }],
+            "parser_backend": "unavailable",
+        }
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "records": [],
+            "event_id_counts": {},
+            "parser_failures": [{
+                "path": str(path),
+                "error": f"python-evtx unavailable: {prior_error}; Get-WinEvent failed: {proc.stderr.strip()}",
+            }],
+            "parser_backend": "get-winevent",
+        }
+
+    records: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    counts: Counter[int | str] = Counter()
+    for idx, line in enumerate(proc.stdout.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            xml = base64.b64decode(line.strip()).decode("utf-8", errors="replace")
+            item = parse_event_xml(xml, source_file=str(path))
+            counts[item["event_id"]] += 1
+            records.append(item)
+        except Exception as exc:  # noqa: BLE001
+            failures.append({"record": str(idx), "error": str(exc)})
+
+    return {
+        "ok": True,
+        "records": records,
+        "record_count": len(records),
+        "event_id_counts": dict(counts),
+        "parser_failures": failures,
+        "parser_backend": "get-winevent",
+        "fallback_note": "python-evtx was unavailable; parsed offline EVTX via Get-WinEvent -Path.",
+    }
