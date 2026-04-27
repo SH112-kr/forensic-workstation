@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import DependencyStatusPanel from './DependencyStatusPanel';
 
 const KILL_CHAIN_PHASES = [
   'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
@@ -150,6 +151,8 @@ export default function Dashboard() {
         ];
     return (
       <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
+        <DependencyStatusPanel compact />
+
         <div style={{
           padding: '16px 20px', borderRadius: 10, marginBottom: 20,
           background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',

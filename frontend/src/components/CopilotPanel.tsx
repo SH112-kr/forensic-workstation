@@ -10,6 +10,10 @@ interface MCPEvent {
   duration_ms?: number;
 }
 
+function dependencyDiagnostic(evt: MCPEvent) {
+  return evt.result?.dependency_diagnostic || evt.data?.dependency_diagnostic || null;
+}
+
 export default function CopilotPanel() {
   const [events, setEvents] = useState<MCPEvent[]>([]);
   const [connected, setConnected] = useState(false);
@@ -66,6 +70,7 @@ export default function CopilotPanel() {
     ? events.filter(e => e.tool.toLowerCase().includes(filter.toLowerCase()) ||
         JSON.stringify(e.params || e.result || e.data || '').toLowerCase().includes(filter.toLowerCase()))
     : events;
+  const latestDependencyWarning = [...events].reverse().map(dependencyDiagnostic).find(Boolean);
 
   const typeStyles: Record<string, { bg: string; color: string; label: string; icon: string }> = {
     request:  { bg: 'var(--accent-light)', color: 'var(--accent)', label: 'REQ', icon: '→' },
@@ -93,6 +98,40 @@ export default function CopilotPanel() {
         <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{events.length}</span>
         <button className="btn btn-sm" onClick={() => setEvents([])} style={{ fontSize: 10, padding: '2px 6px' }}>Clear</button>
       </div>
+
+      {latestDependencyWarning && (
+        <div style={{
+          padding: '8px 12px',
+          borderBottom: '1px solid var(--critical-border)',
+          background: 'var(--critical-bg)',
+          color: 'var(--critical)',
+          fontSize: 11,
+          lineHeight: 1.45,
+          flexShrink: 0,
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: 3 }}>
+            Dependency blocks analysis: {latestDependencyWarning.dependency?.display_name}
+          </div>
+          <div style={{ color: 'var(--text-dim)' }}>
+            {latestDependencyWarning.user_message}
+          </div>
+          {latestDependencyWarning.recovery && (
+            <code style={{
+              display: 'block',
+              marginTop: 5,
+              padding: '4px 6px',
+              borderRadius: 4,
+              background: 'var(--bg)',
+              color: 'var(--text)',
+              border: '1px solid var(--border-light)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}>
+              {latestDependencyWarning.recovery}
+            </code>
+          )}
+        </div>
+      )}
 
       {/* Filter */}
       <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--border-light)', display: 'flex', gap: 6, flexShrink: 0 }}>
@@ -160,6 +199,9 @@ export default function CopilotPanel() {
                   <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
                     {summarize(evt.result)}
                   </span>
+                )}
+                {dependencyDiagnostic(evt) && (
+                  <span style={{ color: 'var(--critical)', fontWeight: 700 }}>dependency</span>
                 )}
                 {evt.type === 'error' && evt.data?.error && (
                   <span style={{ color: 'var(--critical)' }}>{String(evt.data.error).slice(0, 80)}</span>

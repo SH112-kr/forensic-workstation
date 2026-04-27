@@ -115,6 +115,13 @@ async def health():
     }
 
 
+@app.get("/api/health/dependencies")
+async def health_dependencies():
+    """Report analysis dependencies and the capabilities blocked when missing."""
+    from core.dependencies import dependency_report
+    return dependency_report()
+
+
 @app.get("/api/audit")
 async def get_audit_log(limit: int = 100):
     """Return the last N entries from the forensic audit log."""

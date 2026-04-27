@@ -41,6 +41,7 @@ from core.connectors.volatility_connector import VolatilityConnector
 from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
 from core.config import config
+from core.dependencies import dependency_report, diagnose_exception
 from state import (
     app_state,
     build_not_allowed_message,
@@ -211,6 +212,37 @@ def _runtime_status() -> dict[str, Any]:
             if latest_seen_mtime is not None else ""
         ),
     }
+
+
+def _attach_dependency_status(result: Any, tool_name: str = "") -> Any:
+    if not isinstance(result, dict):
+        return result
+
+    diagnostic = diagnose_exception(result.get("error", ""))
+    if not diagnostic:
+        try:
+            diagnostic = diagnose_exception(json.dumps(result, ensure_ascii=False, default=str))
+        except Exception:
+            diagnostic = None
+    if not diagnostic:
+        return result
+
+    out = dict(result)
+    out["dependency_diagnostic"] = diagnostic
+    warnings = list(out.get("runtime_warnings", []))
+    warning = diagnostic["user_message"]
+    if warning not in warnings:
+        warnings.append(warning)
+    out["runtime_warnings"] = warnings
+    blockers = list(out.get("analysis_blockers", []))
+    blocker = (
+        f"{tool_name} could not complete because {diagnostic['dependency']['display_name']} "
+        f"is not available. Recovery: {diagnostic['recovery']}"
+    )
+    if blocker not in blockers:
+        blockers.append(blocker)
+    out["analysis_blockers"] = blockers
+    return out
 
 
 def _attach_runtime_warning(result: Any, tool_name: str = "") -> Any:
@@ -542,6 +574,7 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
             timeout=timeout_seconds
         )
         result = _localize_timestamps(result)
+        result = _attach_dependency_status(result, tool_name=tool_name)
         result = _attach_runtime_warning(result, tool_name=tool_name)
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
@@ -557,6 +590,13 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
     except Exception as e:
         elapsed = _time.time() - t0
         error_payload: dict[str, Any] = {"error": str(e)}
+        diagnostic = diagnose_exception(e)
+        if diagnostic:
+            error_payload["dependency_diagnostic"] = diagnostic
+            error_payload["analysis_blockers"] = [
+                f"{tool_name} could not complete because {diagnostic['dependency']['display_name']} "
+                f"is not available. Recovery: {diagnostic['recovery']}"
+            ]
         try:
             guidance = _selected_evidence_guidance()
             if guidance.get("evidence_mode") != "no_selected_evidence":
@@ -614,6 +654,12 @@ async def open_case(path: str, case_name: str = "") -> dict:
 async def server_runtime_info() -> dict:
     """Show MCP server runtime/version state for stale-session diagnostics."""
     return await _traced("server_runtime_info", {}, lambda: _runtime_status(), timeout_seconds=TIMEOUT_LIGHT)
+
+
+@mcp.tool()
+async def dependency_health() -> dict:
+    """Report installed/missing analysis dependencies and blocked capabilities."""
+    return await _traced("dependency_health", {}, dependency_report, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()

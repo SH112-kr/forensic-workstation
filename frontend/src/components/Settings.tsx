@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
+import DependencyStatusPanel from './DependencyStatusPanel';
 
 interface ToolStatus {
   key: string;
@@ -179,6 +180,8 @@ export default function Settings() {
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
       <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700 }}>Settings</h2>
+
+      <DependencyStatusPanel />
 
       {message && (
         <div style={{
