@@ -8,7 +8,9 @@ already understand. It treats parsing failures as gaps, not negative evidence.
 from __future__ import annotations
 
 from collections import Counter
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -16,6 +18,10 @@ from xml.etree import ElementTree as ET
 TARGET_EVENT_IDS = {
     4624, 4625, 4648, 4672, 4720, 4722, 4728, 4732, 4756, 4776, 7045, 1102,
 }
+EVTX_FILE_MAGIC = b"ElfFile\x00"
+EVTX_CHUNK_MAGIC = b"ElfChnk\x00"
+EVTX_HEADER_SIZE = 0x1000
+EVTX_CHUNK_SIZE = 0x10000
 
 
 def parse_event_xml(xml_text: str, *, source_file: str = "") -> dict[str, Any]:
@@ -54,9 +60,16 @@ def parse_event_xml(xml_text: str, *, source_file: str = "") -> dict[str, Any]:
     }
 
 
-def parse_evtx_file(path: str | Path, *, target_event_ids: set[int] | None = None, limit: int = 0) -> dict[str, Any]:
+def parse_evtx_file(
+    path: str | Path,
+    *,
+    target_event_ids: set[int] | None = None,
+    limit: int = 0,
+    best_effort: bool = False,
+) -> dict[str, Any]:
     """Parse high-value records from an EVTX file using python-evtx if present."""
     target_event_ids = target_event_ids or TARGET_EVENT_IDS
+    recovery = analyze_evtx_recovery(path)
     try:
         import Evtx.Evtx as evtx  # type: ignore
     except Exception as exc:  # noqa: BLE001
@@ -67,32 +80,214 @@ def parse_evtx_file(path: str | Path, *, target_event_ids: set[int] | None = Non
             prior_error=str(exc),
         )
         if fallback.get("ok"):
+            fallback["recovery"] = recovery
             return fallback
+        if best_effort:
+            return _parse_evtx_file_best_effort(
+                path,
+                target_event_ids=target_event_ids,
+                limit=limit,
+                prior_failures=fallback.get("parser_failures", []),
+                recovery=recovery,
+            )
+        fallback["recovery"] = recovery
         return fallback
 
     records: list[dict[str, Any]] = []
     counts: Counter[int | str] = Counter()
     failures: list[dict[str, str]] = []
-    with evtx.Evtx(str(path)) as log:
-        for idx, record in enumerate(log.records()):
-            try:
-                item = parse_event_xml(record.xml(), source_file=str(path))
-            except Exception as exc:  # noqa: BLE001
-                failures.append({"record": str(idx), "error": str(exc)})
-                continue
-            counts[item["event_id"]] += 1
-            if item["event_id"] in target_event_ids:
-                records.append(item)
-                if limit and len(records) >= limit:
-                    break
-    return {
+    try:
+        with evtx.Evtx(str(path)) as log:
+            for idx, record in enumerate(log.records()):
+                try:
+                    item = parse_event_xml(record.xml(), source_file=str(path))
+                except Exception as exc:  # noqa: BLE001
+                    failures.append({"record": str(idx), "error": str(exc)})
+                    continue
+                counts[item["event_id"]] += 1
+                if item["event_id"] in target_event_ids:
+                    records.append(item)
+                    if limit and len(records) >= limit:
+                        break
+    except Exception as exc:  # noqa: BLE001
+        fallback = _parse_evtx_file_with_get_winevent(
+            path,
+            target_event_ids=target_event_ids,
+            limit=limit,
+            prior_error=str(exc),
+        )
+        if fallback.get("ok"):
+            fallback["recovery"] = recovery
+            return fallback
+        if best_effort:
+            return _parse_evtx_file_best_effort(
+                path,
+                target_event_ids=target_event_ids,
+                limit=limit,
+                prior_failures=fallback.get("parser_failures", []),
+                recovery=recovery,
+            )
+        fallback["recovery"] = recovery
+        return fallback
+    result = {
         "ok": True,
         "records": records,
         "record_count": len(records),
         "event_id_counts": dict(counts),
         "parser_failures": failures,
         "parser_backend": "python-evtx",
+        "recovery": recovery,
     }
+    return result
+
+
+def analyze_evtx_recovery(path: str | Path, *, best_effort: bool = False) -> dict[str, Any]:
+    """Return structural EVTX chunk coverage metadata without making absence claims."""
+    path = Path(path)
+    failures: list[dict[str, Any]] = []
+    total_chunks = 0
+    valid_chunks = 0
+    partial_records_dropped = 0
+
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            header = fh.read(EVTX_HEADER_SIZE)
+            if not header.startswith(EVTX_FILE_MAGIC):
+                failures.append({
+                    "chunk_number": -1,
+                    "chunk_offset": 0,
+                    "error": "invalid EVTX file magic",
+                    "records_unrecoverable": "unknown",
+                })
+            if size > EVTX_HEADER_SIZE:
+                for chunk_number, chunk_offset in enumerate(range(EVTX_HEADER_SIZE, size, EVTX_CHUNK_SIZE)):
+                    total_chunks += 1
+                    fh.seek(chunk_offset)
+                    chunk = fh.read(EVTX_CHUNK_SIZE)
+                    if len(chunk) < EVTX_CHUNK_SIZE:
+                        partial_records_dropped += 1
+                        failures.append({
+                            "chunk_number": chunk_number,
+                            "chunk_offset": chunk_offset,
+                            "error": "short EVTX chunk",
+                            "records_unrecoverable": "unknown",
+                        })
+                        continue
+                    if not chunk.startswith(EVTX_CHUNK_MAGIC):
+                        failures.append({
+                            "chunk_number": chunk_number,
+                            "chunk_offset": chunk_offset,
+                            "error": "invalid EVTX chunk magic",
+                            "records_unrecoverable": "unknown",
+                        })
+                        continue
+                    valid_chunks += 1
+    except Exception as exc:  # noqa: BLE001
+        failures.append({
+            "chunk_number": -1,
+            "chunk_offset": 0,
+            "error": str(exc),
+            "records_unrecoverable": "unknown",
+        })
+
+    chunks_failed = len(failures)
+    if chunks_failed:
+        coverage_note = f"Events from {chunks_failed} failed chunks are absent from results."
+    else:
+        coverage_note = f"All {total_chunks} chunks passed structural scan."
+    return {
+        "total_chunks_detected": total_chunks,
+        "chunks_parsed_ok": valid_chunks,
+        "chunks_failed": chunks_failed,
+        "parser_failures": failures,
+        "best_effort": bool(best_effort),
+        "coverage_note": coverage_note,
+        "partial_records_dropped": partial_records_dropped,
+        "validation_scope": "structural_chunk_magic",
+    }
+
+
+def _parse_evtx_file_best_effort(
+    path: str | Path,
+    *,
+    target_event_ids: set[int],
+    limit: int = 0,
+    prior_failures: list[dict[str, Any]] | None = None,
+    recovery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Try one bounded recovery pass by rebuilding an EVTX from structurally valid chunks."""
+    recovery = dict(recovery or analyze_evtx_recovery(path))
+    recovery["best_effort"] = True
+    recovery["recovery_attempts"] = ["valid_chunk_rebuild"]
+    prior_failures = prior_failures or []
+
+    rebuilt_path = _rebuild_evtx_from_valid_chunks(path)
+    if not rebuilt_path:
+        recovery["coverage_note"] = (
+            recovery.get("coverage_note")
+            or "No structurally valid chunks were available for best-effort parsing."
+        )
+        return {
+            "ok": False,
+            "records": [],
+            "record_count": 0,
+            "event_id_counts": {},
+            "parser_failures": prior_failures,
+            "parser_backend": "best-effort-unavailable",
+            "recovery": recovery,
+        }
+    try:
+        parsed = _parse_evtx_file_with_get_winevent(
+            rebuilt_path,
+            target_event_ids=target_event_ids,
+            limit=limit,
+            prior_error="best-effort valid chunk rebuild",
+        )
+        if parsed.get("ok"):
+            parsed["records"] = sorted(
+                parsed.get("records", []) or [],
+                key=lambda record: str(record.get("timestamp", "") or ""),
+            )
+            parsed["record_count"] = len(parsed["records"])
+            parsed["parser_backend"] = f"best-effort:{parsed.get('parser_backend', 'unknown')}"
+            parsed["parser_failures"] = prior_failures + (parsed.get("parser_failures", []) or [])
+            parsed["recovery"] = recovery
+            return parsed
+        parsed["parser_failures"] = prior_failures + (parsed.get("parser_failures", []) or [])
+        parsed["recovery"] = recovery
+        return parsed
+    finally:
+        try:
+            os.remove(rebuilt_path)
+        except Exception:
+            pass
+
+
+def _rebuild_evtx_from_valid_chunks(path: str | Path) -> str:
+    path = Path(path)
+    try:
+        with path.open("rb") as src:
+            header = src.read(EVTX_HEADER_SIZE)
+            if not header.startswith(EVTX_FILE_MAGIC):
+                return ""
+            chunks: list[bytes] = []
+            while True:
+                chunk = src.read(EVTX_CHUNK_SIZE)
+                if not chunk:
+                    break
+                if len(chunk) == EVTX_CHUNK_SIZE and chunk.startswith(EVTX_CHUNK_MAGIC):
+                    chunks.append(chunk)
+            if not chunks:
+                return ""
+        fd, rebuilt = tempfile.mkstemp(prefix="evtx_recovered_", suffix=".evtx", dir=str(path.parent))
+        with os.fdopen(fd, "wb") as dst:
+            dst.write(header)
+            for chunk in chunks:
+                dst.write(chunk)
+        return rebuilt
+    except Exception:
+        return ""
 
 
 def summarize_semantic_events(records: list[dict[str, Any]]) -> dict[str, Any]:

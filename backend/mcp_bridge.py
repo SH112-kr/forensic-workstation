@@ -109,6 +109,9 @@ _STALE_SENSITIVE_TOOLS = {
     "vss_extract_file",
     "vss_query_evtx_file",
     "vss_query_registry_hive",
+    "vss_list_registry_hives",
+    "vss_query_user_hives",
+    "vss_service_persistence_gate",
     "query_registry_hive",
     "query_prefetch_files",
     "inspect_pe_file",
@@ -3164,6 +3167,27 @@ def _vss_snapshot_guardrails(total: int | None = None, parser_failures: list | N
     return guardrail
 
 
+def _vss_file_coverage_for_directory(files: list[dict[str, Any]], snapshot_id: str) -> dict[str, Any]:
+    failed = bool(files and "error" in files[0])
+    coverage: dict[str, Any] = {
+        "paths_attempted": 1,
+        "paths_succeeded": 0 if failed else 1,
+        "paths_skipped": 1 if failed else 0,
+        "skip_reasons": {
+            "access_denied": 0,
+            "io_error": 0,
+            "path_too_long": 0,
+            "symlink": 0,
+            "other": 1 if failed else 0,
+        },
+        "skipped_path_samples": files[:1] if failed else [],
+        "truncated": False,
+    }
+    if failed:
+        coverage["coverage_gap"] = f"1 paths unexamined in snapshot {snapshot_id}."
+    return coverage
+
+
 def _vss_context(snapshot: dict[str, Any], input_ref: str, local_path: str = "") -> dict[str, Any]:
     ctx = _evidence_context(
         input_ref,
@@ -3208,6 +3232,322 @@ def _vss_unique_output_path(snapshot_id: str, subdir: str, internal_path: str, f
         output_path = f"{base}_{counter}{ext}"
         counter += 1
     return output_path
+
+
+def _vss_snapshot_export_root(snapshot_id: str, local_path: str = "") -> str:
+    safe_snapshot = re.sub(r"[^A-Za-z0-9._-]", "_", str(snapshot_id or "snapshot"))
+    if local_path:
+        parts = os.path.abspath(local_path).split(os.sep)
+        for idx, part in enumerate(parts):
+            if part == safe_snapshot and idx > 0 and parts[idx - 1].lower() == "vss":
+                return os.sep.join(parts[: idx + 1])
+    return os.path.join(_workspace_root(), "export", "vss", safe_snapshot)
+
+
+def _write_vss_quarantine_manifest(
+    extraction: dict[str, Any],
+    *,
+    tool_name: str,
+    purpose: str,
+    source_path: str,
+    query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append provenance for a VSS-extracted artifact without changing evidence."""
+    try:
+        snapshot_id = str(extraction.get("snapshot_id") or "snapshot")
+        output_path = str(extraction.get("output_path") or "")
+        root = _vss_snapshot_export_root(snapshot_id, output_path)
+        os.makedirs(root, exist_ok=True)
+        manifest_path = os.path.join(root, "manifest.json")
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        e01 = _connectors.get("e01")
+        meta: dict[str, Any] = {}
+        if e01 is not None and e01.is_connected():
+            try:
+                meta = e01.get_metadata()
+            except Exception:
+                meta = {}
+        image_path = str(meta.get("image_path", "") or "")
+        image_identity = {
+            "image_path": image_path,
+            "image_basename": os.path.basename(image_path),
+            "image_path_sha256": hashlib.sha256(image_path.encode("utf-8", errors="ignore")).hexdigest()
+            if image_path else "",
+            "hostname": meta.get("hostname", ""),
+            "volumes": meta.get("volumes", []),
+        }
+
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except Exception:
+                manifest = {}
+        else:
+            manifest = {}
+        if not manifest:
+            manifest = {
+                "schema": "fw.vss_quarantine_manifest.v1",
+                "created_at_utc": now,
+                "snapshot": {
+                    "snapshot_id": snapshot_id,
+                    "snapshot_index": extraction.get("snapshot_index", ""),
+                    "snapshot_creation_time": extraction.get("snapshot_creation_time", ""),
+                    "temporal_layer": extraction.get("temporal_layer", ""),
+                    "volume": extraction.get("volume", ""),
+                },
+                "image": image_identity,
+                "entries": [],
+                "interpretation_guardrails": {
+                    "static_analysis_only": True,
+                    "execute_allowed": False,
+                    "vss_is_verified_clean_baseline": False,
+                    "absence_is_negative_evidence": False,
+                    "manifest_is_provenance_not_verdict": True,
+                },
+            }
+        manifest["updated_at_utc"] = now
+        manifest["image"] = image_identity or manifest.get("image", {})
+
+        rel_output = ""
+        if output_path:
+            try:
+                rel_output = os.path.relpath(output_path, _workspace_root())
+            except Exception:
+                rel_output = output_path
+        entry_basis = "|".join([
+            snapshot_id,
+            source_path,
+            output_path,
+            str(extraction.get("sha256", "")),
+        ])
+        entry = {
+            "entry_id": hashlib.sha256(entry_basis.encode("utf-8", errors="ignore")).hexdigest()[:16],
+            "tool_name": tool_name,
+            "purpose": purpose,
+            "extracted_at_utc": now,
+            "source": {
+                "type": "vss_snapshot",
+                "path": source_path,
+                "temporal_layer": extraction.get("temporal_layer", ""),
+                "snapshot_id": snapshot_id,
+                "snapshot_index": extraction.get("snapshot_index", ""),
+                "snapshot_creation_time": extraction.get("snapshot_creation_time", ""),
+                "volume": extraction.get("volume", ""),
+            },
+            "output": {
+                "path": output_path,
+                "relative_path": rel_output,
+                "size": extraction.get("size", 0),
+                "sha256": extraction.get("sha256", ""),
+                "execute_allowed": bool(extraction.get("execute_allowed", False)),
+            },
+            "query": query or {},
+            "safety": {
+                "static_analysis_only": True,
+                "execute_allowed": False,
+                "warning": extraction.get("warning", "STATIC ANALYSIS ONLY - do not execute this file"),
+            },
+        }
+
+        entries = [
+            existing for existing in manifest.get("entries", [])
+            if existing.get("entry_id") != entry["entry_id"]
+        ]
+        entries.append(entry)
+        manifest["entries"] = entries
+
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        return {
+            "ok": True,
+            "manifest_path": manifest_path,
+            "entry_id": entry["entry_id"],
+            "entry_count": len(entries),
+            "schema": manifest["schema"],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "manifest_path": "",
+        }
+
+
+def _vss_snapshot_metadata_by_id(e01: Any, snapshot_id: str, volume: str = "/c:") -> dict[str, Any]:
+    try:
+        listing = e01.list_vss_snapshots(volume)
+        token = str(snapshot_id or "").strip().lower()
+        for snapshot in listing.get("snapshots", []) or []:
+            aliases = {
+                str(snapshot.get("snapshot_id", "")).lower(),
+                str(snapshot.get("snapshot_index", "")).lower(),
+                f"vss{snapshot.get('snapshot_index', '')}".lower(),
+            }
+            if token in aliases:
+                return dict(snapshot)
+    except Exception:
+        pass
+    return {
+        "temporal_layer": f"vss:{snapshot_id}",
+        "snapshot_id": snapshot_id,
+        "snapshot_index": "",
+        "snapshot_creation_time": "",
+        "volume": volume,
+        "integrity_note": "VSS contents are historical layers, not verified-clean baseline state.",
+    }
+
+
+def _vss_registry_hive_type(path: str) -> str:
+    name = os.path.basename(str(path).replace("\\", "/").rstrip("/")).lower()
+    if name == "ntuser.dat":
+        return "NTUSER.DAT"
+    if name == "usrclass.dat":
+        return "UsrClass.dat"
+    if name == "amcache.hve":
+        return "Amcache.hve"
+    upper = name.upper()
+    if upper in {"SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT"}:
+        return upper
+    return "Unknown"
+
+
+def _vss_user_from_hive_path(path: str) -> str:
+    parts = str(path or "").replace("\\", "/").split("/")
+    lowered = [part.lower() for part in parts]
+    if "users" in lowered:
+        idx = lowered.index("users")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return ""
+
+
+def _vss_hive_record(
+    path: str,
+    hive_type: str,
+    snapshot: dict[str, Any],
+    *,
+    status: str,
+    info: dict[str, Any] | None = None,
+    source: str = "exact_path",
+) -> dict[str, Any]:
+    info = info or {}
+    record = {
+        "status": status,
+        "source": source,
+        "hive_type": hive_type,
+        "path": path,
+        "user": _vss_user_from_hive_path(path),
+        "size": info.get("size", 0),
+        "timestamps": {
+            "created": info.get("created", ""),
+            "modified": info.get("modified", ""),
+            "accessed": info.get("accessed", ""),
+            "$SI_created": info.get("$SI_created", ""),
+            "$SI_modified": info.get("$SI_modified", ""),
+            "$SI_mft_modified": info.get("$SI_mft_modified", ""),
+            "$SI_accessed": info.get("$SI_accessed", ""),
+            "$FN_created": info.get("$FN_created", ""),
+            "$FN_modified": info.get("$FN_modified", ""),
+        },
+        **snapshot,
+    }
+    if info.get("error"):
+        record["error"] = info.get("error")
+    return record
+
+
+def _vss_discover_registry_hives(
+    e01: Any,
+    snapshot_id: str,
+    *,
+    volume: str = "/c:",
+    include_core_hives: bool = True,
+    include_user_hives: bool = True,
+    include_amcache: bool = True,
+    user_filter: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    snapshot = _vss_snapshot_metadata_by_id(e01, snapshot_id, volume)
+    hives: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    coverage: dict[str, Any] = {
+        "exact_paths_checked": 0,
+        "exact_paths_present": 0,
+        "user_hive_searches": [],
+        "paths_skipped": 0,
+        "parser_failures": [],
+        "truncated": False,
+    }
+
+    exact_candidates: list[tuple[str, str]] = []
+    if include_core_hives:
+        exact_candidates.extend([
+            ("/c:/Windows/System32/config/SYSTEM", "SYSTEM"),
+            ("/c:/Windows/System32/config/SOFTWARE", "SOFTWARE"),
+            ("/c:/Windows/System32/config/SAM", "SAM"),
+            ("/c:/Windows/System32/config/SECURITY", "SECURITY"),
+            ("/c:/Windows/System32/config/DEFAULT", "DEFAULT"),
+        ])
+    if include_amcache:
+        exact_candidates.append(("/c:/Windows/AppCompat/Programs/Amcache.hve", "Amcache.hve"))
+
+    for path, hive_type in exact_candidates:
+        coverage["exact_paths_checked"] += 1
+        info = e01.vss_get_file_info(snapshot_id, path, volume=volume)
+        if info.get("error"):
+            missing.append(_vss_hive_record(path, hive_type, snapshot, status="missing", info=info))
+            continue
+        coverage["exact_paths_present"] += 1
+        hives.append(_vss_hive_record(path, hive_type, snapshot, status="present", info=info))
+
+    if include_user_hives:
+        max_per_search = max(1, int(limit or 1))
+        for pattern, hive_type in (("NTUSER.DAT", "NTUSER.DAT"), ("UsrClass.dat", "UsrClass.dat")):
+            if hasattr(e01, "vss_find_files_with_coverage"):
+                search_result = e01.vss_find_files_with_coverage(
+                    snapshot_id,
+                    pattern,
+                    path="/c:/Users",
+                    volume=volume,
+                    limit=max_per_search,
+                )
+                files = search_result.get("files", []) or []
+                search_coverage = search_result.get("coverage", {}) or {}
+            else:
+                files = e01.vss_find_files(snapshot_id, pattern, path="/c:/Users", volume=volume, limit=max_per_search)
+                search_coverage = _vss_file_coverage_for_directory(files, snapshot_id)
+            coverage["user_hive_searches"].append({
+                "pattern": pattern,
+                "returned": len(files),
+                "coverage": search_coverage,
+            })
+            coverage["paths_skipped"] += int(search_coverage.get("paths_skipped", 0) or 0)
+            coverage["parser_failures"].extend(search_coverage.get("skipped_path_samples", []) or [])
+            coverage["truncated"] = bool(coverage["truncated"] or search_coverage.get("truncated"))
+            for item in files:
+                if item.get("error") or item.get("is_dir"):
+                    continue
+                path = str(item.get("path", ""))
+                if user_filter and user_filter.lower() not in _vss_user_from_hive_path(path).lower():
+                    continue
+                hives.append(_vss_hive_record(path, hive_type, snapshot, status="present", info=item, source="user_search"))
+
+    seen: set[tuple[str, str]] = set()
+    deduped = []
+    for hive in hives:
+        key = (str(hive.get("hive_type", "")), str(hive.get("path", "")).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(hive)
+    return {
+        "snapshot": snapshot,
+        "hives": deduped[: max(0, int(limit or 0))],
+        "missing_hives": missing,
+        "coverage": coverage,
+    }
 
 
 def _normalize_registry_key_path(key_path: str, hive_path: str = "") -> str:
@@ -3754,7 +4094,8 @@ async def vss_list_files(
     """List or search files inside one VSS snapshot.
 
     Results describe only the selected snapshot's historical layer. A missing
-    file in one snapshot does not prove it never existed.
+    file in one snapshot does not prove it never existed. The coverage block
+    reports unreadable paths as coverage gaps even when matches are returned.
     """
     params = {
         "snapshot_id": snapshot_id,
@@ -3767,10 +4108,23 @@ async def vss_list_files(
     def fn():
         e01 = _get_e01()
         if pattern:
-            files = e01.vss_find_files(snapshot_id, pattern, path=path, volume=volume, limit=max(1, limit))
+            if hasattr(e01, "vss_find_files_with_coverage"):
+                search_result = e01.vss_find_files_with_coverage(
+                    snapshot_id,
+                    pattern,
+                    path=path,
+                    volume=volume,
+                    limit=max(1, limit),
+                )
+                files = search_result.get("files", [])
+                coverage = search_result.get("coverage", {})
+            else:
+                files = e01.vss_find_files(snapshot_id, pattern, path=path, volume=volume, limit=max(1, limit))
+                coverage = _vss_file_coverage_for_directory(files, snapshot_id)
         else:
             files = e01.vss_list_directory(snapshot_id, path, volume=volume)
             files = files[:max(0, limit)]
+            coverage = _vss_file_coverage_for_directory(files, snapshot_id)
         first = files[0] if files else {}
         snapshot = {k: first.get(k, "") for k in (
             "temporal_layer",
@@ -3797,9 +4151,13 @@ async def vss_list_files(
             "pattern": pattern,
             "count": len(files),
             "files": files,
+            "coverage": coverage,
             **snapshot,
             "evidence_context": _vss_context(snapshot, path),
-            "interpretation_guardrails": _vss_snapshot_guardrails(total=len(files)),
+            "interpretation_guardrails": _vss_snapshot_guardrails(
+                total=len(files),
+                parser_failures=coverage.get("skipped_path_samples", []),
+            ),
         })
 
     return await _traced("vss_list_files", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
@@ -3887,7 +4245,8 @@ async def vss_extract_file(
 
     VSS extractions are placed under export/vss/<snapshot_id>/... by default
     so current-FS and historical-layer files cannot silently overwrite each
-    other. Extracted files may be malware; never execute them.
+    other. A manifest.json is updated in the snapshot export root for report
+    provenance. Extracted files may be malware; never execute them.
     """
     params = {
         "snapshot_id": snapshot_id,
@@ -3922,9 +4281,17 @@ async def vss_extract_file(
             "volume",
             "integrity_note",
         )}
+        manifest = _write_vss_quarantine_manifest(
+            result,
+            tool_name="vss_extract_file",
+            purpose="manual_static_analysis_extract",
+            source_path=internal_path,
+            query={"volume": volume},
+        )
         result.update({
             "ok": True,
             "evidence_context": _vss_context(snapshot, internal_path, local_path=result.get("output_path", "")),
+            "quarantine_manifest": manifest,
             "interpretation_guardrails": _vss_snapshot_guardrails(),
         })
         return _mask(result)
@@ -3948,6 +4315,8 @@ async def vss_query_evtx_file(
 
     Use this to check historical event logs after live logs were cleared.
     Empty results are snapshot/filter observations, not proof of absence.
+    The recovery block reports chunk-level parse gaps and bounded best-effort
+    recovery attempts for partially corrupt snapshot logs.
     """
     params = {
         "snapshot_id": snapshot_id,
@@ -3988,18 +4357,37 @@ async def vss_query_evtx_file(
             "volume",
             "integrity_note",
         )}
-        parsed = _parse_evtx_file(local_path, target_event_ids=ids or None, limit=0)
+        manifest = _write_vss_quarantine_manifest(
+            extraction,
+            tool_name="vss_query_evtx_file",
+            purpose="evtx_query_source_extract",
+            source_path=evtx_path,
+            query={
+                "event_ids": event_ids,
+                "keyword": keyword,
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit,
+                "offset": offset,
+                "volume": volume,
+            },
+        )
+        parsed = _parse_evtx_file(local_path, target_event_ids=ids or None, limit=0, best_effort=True)
+        parser_failures = (parsed.get("parser_failures", []) or []) + (
+            (parsed.get("recovery", {}) or {}).get("parser_failures", []) or []
+        )
         if not parsed.get("ok"):
             return _mask({
                 **parsed,
                 "source": "vss_snapshot",
                 "evtx_path": evtx_path,
                 "local_path": local_path,
+                "quarantine_manifest": manifest,
                 **snapshot,
                 "evidence_context": _vss_context(snapshot, evtx_path, local_path=local_path),
                 "interpretation_guardrails": _vss_snapshot_guardrails(
                     total=0,
-                    parser_failures=parsed.get("parser_failures", []),
+                    parser_failures=parser_failures,
                 ),
             })
         filtered = _filter_evtx_records(
@@ -4016,14 +4404,16 @@ async def vss_query_evtx_file(
             "source": "vss_snapshot",
             "evtx_path": evtx_path,
             "local_path": local_path,
+            "quarantine_manifest": manifest,
             **snapshot,
             "evidence_context": _vss_context(snapshot, evtx_path, local_path=local_path),
             "parsed_record_count": parsed.get("record_count", 0),
             "event_id_counts_in_file": parsed.get("event_id_counts", {}),
             "parser_failures": parsed.get("parser_failures", []),
+            "recovery": parsed.get("recovery", {}),
             "interpretation_guardrails": _vss_snapshot_guardrails(
                 total=filtered.get("total", 0),
-                parser_failures=parsed.get("parser_failures", []),
+                parser_failures=parser_failures,
             ),
             **filtered,
         })
@@ -4076,6 +4466,21 @@ async def vss_query_registry_hive(
             "volume",
             "integrity_note",
         )}
+        manifest = _write_vss_quarantine_manifest(
+            extraction,
+            tool_name="vss_query_registry_hive",
+            purpose="registry_query_source_extract",
+            source_path=hive_path,
+            query={
+                "key_path": key_path,
+                "keyword": keyword,
+                "search_root": search_root,
+                "limit": limit,
+                "offset": offset,
+                "max_scan_keys": max_scan_keys,
+                "volume": volume,
+            },
+        )
         if not key_path and keyword and not search_root:
             return _mask({
                 "ok": False,
@@ -4083,6 +4488,7 @@ async def vss_query_registry_hive(
                 "source": "vss_snapshot",
                 "hive_path": hive_path,
                 "local_hive_path": local_hive,
+                "quarantine_manifest": manifest,
                 **snapshot,
                 "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
                 "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
@@ -4094,6 +4500,7 @@ async def vss_query_registry_hive(
                 "source": "vss_snapshot",
                 "hive_path": hive_path,
                 "local_hive_path": local_hive,
+                "quarantine_manifest": manifest,
                 **snapshot,
                 "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
                 "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
@@ -4109,6 +4516,7 @@ async def vss_query_registry_hive(
                     "source": "vss_snapshot",
                     "hive_path": hive_path,
                     "local_hive_path": local_hive,
+                    "quarantine_manifest": manifest,
                     **snapshot,
                     "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
                     "resolved_key_path": resolved_key,
@@ -4132,6 +4540,7 @@ async def vss_query_registry_hive(
                 "source": "vss_snapshot",
                 "hive_path": hive_path,
                 "local_hive_path": local_hive,
+                "quarantine_manifest": manifest,
                 **snapshot,
                 "evidence_context": _vss_context(snapshot, hive_path, local_path=local_hive),
                 "hive_metadata": meta,
@@ -4154,6 +4563,323 @@ async def vss_query_registry_hive(
             c.disconnect()
 
     return await _traced("vss_query_registry_hive", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_list_registry_hives(
+    snapshot_id: str,
+    volume: str = "/c:",
+    include_core_hives: bool = True,
+    include_user_hives: bool = True,
+    include_amcache: bool = True,
+    user_filter: str = "",
+    limit: int = 200,
+) -> dict:
+    """List likely registry hives inside one VSS snapshot.
+
+    This discovery helper checks SYSTEM/SOFTWARE/SAM/SECURITY/DEFAULT,
+    Amcache, and user NTUSER.DAT/UsrClass.dat hives. Missing hives are
+    coverage observations for this snapshot, not negative evidence.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "volume": volume,
+        "include_core_hives": include_core_hives,
+        "include_user_hives": include_user_hives,
+        "include_amcache": include_amcache,
+        "user_filter": user_filter,
+        "limit": limit,
+    }
+
+    def fn():
+        e01 = _get_e01()
+        discovered = _vss_discover_registry_hives(
+            e01,
+            snapshot_id,
+            volume=volume,
+            include_core_hives=include_core_hives,
+            include_user_hives=include_user_hives,
+            include_amcache=include_amcache,
+            user_filter=user_filter,
+            limit=max(1, limit),
+        )
+        snapshot = discovered["snapshot"]
+        hives = discovered["hives"]
+        return _mask({
+            "ok": True,
+            "source": "vss_snapshot",
+            **snapshot,
+            "hive_count": len(hives),
+            "hives": hives,
+            "missing_hives": discovered["missing_hives"],
+            "coverage": discovered["coverage"],
+            "evidence_context": _vss_context(snapshot, "/registry_hives"),
+            "interpretation_guardrails": _vss_snapshot_guardrails(
+                total=len(hives),
+                parser_failures=discovered["coverage"].get("parser_failures", []),
+            ),
+        })
+
+    return await _traced("vss_list_registry_hives", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_query_user_hives(
+    snapshot_id: str,
+    key_path: str = "",
+    keyword: str = "",
+    search_root: str = "",
+    user_filter: str = "",
+    hive_name: str = "NTUSER.DAT",
+    volume: str = "/c:",
+    limit: int = 100,
+    offset: int = 0,
+    max_scan_keys: int = 10000,
+    max_hives: int = 25,
+) -> dict:
+    """Query user registry hives discovered inside one VSS snapshot.
+
+    Provide key_path for direct key extraction, or keyword plus search_root for
+    bounded subtree search. Whole-hive keyword scans are intentionally blocked.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "key_path": key_path,
+        "keyword": keyword,
+        "search_root": search_root,
+        "user_filter": user_filter,
+        "hive_name": hive_name,
+        "volume": volume,
+        "limit": limit,
+        "offset": offset,
+        "max_scan_keys": max_scan_keys,
+        "max_hives": max_hives,
+    }
+
+    def fn():
+        from core.connectors.registry import RegistryConnector
+
+        e01 = _get_e01()
+        if not key_path and keyword and not search_root:
+            snapshot = _vss_snapshot_metadata_by_id(e01, snapshot_id, volume)
+            return _mask({
+                "ok": False,
+                "error": "keyword search requires search_root or key_path to avoid whole-hive scans",
+                "source": "vss_snapshot",
+                **snapshot,
+                "query_semantics": {"whole_hive_scan_allowed": False},
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
+        if not key_path and not keyword:
+            snapshot = _vss_snapshot_metadata_by_id(e01, snapshot_id, volume)
+            return _mask({
+                "ok": False,
+                "error": "Provide key_path for direct extraction or keyword plus search_root for bounded search.",
+                "source": "vss_snapshot",
+                **snapshot,
+                "query_semantics": {"whole_hive_scan_allowed": False},
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
+
+        discovered = _vss_discover_registry_hives(
+            e01,
+            snapshot_id,
+            volume=volume,
+            include_core_hives=False,
+            include_user_hives=True,
+            include_amcache=False,
+            user_filter=user_filter,
+            limit=max(1, max_hives * 2),
+        )
+        snapshot = discovered["snapshot"]
+        wanted = str(hive_name or "NTUSER.DAT").strip().lower()
+        hives = [
+            hive for hive in discovered["hives"]
+            if wanted in {"all", "*"} or str(hive.get("hive_type", "")).lower() == wanted
+        ][: max(1, max_hives)]
+        results = []
+        failures = []
+        for hive in hives:
+            hive_path = str(hive.get("path", ""))
+            fallback = hive_path.replace("\\", "/").rstrip("/").split("/")[-1] or "user_hive"
+            local_hive = _vss_unique_output_path(snapshot_id, "registry_query_user", hive_path, fallback)
+            try:
+                extraction = e01.vss_extract_file(snapshot_id, hive_path, local_hive, volume=volume)
+                manifest = _write_vss_quarantine_manifest(
+                    extraction,
+                    tool_name="vss_query_user_hives",
+                    purpose="user_registry_query_source_extract",
+                    source_path=hive_path,
+                    query={
+                        "key_path": key_path,
+                        "keyword": keyword,
+                        "search_root": search_root,
+                        "user_filter": user_filter,
+                        "hive_name": hive_name,
+                        "limit": limit,
+                        "offset": offset,
+                        "max_scan_keys": max_scan_keys,
+                        "volume": volume,
+                    },
+                )
+                c = RegistryConnector()
+                meta = c.connect(local_hive)
+                try:
+                    resolved_key = _normalize_registry_key_path(key_path, local_hive)
+                    if resolved_key:
+                        query_result = c.get_key(resolved_key)
+                        query_result["resolved_key_path"] = resolved_key
+                    else:
+                        resolved_root = _normalize_registry_key_path(search_root, local_hive)
+                        query_result = _search_registry_subtree(
+                            local_hive,
+                            resolved_root,
+                            keyword,
+                            limit=limit,
+                            offset=offset,
+                            max_scan_keys=max_scan_keys,
+                        )
+                        query_result["resolved_search_root"] = resolved_root
+                    query_result.update({
+                        "ok": "error" not in query_result,
+                        "source": "vss_snapshot",
+                        "hive_path": hive_path,
+                        "local_hive_path": local_hive,
+                        "quarantine_manifest": manifest,
+                        "hive_metadata": meta,
+                    })
+                    if "error" in query_result:
+                        failures.append({"hive_path": hive_path, "error": query_result["error"]})
+                    results.append({
+                        "user": hive.get("user", ""),
+                        "hive_type": hive.get("hive_type", ""),
+                        "hive": hive,
+                        "query_result": query_result,
+                    })
+                finally:
+                    c.disconnect()
+            except Exception as e:
+                failures.append({"hive_path": hive_path, "error": str(e)})
+                results.append({
+                    "user": hive.get("user", ""),
+                    "hive_type": hive.get("hive_type", ""),
+                    "hive": hive,
+                    "query_result": {"ok": False, "error": str(e), "source": "vss_snapshot"},
+                })
+
+        return _mask({
+            "ok": True,
+            "source": "vss_snapshot",
+            **snapshot,
+            "hives_considered": len(discovered["hives"]),
+            "hives_queried": len(hives),
+            "results": results,
+            "failures": failures,
+            "coverage": discovered["coverage"],
+            "query_semantics": {
+                "key_path": key_path,
+                "keyword": keyword,
+                "search_root": search_root,
+                "user_filter": user_filter,
+                "hive_name": hive_name,
+                "whole_hive_scan_allowed": False,
+            },
+            "evidence_context": _vss_context(snapshot, "/Users/*/NTUSER.DAT"),
+            "interpretation_guardrails": _vss_snapshot_guardrails(
+                total=len(results),
+                parser_failures=failures + discovered["coverage"].get("parser_failures", []),
+            ),
+        })
+
+    return await _traced("vss_query_user_hives", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
+
+
+@mcp.tool()
+async def vss_service_persistence_gate(
+    snapshot_id: str,
+    service_filter: str = "",
+    verify_payload_files: bool = True,
+    system_hive_path: str = "/c:/Windows/System32/config/SYSTEM",
+    volume: str = "/c:",
+    limit: int = 50,
+) -> dict:
+    """Run service persistence gate against the SYSTEM hive in one VSS snapshot.
+
+    The tool follows ControlSet*\\Services and svchost Parameters\\ServiceDll
+    in the selected historical layer. It is a coverage gate, not a verdict.
+    """
+    params = {
+        "snapshot_id": snapshot_id,
+        "service_filter": service_filter,
+        "verify_payload_files": verify_payload_files,
+        "system_hive_path": system_hive_path,
+        "volume": volume,
+        "limit": limit,
+    }
+
+    def fn():
+        from core.analysis.service_persistence import (
+            build_service_persistence_gate as _build_gate,
+            services_from_system_hive as _services_from_system_hive,
+        )
+
+        e01 = _get_e01()
+        local_hive = _vss_unique_output_path(snapshot_id, "service_persistence_gate", system_hive_path, "SYSTEM.hive")
+        extraction = e01.vss_extract_file(snapshot_id, system_hive_path, local_hive, volume=volume)
+        snapshot = {k: extraction.get(k, "") for k in (
+            "temporal_layer",
+            "snapshot_id",
+            "snapshot_index",
+            "snapshot_creation_time",
+            "volume",
+            "integrity_note",
+        )}
+        manifest = _write_vss_quarantine_manifest(
+            extraction,
+            tool_name="vss_service_persistence_gate",
+            purpose="service_persistence_system_hive_extract",
+            source_path=system_hive_path,
+            query={
+                "service_filter": service_filter,
+                "verify_payload_files": verify_payload_files,
+                "limit": limit,
+                "volume": volume,
+            },
+        )
+        services, hive_meta = _services_from_system_hive(local_hive)
+        file_lookup = None
+        if verify_payload_files:
+            file_lookup = lambda internal_path: e01.vss_get_file_info(snapshot_id, internal_path, volume=volume)
+        result = _build_gate(
+            services,
+            service_filter=service_filter,
+            limit=limit,
+            file_info_lookup=file_lookup,
+        )
+        result.update({
+            "source": "vss_snapshot",
+            **snapshot,
+            "system_hive_path": system_hive_path,
+            "local_hive_path": local_hive,
+            "quarantine_manifest": manifest,
+            "sources": [{
+                "source": "vss_system_hive",
+                "status": "checked",
+                "system_hive_path": system_hive_path,
+                "extracted_to": extraction.get("output_path", local_hive),
+                "sha256": extraction.get("sha256", ""),
+                "normalized_services": len(services),
+                "metadata": hive_meta,
+            }],
+            "evidence_context": _vss_context(snapshot, system_hive_path, local_path=local_hive),
+            "interpretation_guardrails": _vss_snapshot_guardrails(total=len(result.get("candidates", []))),
+        })
+        result.setdefault("reading_guide", []).append(
+            "This VSS service gate describes historical registry state in one snapshot; compare layers explicitly."
+        )
+        return _mask(result)
+
+    return await _traced("vss_service_persistence_gate", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
 
 # ── Ghidra Binary Analysis Tools ──
@@ -4236,6 +4962,9 @@ async def query_evtx_file(
                 return {"ok": False, "error": extraction.get("error"), "source": source}
 
         parsed = _parse_evtx_file(local_path, target_event_ids=ids or None, limit=0)
+        parser_failures = (parsed.get("parser_failures", []) or []) + (
+            (parsed.get("recovery", {}) or {}).get("parser_failures", []) or []
+        )
         if not parsed.get("ok"):
             return {
                 **parsed,
@@ -4250,7 +4979,7 @@ async def query_evtx_file(
                 "interpretation_guardrails": _raw_artifact_guardrails(
                     "evtx",
                     total=0,
-                    parser_failures=parsed.get("parser_failures", []),
+                    parser_failures=parser_failures,
                 ),
             }
         filtered = _filter_evtx_records(
@@ -4276,10 +5005,11 @@ async def query_evtx_file(
             "parsed_record_count": parsed.get("record_count", 0),
             "event_id_counts_in_file": parsed.get("event_id_counts", {}),
             "parser_failures": parsed.get("parser_failures", []),
+            "recovery": parsed.get("recovery", {}),
             "interpretation_guardrails": _raw_artifact_guardrails(
                 "evtx",
                 total=filtered.get("total", 0),
-                parser_failures=parsed.get("parser_failures", []),
+                parser_failures=parser_failures,
             ),
             **filtered,
         })

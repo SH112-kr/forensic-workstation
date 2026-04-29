@@ -332,6 +332,7 @@ class E01ImageConnector(BaseConnector):
             "list_vss_snapshots",
             "vss_list_directory",
             "vss_find_files",
+            "vss_find_files_with_coverage",
             "vss_extract_file",
             "vss_get_file_info",
         ]
@@ -388,11 +389,28 @@ class E01ImageConnector(BaseConnector):
         volume: str = "/c:",
         limit: int = 100,
     ) -> list[dict]:
+        return self.vss_find_files_with_coverage(
+            snapshot_id,
+            pattern,
+            path=path,
+            volume=volume,
+            limit=limit,
+        )["files"]
+
+    def vss_find_files_with_coverage(
+        self,
+        snapshot_id: str,
+        pattern: str,
+        path: str = "/",
+        volume: str = "/c:",
+        limit: int = 100,
+    ) -> dict[str, Any]:
         snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
         base = fs.path(self._normalize_volume_relative_path(path))
         results = []
+        search = self._safe_vss_rglob_with_coverage(base, pattern, limit=limit)
         try:
-            for entry in self._safe_vss_rglob(base, pattern, limit=limit):
+            for entry in search["matches"]:
                 info: dict[str, Any] = {
                     "path": _vss_display_path(volume, str(entry)),
                     "is_dir": entry.is_dir(),
@@ -409,8 +427,28 @@ class E01ImageConnector(BaseConnector):
                 if len(results) >= limit:
                     break
         except Exception as e:
-            return [{"error": str(e)}]
-        return results
+            search["coverage"]["paths_skipped"] += 1
+            search["coverage"]["skip_reasons"]["other"] += 1
+            search["coverage"]["coverage_gap"] = (
+                f"{search['coverage']['paths_skipped']} paths unexamined in snapshot "
+                f"{snapshot['snapshot_id']}."
+            )
+            return {
+                "files": [{"error": str(e), **snapshot}],
+                "coverage": search["coverage"],
+                **snapshot,
+            }
+        coverage = search["coverage"]
+        if coverage.get("paths_skipped", 0):
+            coverage["coverage_gap"] = (
+                f"{coverage['paths_skipped']} paths unexamined in snapshot "
+                f"{snapshot['snapshot_id']}."
+            )
+        return {
+            "files": results,
+            "coverage": coverage,
+            **snapshot,
+        }
 
     def vss_get_file_info(self, snapshot_id: str, internal_path: str, volume: str = "/c:") -> dict:
         snapshot, fs = self._get_vss_snapshot_fs(snapshot_id, volume)
@@ -693,21 +731,59 @@ class E01ImageConnector(BaseConnector):
 
     def _safe_vss_rglob(self, base: Any, pattern: str, limit: int = 100):
         """Walk a VSS filesystem tree without letting one bad path abort search."""
+        yield from self._safe_vss_rglob_with_coverage(base, pattern, limit=limit)["matches"]
+
+    def _safe_vss_rglob_with_coverage(self, base: Any, pattern: str, limit: int = 100) -> dict[str, Any]:
+        """Walk a VSS filesystem tree and report unreadable paths as coverage gaps."""
         pattern_lc = str(pattern or "*").lower()
         stack: list[Any] = [base]
         visited_dirs = 0
         max_dirs = 20000
-        yielded = 0
+        matches: list[Any] = []
+        skipped_paths: set[str] = set()
+        coverage: dict[str, Any] = {
+            "paths_attempted": 0,
+            "paths_succeeded": 0,
+            "paths_skipped": 0,
+            "skip_reasons": {
+                "access_denied": 0,
+                "io_error": 0,
+                "path_too_long": 0,
+                "symlink": 0,
+                "other": 0,
+            },
+            "skipped_path_samples": [],
+            "truncated": False,
+            "max_paths": max_dirs,
+        }
 
-        while stack and yielded < limit and visited_dirs < max_dirs:
+        def record_skip(path_obj: Any, exc: Exception) -> None:
+            path_text = str(path_obj)
+            if path_text in skipped_paths:
+                return
+            skipped_paths.add(path_text)
+            reason = _vss_skip_reason(exc)
+            coverage["paths_skipped"] += 1
+            coverage["skip_reasons"][reason] += 1
+            if len(coverage["skipped_path_samples"]) < 20:
+                coverage["skipped_path_samples"].append({
+                    "path": path_text,
+                    "reason": reason,
+                    "error": str(exc),
+                })
+
+        while stack and len(matches) < limit and visited_dirs < max_dirs:
             current = stack.pop()
             visited_dirs += 1
+            coverage["paths_attempted"] += 1
             try:
                 entries = sorted(
                     list(current.iterdir()),
                     key=lambda entry: str(getattr(entry, "name", "") or "").lower(),
                 )
-            except Exception:
+                coverage["paths_succeeded"] += 1
+            except Exception as exc:
+                record_skip(current, exc)
                 continue
 
             for entry in entries:
@@ -719,15 +795,18 @@ class E01ImageConnector(BaseConnector):
                         or fnmatch.fnmatchcase(entry_path.lower(), pattern_lc)
                     )
                     is_dir = entry.is_dir()
-                except Exception:
+                except Exception as exc:
+                    record_skip(entry, exc)
                     continue
                 if is_match:
-                    yielded += 1
-                    yield entry
-                    if yielded >= limit:
+                    matches.append(entry)
+                    if len(matches) >= limit:
                         break
                 if is_dir:
                     stack.append(entry)
+        if stack:
+            coverage["truncated"] = True
+        return {"matches": matches, "coverage": coverage}
 
     def _normalize_volume_relative_path(self, path: str) -> str:
         path = self._normalize_path(path)
@@ -804,6 +883,20 @@ def _vss_display_path(volume: str, path: str) -> str:
     if len(rel) >= 3 and rel.startswith("/") and rel[2] == ":":
         return rel
     return f"{vol}/{rel.lstrip('/')}"
+
+
+def _vss_skip_reason(exc: Exception) -> str:
+    text = str(exc).lower()
+    name = exc.__class__.__name__.lower()
+    if isinstance(exc, PermissionError) or "access" in text or "permission" in text:
+        return "access_denied"
+    if isinstance(exc, OSError) or "io" in name or "read" in text:
+        return "io_error"
+    if "too long" in text or "nametoolong" in name:
+        return "path_too_long"
+    if "symlink" in text or "reparse" in text:
+        return "symlink"
+    return "other"
 
 
 def _vss_connector_guardrails() -> dict[str, Any]:
