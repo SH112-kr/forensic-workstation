@@ -158,7 +158,10 @@ def test_search_artifacts_uses_raw_index_exact_keyword_union(monkeypatch, tmp_pa
     assert result["returned"] == 1
     assert result["truncated"] is True
     assert result["search_strategy"]["keyword_mode"] == "or"
-    assert result["search_strategy"]["index"] == "materialized_like_or"
+    assert result["search_strategy"]["index"] in {
+        "materialized_like_or",
+        "fts5_trigram_or",
+    }
 
 
 def test_get_artifact_types_uses_active_raw_index(monkeypatch, tmp_path):

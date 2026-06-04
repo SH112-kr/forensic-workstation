@@ -191,7 +191,34 @@ class RawIndexStore:
                 params.append(like)
             else:
                 strategy["keyword_mode"] = "or"
-                strategy["index"] = "materialized_like_or"
+                candidate_ids, gap = self._fast_candidate_ids_for_keywords(
+                    keyword_terms,
+                    keyword_likes,
+                )
+                if candidate_ids is not None:
+                    strategy["index"] = "fts5_trigram_or"
+                    if not candidate_ids:
+                        if start_date or end_date:
+                            strategy["date_filter"] = "artifact_times"
+                        return {
+                            "total": 0,
+                            "total_estimated": 0,
+                            "total_is_estimated": False,
+                            "count_accuracy": "exact",
+                            "returned": 0,
+                            "offset": offset,
+                            "limit": limit,
+                            "truncated": False,
+                            "coverage": self._coverage_summary(),
+                            "search_strategy": strategy,
+                            "hits": [],
+                        }
+                    placeholders = ",".join("?" * len(candidate_ids))
+                    where.append(f"a.artifact_id IN ({placeholders})")
+                    params.extend(candidate_ids)
+                else:
+                    strategy["index"] = "materialized_like_or"
+                    strategy["fast_candidate_gap"] = gap
                 keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
                 where.append(f"({keyword_sql})")
                 params.extend(keyword_likes)
@@ -482,6 +509,32 @@ class RawIndexStore:
                 ORDER BY rowid
                 """,
                 (like_pattern,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None, "fts_query_failed"
+        return [int(row["rowid"]) for row in rows], ""
+
+    def _fast_candidate_ids_for_keywords(
+        self,
+        keywords: list[str],
+        like_patterns: list[str],
+    ) -> tuple[list[int] | None, str]:
+        if any(len(str(keyword or "")) < 3 for keyword in keywords):
+            return None, "keyword_too_short_for_trigram"
+        if not self._fts_available():
+            return None, "fts_unavailable"
+        if not self._fts_count_current():
+            return None, "stale_fts"
+        try:
+            where_sql = " OR ".join("search_text LIKE ?" for _ in like_patterns)
+            rows = self._conn().execute(
+                f"""
+                SELECT DISTINCT rowid
+                FROM raw_index_search_fts
+                WHERE {where_sql}
+                ORDER BY rowid
+                """,
+                like_patterns,
             ).fetchall()
         except sqlite3.Error:
             return None, "fts_query_failed"

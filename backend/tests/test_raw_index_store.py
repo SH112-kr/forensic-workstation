@@ -171,7 +171,60 @@ def test_search_keywords_returns_exact_union_beyond_page_limit(tmp_path):
     assert result["returned"] == 2
     assert result["truncated"] is True
     assert result["search_strategy"]["keyword_mode"] == "or"
-    assert result["search_strategy"]["index"] == "materialized_like_or"
+    assert result["search_strategy"]["index"] in {
+        "materialized_like_or",
+        "fts5_trigram_or",
+    }
+    assert result["search_strategy"]["revalidated"] is True
+
+
+def test_search_keywords_uses_fast_candidate_index_when_available(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha-one.exe", "alpha-two.exe", "beta-one.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+
+    result = store.search(
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["total"] == 3
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["keyword_mode"] == "or"
+    assert result["search_strategy"]["index"] == "fts5_trigram_or"
     assert result["search_strategy"]["revalidated"] is True
 
 
