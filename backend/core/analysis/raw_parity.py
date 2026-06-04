@@ -18,29 +18,32 @@ def compare_search_parity(
         filters=filters,
         limit=limit,
     )
+    reference_gap = _input_gap(reference, "reference")
+    if reference_gap:
+        reference_gap = dict(reference_gap)
+        reference_gap["skipped_side"] = "raw"
+        return _not_evaluable_result(
+            keyword=keyword,
+            artifact_type=artifact_type,
+            reference=reference,
+            raw=None,
+            gap=reference_gap,
+        )
     raw = _collect_complete_search(
         raw_connector,
         keyword=keyword,
         filters=filters,
         limit=limit,
     )
-    gap = _input_gap(reference, "reference") or _input_gap(raw, "raw")
+    gap = _input_gap(raw, "raw")
     if gap:
-        return {
-            "ok": False,
-            "parity_status": "not_evaluable",
-            "keyword": keyword,
-            "artifact_type": artifact_type,
-            "reference_total": _result_total(reference),
-            "raw_total": _result_total(raw),
-            "missing_in_raw": [],
-            "extra_in_raw": [],
-            "strong_conclusion_allowed": False,
-            "coverage_gap": gap,
-            "notes": [
-                "Parity cannot be evaluated from truncated, estimated, or coverage-gap input.",
-            ],
-        }
+        return _not_evaluable_result(
+            keyword=keyword,
+            artifact_type=artifact_type,
+            reference=reference,
+            raw=raw,
+            gap=gap,
+        )
 
     reference_keys = {_stable_hit_key(hit) for hit in reference.get("hits", [])}
     raw_keys = {_stable_hit_key(hit) for hit in raw.get("hits", [])}
@@ -59,6 +62,31 @@ def compare_search_parity(
         "notes": [
             "A raw parity gap means the raw index is not yet a drop-in replacement for this query.",
             "Do not remove the reference connector for this artifact family until parity gaps are resolved.",
+        ],
+    }
+
+
+def _not_evaluable_result(
+    *,
+    keyword: str,
+    artifact_type: str,
+    reference: dict[str, Any],
+    raw: dict[str, Any] | None,
+    gap: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "parity_status": "not_evaluable",
+        "keyword": keyword,
+        "artifact_type": artifact_type,
+        "reference_total": _result_total(reference),
+        "raw_total": _result_total(raw) if raw is not None else None,
+        "missing_in_raw": [],
+        "extra_in_raw": [],
+        "strong_conclusion_allowed": False,
+        "coverage_gap": gap,
+        "notes": [
+            "Parity cannot be evaluated from truncated, estimated, or coverage-gap input.",
         ],
     }
 

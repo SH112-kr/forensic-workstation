@@ -18,6 +18,21 @@ class _Conn:
         }
 
 
+class _CountingConn(_Conn):
+    def __init__(self, hits, *, truncated=False, total=None):
+        super().__init__(hits, truncated=truncated, total=total)
+        self.calls = 0
+
+    def search(self, keyword="", filters=None, limit=50, offset=0):
+        self.calls += 1
+        return super().search(
+            keyword=keyword,
+            filters=filters,
+            limit=limit,
+            offset=offset,
+        )
+
+
 class _PagedConn:
     def __init__(self, hits):
         self.hits = hits
@@ -107,3 +122,26 @@ def test_compare_search_parity_refuses_truncated_inputs():
     assert result["parity_status"] == "not_evaluable"
     assert result["strong_conclusion_allowed"] is False
     assert result["coverage_gap"]["reason"] == "truncated_input"
+
+
+def test_compare_search_parity_skips_raw_when_reference_is_not_evaluable():
+    reference = _Conn(
+        [{"hit_id": 1, "fields": {"Path": "/c:/a"}}],
+        truncated=True,
+        total=2,
+    )
+    raw = _CountingConn([{"hit_id": 10, "fields": {"Path": "/c:/a"}}])
+
+    result = compare_search_parity(
+        reference,
+        raw,
+        keyword="",
+        artifact_type="File System Entry",
+    )
+
+    assert result["ok"] is False
+    assert result["parity_status"] == "not_evaluable"
+    assert result["coverage_gap"]["side"] == "reference"
+    assert raw.calls == 0
+    assert result["coverage_gap"]["skipped_side"] == "raw"
+    assert result["raw_total"] is None
