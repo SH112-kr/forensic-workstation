@@ -68,6 +68,45 @@ def test_search_across_cases_provenance(mfdb_case, kape_case):
     assert ts == sorted(ts)
 
 
+def test_search_across_cases_surfaces_connector_not_evaluable():
+    class _RawNotEvaluable:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def search(self, **kwargs):
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "total": 0,
+                "returned": 0,
+                "hits": [],
+                "coverage": {
+                    "status": "not_evaluable",
+                    "gaps": [{"error": "simulated parser failure"}],
+                },
+            }
+
+    r = search_across_cases(
+        {"raw_index": _RawNotEvaluable()},
+        keyword="agent.exe",
+        global_limit=10,
+    )
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["merged_total"] == 0
+    assert r["per_case"][0]["ok"] is False
+    assert r["per_case"][0]["status"] == "not_evaluable"
+    assert r["per_case"][0]["coverage"]["status"] == "not_evaluable"
+    assert "raw_index:" in r["warnings"][0]
+
+
 def test_timeline_across_cases_provenance(mfdb_case, kape_case):
     r = timeline_across_cases({"axiom:a": mfdb_case, "axiom:b": kape_case})
     assert all("case_id" in e for e in r["entries"])

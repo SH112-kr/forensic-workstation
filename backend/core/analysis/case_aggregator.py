@@ -76,6 +76,19 @@ def safe_collect(
             results.append({**provenance, "ok": False, "error": str(e)})
             warnings.append(f"{case_id}: {e}")
             continue
+        if isinstance(data, dict) and data.get("ok") is False:
+            status = str(data.get("status") or "not_evaluable")
+            error = str(data.get("error") or status)
+            results.append({
+                **provenance,
+                "ok": False,
+                "status": status,
+                "error": error,
+                "coverage": data.get("coverage"),
+                "data": data,
+            })
+            warnings.append(f"{case_id}: {error}")
+            continue
         results.append({**provenance, "ok": True, "data": data})
 
     return results, warnings
@@ -226,9 +239,11 @@ def search_across_cases(
 
     merged.sort(key=_hit_sort_key)
     sliced = merged[global_offset : global_offset + global_limit]
+    result_status = _aggregate_status(per_case)
 
     return {
-        "ok": True,
+        "ok": result_status == "searched",
+        **({"status": result_status} if result_status != "searched" else {}),
         "query": {
             "keyword": keyword,
             "artifact_type": artifact_type,
@@ -285,9 +300,11 @@ def timeline_across_cases(
 
     merged.sort(key=_hit_sort_key)
     sliced = merged[global_offset : global_offset + global_limit]
+    result_status = _aggregate_status(per_case)
 
     return {
-        "ok": True,
+        "ok": result_status == "searched",
+        **({"status": result_status} if result_status != "searched" else {}),
         "query": {
             "start_date": start_date,
             "end_date": end_date,
@@ -446,3 +463,16 @@ def pivot_across_cases(
 def base_case_count(connectors: dict[str, Any]) -> int:
     """Small utility so callers can size limits from the number of loaded cases."""
     return len(iter_cases(connectors))
+
+
+def _aggregate_status(per_case: list[dict[str, Any]]) -> str:
+    statuses = {
+        str(env.get("status") or "")
+        for env in per_case
+        if env.get("ok") is False
+    }
+    if "not_evaluable" in statuses:
+        return "not_evaluable"
+    if "coverage_gap" in statuses:
+        return "coverage_gap"
+    return "searched"
