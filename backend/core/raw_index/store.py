@@ -403,7 +403,7 @@ class RawIndexStore:
                 """
             )
             params.extend([start_ms, end_ms])
-            if artifact_type and not keyword_terms:
+            if not keyword_terms:
                 page_where = base_where
                 page_params = base_params
                 page_where.append(
