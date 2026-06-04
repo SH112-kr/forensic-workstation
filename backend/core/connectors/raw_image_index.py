@@ -151,15 +151,16 @@ class RawImageIndexConnector(BaseConnector):
             """,
             params,
         ).fetchone()[0]
-        if limit <= 0:
+        total = int(total)
+        if limit <= 0 or offset >= total:
             return {
-                "total_events": int(total),
+                "total_events": total,
                 "total_is_estimated": False,
                 "count_accuracy": "exact",
                 "returned": 0,
                 "offset": offset,
                 "limit": limit,
-                "truncated": int(total) > offset,
+                "truncated": total > offset,
                 "coverage": store._coverage_summary(conn=conn),
                 "timeline_strategy": strategy,
                 "entries": [],
