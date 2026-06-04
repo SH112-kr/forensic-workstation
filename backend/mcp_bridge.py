@@ -1181,8 +1181,12 @@ async def compare_cases() -> dict:
         from state import app_state
         from core.analysis.case_aggregator import compare_cases as _compare
         _ensure_cases_hydrated()
-        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-        return _mask(_compare(axiom_conns))
+        conns = {
+            k: v
+            for k, v in app_state._connectors.items()
+            if k.startswith("axiom:") or k == "raw_index"
+        }
+        return _mask(_compare(conns))
     return await _traced("compare_cases", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
