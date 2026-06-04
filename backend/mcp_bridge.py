@@ -2651,6 +2651,34 @@ async def baseline_diff(
     def fn():
         from state import app_state
         from core.analysis.baseline_diff import baseline_diff as _diff
+        cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            raw_coverage = raw.get_coverage()
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "reference_case_id": reference_case_id.strip(),
+                "categories": cats or [],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_baseline_diff_unsupported",
+                    "detail": (
+                        "The active raw sidecar indexes file-system records only; "
+                        "baseline diff requires parsed service, scheduled task, "
+                        "startup item, and user artifact families. Do not treat "
+                        "this as zero net-new items."
+                    ),
+                },
+                "raw_index_coverage": raw_coverage,
+                "notes": [
+                    (
+                        "AXIOM/KAPE baseline diff remains a parity reference "
+                        "until raw service/task/startup/user extraction is implemented."
+                    ),
+                ],
+            })
         active = _get_axiom()
         ref_aq = None
         if reference_case_id.strip():
@@ -2660,7 +2688,6 @@ async def baseline_diff(
                 return {"ok": False,
                         "error": f"Reference case not found or not connected: {reference_case_id}"}
             ref_aq = ref.artifact_queries
-        cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
         return _mask(_diff(active.artifact_queries, reference_aq=ref_aq, categories=cats))
     return await _traced(
         "baseline_diff",
