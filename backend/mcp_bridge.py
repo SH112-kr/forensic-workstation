@@ -2382,6 +2382,37 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
     params = {"ioc_types": ioc_types, "exclude_private_ips": exclude_private_ips}
     def fn():
         from core.analysis.ioc_extractor import extract_iocs as _extract
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            raw_coverage = raw.get_coverage()
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "ioc_types": [
+                    value.strip()
+                    for value in str(ioc_types or "").split(",")
+                    if value.strip()
+                ],
+                "iocs": [],
+                "total_iocs": 0,
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_ioc_extraction_unsupported",
+                    "detail": (
+                        "The active raw sidecar indexes file-system records only; "
+                        "IOC extraction has not been implemented for raw sidecar "
+                        "artifacts yet. Do not interpret this as no IOCs."
+                    ),
+                },
+                "raw_index_coverage": raw_coverage,
+                "notes": [
+                    (
+                        "AXIOM/KAPE IOC extraction remains a parity reference "
+                        "until raw artifact-family IOC extractors are implemented."
+                    ),
+                ],
+            })
         return _mask(_extract(_get_axiom(), ioc_types, exclude_private_ips, exclude_known_good))
     return await _traced("extract_iocs", params, fn)
 
