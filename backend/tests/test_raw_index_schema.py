@@ -51,3 +51,22 @@ def test_initialize_schema_does_not_overwrite_existing_version(tmp_path):
         "SELECT value FROM raw_index_metadata WHERE key = 'schema_version'"
     ).fetchone()[0]
     assert version == "999"
+
+
+def test_initialize_schema_indexes_artifact_id_lookup_tables(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    conn = sqlite3.connect(db_path)
+
+    initialize_schema(conn)
+
+    indexes = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert {
+        "idx_raw_strings_artifact_field",
+        "idx_raw_times_artifact_field",
+        "idx_raw_locations_artifact",
+    } <= indexes
