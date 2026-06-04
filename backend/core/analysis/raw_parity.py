@@ -101,6 +101,7 @@ def _collect_complete_search(
     safe_limit = max(1, int(limit))
     offset = 0
     collected_hits: list[dict[str, Any]] = []
+    seen_hit_ids: set[str] = set()
     merged: dict[str, Any] | None = None
     total = 0
     while True:
@@ -138,6 +139,25 @@ def _collect_complete_search(
             }
             gap_result["truncated"] = True
             return gap_result
+        for hit in page_hits:
+            if not isinstance(hit, dict):
+                continue
+            hit_id = hit.get("hit_id")
+            if hit_id in (None, ""):
+                continue
+            hit_id_key = str(hit_id)
+            if hit_id_key in seen_hit_ids:
+                gap_result = dict(result)
+                gap_result["pagination_gap"] = {
+                    "reason": "pagination_inconsistent",
+                    "offset": offset,
+                    "returned": returned,
+                    "total": total,
+                    "duplicate_hit_id": hit_id,
+                }
+                gap_result["truncated"] = True
+                return gap_result
+            seen_hit_ids.add(hit_id_key)
         collected_hits.extend(page_hits)
         if result.get("truncated") and returned < safe_limit:
             return result

@@ -50,6 +50,25 @@ class _PagedConn:
         }
 
 
+class _DuplicateHitIdPagedConn:
+    def __init__(self, pages, *, total):
+        self.pages = pages
+        self.total = total
+        self.calls = []
+
+    def search(self, keyword="", filters=None, limit=50, offset=0):
+        self.calls.append({"limit": limit, "offset": offset})
+        page_index = offset // limit
+        page = self.pages[page_index] if page_index < len(self.pages) else []
+        return {
+            "total": self.total,
+            "hits": page,
+            "returned": len(page),
+            "truncated": offset + len(page) < self.total,
+            "total_is_estimated": False,
+        }
+
+
 class _RepeatingPagedConn:
     def __init__(self, hits):
         self.hits = hits
@@ -135,6 +154,36 @@ def test_compare_search_parity_paginates_truncated_exact_inputs():
         {"limit": 2, "offset": 2},
     ]
     assert raw.calls == [{"limit": 2, "offset": 0}]
+
+
+def test_compare_search_parity_refuses_duplicate_hit_ids_across_pages():
+    reference = _PagedConn([
+        {"hit_id": 1, "fields": {"Path": "/c:/a"}},
+        {"hit_id": 2, "fields": {"Path": "/c:/b"}},
+    ])
+    raw = _DuplicateHitIdPagedConn(
+        [
+            [{"hit_id": 10, "fields": {"Path": "/c:/a"}}],
+            [{"hit_id": 10, "fields": {"Path": "/c:/a"}}],
+        ],
+        total=2,
+    )
+
+    result = compare_search_parity(
+        reference,
+        raw,
+        keyword="",
+        artifact_type="File System Entry",
+        limit=1,
+    )
+
+    assert result["ok"] is False
+    assert result["parity_status"] == "not_evaluable"
+    assert result["strong_conclusion_allowed"] is False
+    assert result["coverage_gap"]["reason"] == "pagination_inconsistent"
+    assert result["coverage_gap"]["side"] == "raw"
+    assert result["coverage_gap"]["duplicate_hit_id"] == 10
+    assert result["missing_in_raw"] == []
 
 
 def test_compare_search_parity_refuses_inconsistent_pagination():
