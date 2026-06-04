@@ -239,6 +239,8 @@ class RawIndexStore:
         conn = self._conn()
         params: list[Any] = []
         where: list[str] = []
+        page_params: list[Any] | None = None
+        page_where: list[str] | None = None
         join_sql = ""
         strategy: dict[str, Any] = {
             "index": "none",
@@ -389,6 +391,8 @@ class RawIndexStore:
                 }
             start_ms = _iso_date_to_ms(start_date, is_end=False) if start_date else 0
             end_ms = _iso_date_to_ms(end_date, is_end=True) if end_date else 9999999999999
+            base_where = list(where)
+            base_params = list(params)
             where.append(
                 """
                 a.artifact_id IN (
@@ -399,6 +403,20 @@ class RawIndexStore:
                 """
             )
             params.extend([start_ms, end_ms])
+            if artifact_type and not keyword_terms:
+                page_where = base_where
+                page_params = base_params
+                page_where.append(
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM raw_index_artifact_times t_range
+                        WHERE t_range.artifact_id = a.artifact_id
+                        AND t_range.unix_timestamp_ms BETWEEN ? AND ?
+                    )
+                    """
+                )
+                page_params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         total = conn.execute(
             f"""
@@ -424,17 +442,23 @@ class RawIndexStore:
                 "search_strategy": strategy,
                 "hits": [],
             })
+        page_where_sql = (
+            "WHERE " + " AND ".join(page_where)
+            if page_where is not None
+            else where_sql
+        )
+        page_query_params = page_params if page_params is not None else params
         rows = conn.execute(
             f"""
             SELECT a.artifact_id, a.artifact_type, a.source_path,
                 a.primary_path, a.description
             FROM raw_index_artifacts a
             {join_sql}
-            {where_sql}
+            {page_where_sql}
             ORDER BY a.artifact_id
             LIMIT ? OFFSET ?
             """,
-            params + [limit, offset],
+            page_query_params + [limit, offset],
         ).fetchall()
         artifact_ids = [int(row["artifact_id"]) for row in rows]
         hits = self._hydrate_hit_details(artifact_ids, rows, conn=conn)

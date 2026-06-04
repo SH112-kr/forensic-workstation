@@ -2298,6 +2298,71 @@ def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/new.exe"
 
 
+def test_date_filtered_search_page_query_avoids_temp_order_sort(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    _ms("2026-10-04T00:00:00Z"),
+                    "2026-10-04T00:00:00Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    conn = store._conn()
+    conn.set_trace_callback(statements.append)
+
+    result = store.search(
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=2,
+    )
+
+    page_queries = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT A.ARTIFACT_ID")
+        and "FROM raw_index_artifacts a" in sql
+        and "ORDER BY a.artifact_id" in sql
+    ]
+    assert result["total"] == 3
+    assert result["returned"] == 2
+    assert page_queries
+    query_plan = [
+        row[3]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN " + page_queries[0]
+        ).fetchall()
+    ]
+    assert not any(
+        "USE TEMP B-TREE FOR ORDER BY" in step
+        for step in query_plan
+    )
+
+
 def test_date_filtered_search_without_indexed_times_is_not_evaluable(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
