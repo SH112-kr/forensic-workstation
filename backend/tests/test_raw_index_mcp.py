@@ -296,6 +296,26 @@ def test_build_timeline_uses_raw_index_keyword_filter(monkeypatch, tmp_path):
     assert result["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_slice_timeline_preserves_raw_index_not_evaluable_coverage(monkeypatch, tmp_path):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.slice_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        path="agent.exe",
+        limit=10,
+    ))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage"]["status"] == "not_evaluable"
+    assert result["coverage"]["gaps"][0]["error"] == "simulated parser failure"
+    assert result["entries"] == []
+
+
 def test_get_hit_detail_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)

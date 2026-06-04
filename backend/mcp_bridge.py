@@ -2010,11 +2010,24 @@ async def slice_timeline(
             )
             raw_entries = base.get("entries", []) or []
         else:
-            axiom = _get_axiom()
-            if kw_list:
-                base = _timeline_with_keywords(axiom, start_date, end_date, kw_list, overfetch_cap, 0)
+            raw = _get_raw_index()
+            if raw:
+                base = raw.get_timeline(
+                    start_date,
+                    end_date,
+                    type_list,
+                    overfetch_cap,
+                    0,
+                    keywords=kw_list,
+                )
+                base = dict(base)
+                base["source_type"] = "raw_image_sidecar"
             else:
-                base = axiom.get_timeline(start_date, end_date, type_list, overfetch_cap, 0)
+                axiom = _get_axiom()
+                if kw_list:
+                    base = _timeline_with_keywords(axiom, start_date, end_date, kw_list, overfetch_cap, 0)
+                else:
+                    base = axiom.get_timeline(start_date, end_date, type_list, overfetch_cap, 0)
             raw_entries = base.get("entries", []) or []
 
         # Apply bucket filter BEFORE substring slicing so we never pretend
@@ -2029,7 +2042,7 @@ async def slice_timeline(
             slice_meta["bucket"] = bucket_info
         sliced = filtered[offset : offset + cap]
 
-        return _mask({
+        response = {
             **({"per_case": base.get("per_case")} if isinstance(base, dict) and "per_case" in base else {}),
             "entries": sliced,
             "total_events": len(filtered),
@@ -2039,7 +2052,20 @@ async def slice_timeline(
             "keywords_used": kw_list,
             "all_cases": all_cases,
             "warnings": base.get("warnings", []) if isinstance(base, dict) else [],
-        })
+        }
+        if isinstance(base, dict):
+            for key in (
+                "ok",
+                "status",
+                "source_type",
+                "coverage",
+                "timeline_strategy",
+                "total_is_estimated",
+                "count_accuracy",
+            ):
+                if key in base:
+                    response[key] = base[key]
+        return _mask(response)
 
     return await _traced("slice_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
