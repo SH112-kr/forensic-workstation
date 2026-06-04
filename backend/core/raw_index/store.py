@@ -841,7 +841,7 @@ class RawIndexStore:
         )
         fts_updated = False
         if fts_available is None:
-            fts_available = self._fts_available()
+            fts_available = self._fts_available(conn=conn)
         if fts_available:
             try:
                 if replace_fts:
