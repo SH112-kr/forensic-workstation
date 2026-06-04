@@ -20,6 +20,7 @@ class RawIndexStore:
         self._batch_depth = 0
         self._pending_commit = False
         self._fts_available_cache: bool | None = None
+        self._search_text_current_cache_version: int | None = None
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -29,12 +30,14 @@ class RawIndexStore:
         self.conn.row_factory = sqlite3.Row
         initialize_schema(self.conn)
         self._fts_available_cache = None
+        self._search_text_current_cache_version = None
 
     def close(self) -> None:
         if self.conn:
             self.conn.close()
             self.conn = None
         self._fts_available_cache = None
+        self._search_text_current_cache_version = None
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -503,8 +506,15 @@ class RawIndexStore:
         for row in rows:
             self._refresh_search_text(int(row["artifact_id"]))
         self._commit()
+        self._mark_search_text_current()
 
     def _ensure_search_text_current(self) -> bool:
+        current_data_version = self._sqlite_data_version()
+        if (
+            current_data_version is not None
+            and self._search_text_current_cache_version == current_data_version
+        ):
+            return False
         artifact_count = int(
             self._conn().execute(
                 "SELECT COUNT(*) FROM raw_index_artifacts"
@@ -519,9 +529,19 @@ class RawIndexStore:
             artifact_count == search_count
             and not self._has_search_text_id_mismatch()
         ):
+            self._mark_search_text_current()
             return False
         self.rebuild_search_text()
         return True
+
+    def _mark_search_text_current(self) -> None:
+        self._search_text_current_cache_version = self._sqlite_data_version()
+
+    def _sqlite_data_version(self) -> int | None:
+        try:
+            return int(self._conn().execute("PRAGMA data_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
 
     def _has_search_text_id_mismatch(self) -> bool:
         missing = self._conn().execute(

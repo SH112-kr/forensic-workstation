@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -164,6 +165,74 @@ def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):
     assert fts_deletes == []
     assert result["total"] == 1
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
+
+
+def test_repeated_keyword_searches_cache_search_text_freshness_until_external_change(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    beta_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/beta.exe",
+        primary_path="/c:/Tools/beta.exe",
+        description="File System Entry /c:/Tools/beta.exe",
+        strings={"Name": "beta.exe", "Path": "/c:/Tools/beta.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    first = store.search(keyword="alpha", limit=10)
+    second = store.search(keyword="beta", limit=10)
+
+    search_text_count_checks = [
+        sql
+        for sql in statements
+        if "SELECT COUNT(*) FROM raw_index_artifacts" in sql
+    ]
+    assert first["total"] == 1
+    assert second["total"] == 1
+    assert len(search_text_count_checks) == 1
+
+    with sqlite3.connect(db_path) as other_conn:
+        other_conn.execute(
+            "DELETE FROM raw_index_search_text WHERE artifact_id = ?",
+            (beta_id,),
+        )
+
+    statements.clear()
+    after_external_change = store.search(keyword="beta", limit=10)
+    post_change_count_checks = [
+        sql
+        for sql in statements
+        if "SELECT COUNT(*) FROM raw_index_artifacts" in sql
+    ]
+
+    assert after_external_change["total"] == 1
+    assert after_external_change["search_strategy"]["rebuilt_search_text"] is True
+    assert post_change_count_checks
 
 
 def test_search_loads_page_hit_details_in_batches(tmp_path):
