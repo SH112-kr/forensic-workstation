@@ -631,8 +631,12 @@ class RawIndexStore:
         self._coverage_summary_cache_version = None
         self._coverage_summary_cache = None
 
-    def rebuild_search_text(self) -> None:
-        conn = self._conn()
+    def rebuild_search_text(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        conn = conn or self._conn()
         conn.execute("DELETE FROM raw_index_search_text")
         fts_available = self._fts_available(conn=conn)
         fts_reset = False
@@ -708,7 +712,7 @@ class RawIndexStore:
         ):
             self._mark_search_text_current(conn)
             return False
-        self.rebuild_search_text()
+        self.rebuild_search_text(conn=conn)
         return True
 
     def _mark_search_text_current(
