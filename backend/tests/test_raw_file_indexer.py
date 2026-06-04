@@ -47,6 +47,21 @@ class _TimestampImage:
         return []
 
 
+class _ManyFilesImage:
+    def list_directory(self, path="/"):
+        if path == "/c:":
+            return [
+                {
+                    "name": f"tool-{idx}.exe",
+                    "path": f"/c:/Tools/tool-{idx}.exe",
+                    "is_dir": False,
+                    "size": idx,
+                }
+                for idx in range(3)
+            ]
+        return []
+
+
 def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -96,6 +111,27 @@ def test_index_file_listing_records_entry_timestamps(tmp_path):
     assert search["total_is_estimated"] is False
     assert search["search_strategy"]["date_filter"] == "artifact_times"
     assert detail["timestamps"]["Modified"] == "2026-10-04T00:00:00Z"
+
+
+def test_index_file_listing_batches_database_commits(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    traced_statements: list[str] = []
+    store._conn().set_trace_callback(traced_statements.append)
+
+    result = index_file_listing(
+        _ManyFilesImage(),
+        store,
+        roots=["/c:"],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    commit_count = sum(
+        1 for statement in traced_statements if statement.strip().upper() == "COMMIT"
+    )
+
+    assert result["indexed_files"] == 3
+    assert commit_count == 1
 
 
 def test_index_file_listing_records_listing_exceptions_as_coverage_gaps(tmp_path):

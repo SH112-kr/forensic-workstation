@@ -14,6 +14,22 @@ def index_file_listing(
     roots: list[str],
     started_at: str,
 ) -> dict[str, Any]:
+    with store.batch():
+        return _index_file_listing(
+            image,
+            store,
+            roots=roots,
+            started_at=started_at,
+        )
+
+
+def _index_file_listing(
+    image: Any,
+    store: RawIndexStore,
+    *,
+    roots: list[str],
+    started_at: str,
+) -> dict[str, Any]:
     run_id = store.start_parser_run(
         "file_indexer",
         ",".join(roots),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +14,8 @@ class RawIndexStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.conn: sqlite3.Connection | None = None
+        self._batch_depth = 0
+        self._pending_commit = False
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -31,6 +35,28 @@ class RawIndexStore:
             raise RuntimeError("RawIndexStore is not open")
         return self.conn
 
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        self._batch_depth += 1
+        try:
+            yield
+        except Exception:
+            if self._batch_depth == 1:
+                self._conn().rollback()
+                self._pending_commit = False
+            raise
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._pending_commit:
+                self._conn().commit()
+                self._pending_commit = False
+
+    def _commit(self) -> None:
+        if self._batch_depth:
+            self._pending_commit = True
+            return
+        self._conn().commit()
+
     def start_parser_run(self, parser_name: str, source_ref: str, *, started_at: str) -> int:
         cur = self._conn().execute(
             """
@@ -40,7 +66,7 @@ class RawIndexStore:
             """,
             (parser_name, source_ref, "running", started_at),
         )
-        self._conn().commit()
+        self._commit()
         return int(cur.lastrowid)
 
     def finish_parser_run(
@@ -60,7 +86,7 @@ class RawIndexStore:
             """,
             (status, coverage_status, finished_at, error, run_id),
         )
-        self._conn().commit()
+        self._commit()
 
     def insert_artifact(
         self,
@@ -120,7 +146,7 @@ class RawIndexStore:
                 (artifact_id, primary_path, source_path),
             )
         self._refresh_search_text(artifact_id)
-        self._conn().commit()
+        self._commit()
         return artifact_id
 
     def search(
@@ -406,7 +432,7 @@ class RawIndexStore:
         ).fetchall()
         for row in rows:
             self._refresh_search_text(int(row["artifact_id"]))
-        self._conn().commit()
+        self._commit()
 
     def _ensure_search_text_current(self) -> bool:
         artifact_count = int(
