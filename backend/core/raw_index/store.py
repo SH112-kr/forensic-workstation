@@ -124,7 +124,8 @@ class RawIndexStore:
         times: dict[str, tuple[int, str]] | None = None,
         parser_run_id: int | None = None,
     ) -> int:
-        cur = self._conn().execute(
+        conn = self._conn()
+        cur = conn.execute(
             """
             INSERT INTO raw_index_artifacts(
                 artifact_type, source_ref, source_path, primary_path,
@@ -142,7 +143,7 @@ class RawIndexStore:
         )
         artifact_id = int(cur.lastrowid)
         for field_name, value in (strings or {}).items():
-            self._conn().execute(
+            conn.execute(
                 """
                 INSERT INTO raw_index_artifact_strings(
                     artifact_id, field_name, value
@@ -152,7 +153,7 @@ class RawIndexStore:
             )
         for field_name, value in (times or {}).items():
             unix_ms, formatted = value
-            self._conn().execute(
+            conn.execute(
                 """
                 INSERT INTO raw_index_artifact_times(
                     artifact_id, field_name, unix_timestamp_ms, formatted_value
@@ -161,7 +162,7 @@ class RawIndexStore:
                 (artifact_id, field_name, int(unix_ms), formatted),
             )
         if primary_path:
-            self._conn().execute(
+            conn.execute(
                 """
                 INSERT INTO raw_index_locations(
                     artifact_id, location_value, source_path
@@ -656,7 +657,8 @@ class RawIndexStore:
         *,
         replace_fts: bool = True,
     ) -> None:
-        self._conn().execute(
+        conn = self._conn()
+        conn.execute(
             """
             INSERT OR REPLACE INTO raw_index_search_text(
                 artifact_id, search_text
@@ -667,11 +669,11 @@ class RawIndexStore:
         if self._fts_available():
             try:
                 if replace_fts:
-                    self._conn().execute(
+                    conn.execute(
                         "DELETE FROM raw_index_search_fts WHERE rowid = ?",
                         (artifact_id,),
                     )
-                self._conn().execute(
+                conn.execute(
                     """
                     INSERT INTO raw_index_search_fts(rowid, search_text)
                     VALUES (?, ?)

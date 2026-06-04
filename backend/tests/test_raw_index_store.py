@@ -167,6 +167,41 @@ def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
 
 
+def test_insert_artifact_reuses_connection_for_hot_insert_path(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    store._fts_available()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        times={"Modified": (_ms("2026-10-04T00:00:00Z"), "2026-10-04T00:00:00Z")},
+        parser_run_id=run_id,
+    )
+
+    assert conn_calls <= 3
+
+
 def test_repeated_keyword_searches_cache_search_text_freshness_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
