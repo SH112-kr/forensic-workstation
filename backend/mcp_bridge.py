@@ -680,6 +680,158 @@ async def open_raw_index(path: str) -> dict:
 
 
 @mcp.tool()
+async def build_raw_file_index(
+    roots: str = "/c:",
+    cache_root: str = "",
+    force_rebuild: bool = False,
+    started_at: str = "",
+) -> dict:
+    """Build/open a raw-image sidecar index from the mounted image file listing.
+
+    Reading guide for AI consumers:
+    - This indexes mounted-image file listings into a case-local sidecar SQLite DB.
+    - Existing fingerprint-matched sidecars are reused for repeated search speed.
+    - Stale/corrupt sidecars are rebuilt from the mounted image, not treated as zero.
+    - AXIOM/KAPE references should remain available until parity is proven.
+    """
+    params = {
+        "roots": roots,
+        "cache_root": cache_root,
+        "force_rebuild": force_rebuild,
+    }
+
+    def fn():
+        from core.connectors.raw_image_index import RawImageIndexConnector
+        from core.raw_index.file_indexer import index_file_listing
+        from core.raw_index.store import RawIndexStore
+
+        image = _connectors.get("e01")
+        if not image or not image.is_connected():
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "error": "No mounted image. Run mount_image first.",
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "missing_mounted_image",
+                },
+            }
+        image_meta = image.get_metadata()
+        fingerprint = _raw_image_index_fingerprint(image_meta)
+        root_values = _parse_raw_index_roots(roots)
+        db_path = _raw_index_db_path(fingerprint, root_values, cache_root)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+        if os.path.exists(db_path) and not force_rebuild:
+            try:
+                connector = RawImageIndexConnector()
+                meta = connector.connect(db_path, expected_fingerprint=fingerprint)
+                app_state.set("raw_index", connector)
+                return {
+                    "ok": True,
+                    "status": "opened_existing",
+                    "source_type": meta["source_type"],
+                    "db_path": db_path,
+                    "fingerprint": fingerprint,
+                    "artifact_type_counts": connector.get_artifact_type_counts(),
+                    "coverage": connector.search(limit=0).get("coverage", {}),
+                    "performance": {
+                        "sidecar_reused": True,
+                        "reindexed": False,
+                    },
+                }
+            except Exception as exc:
+                try:
+                    os.remove(db_path)
+                except OSError:
+                    return {
+                        "ok": False,
+                        "status": "coverage_gap",
+                        "error": f"Existing raw index is stale/corrupt and could not be removed: {exc}",
+                        "coverage_gap": {
+                            "status": "coverage_gap",
+                            "reason": "stale_sidecar_unremovable",
+                        },
+                    }
+
+        store = RawIndexStore(db_path)
+        store.open()
+        store._conn().execute(
+            "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+            ("raw_image_fingerprint", fingerprint),
+        )
+        store._conn().execute(
+            "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+            ("index_roots", ",".join(root_values)),
+        )
+        store._conn().commit()
+        result = index_file_listing(
+            image,
+            store,
+            roots=root_values,
+            started_at=started_at or datetime.now(timezone.utc).isoformat(),
+        )
+        store.close()
+
+        connector = RawImageIndexConnector()
+        meta = connector.connect(db_path, expected_fingerprint=fingerprint)
+        app_state.set("raw_index", connector)
+        return {
+            "ok": True,
+            "status": "indexed",
+            "source_type": meta["source_type"],
+            "db_path": db_path,
+            "fingerprint": fingerprint,
+            "indexed_files": int(result.get("indexed_files", 0)),
+            "coverage_gaps": result.get("coverage_gaps", []),
+            "artifact_type_counts": connector.get_artifact_type_counts(),
+            "performance": {
+                "sidecar_reused": False,
+                "reindexed": True,
+            },
+        }
+
+    return await _traced(
+        "build_raw_file_index",
+        params,
+        fn,
+        timeout_seconds=TIMEOUT_HEAVY,
+    )
+
+
+def _parse_raw_index_roots(roots: str) -> list[str]:
+    values = [item.strip() for item in str(roots or "").split(",") if item.strip()]
+    return values or ["/c:"]
+
+
+def _raw_image_index_fingerprint(image_meta: dict[str, Any]) -> str:
+    material = json.dumps({
+        "image_path": image_meta.get("image_path", ""),
+        "hostname": image_meta.get("hostname", ""),
+        "os_type": image_meta.get("os_type", ""),
+        "volumes": image_meta.get("volumes", []),
+        "fallback_filesystems": image_meta.get("fallback_filesystems", []),
+    }, sort_keys=True, default=str)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _raw_index_db_path(
+    fingerprint: str,
+    roots: list[str] | None = None,
+    cache_root: str = "",
+) -> str:
+    root = cache_root or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "export",
+        "cache",
+        "raw_index",
+    )
+    roots_material = ",".join(roots or ["/c:"])
+    roots_hash = hashlib.sha256(roots_material.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(root, fingerprint, f"files-{roots_hash}.sqlite")
+
+
+@mcp.tool()
 async def server_runtime_info() -> dict:
     """Show MCP server runtime/version state for stale-session diagnostics."""
     return await _traced("server_runtime_info", {}, lambda: _runtime_status(), timeout_seconds=TIMEOUT_LIGHT)
