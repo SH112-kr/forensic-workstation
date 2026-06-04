@@ -24,6 +24,8 @@ class RawIndexStore:
         self._search_text_current_cache_version: int | None = None
         self._coverage_summary_cache_version: int | None = None
         self._coverage_summary_cache: dict[str, Any] | None = None
+        self._fts_current_cache_version: int | None = None
+        self._fts_current_cache: bool | None = None
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -35,6 +37,7 @@ class RawIndexStore:
         self._fts_available_cache = None
         self._search_text_current_cache_version = None
         self._invalidate_coverage_summary_cache()
+        self._invalidate_fts_current_cache()
 
     def close(self) -> None:
         if self.conn:
@@ -43,6 +46,7 @@ class RawIndexStore:
         self._fts_available_cache = None
         self._search_text_current_cache_version = None
         self._invalidate_coverage_summary_cache()
+        self._invalidate_fts_current_cache()
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -525,6 +529,7 @@ class RawIndexStore:
                 self._conn().execute("DELETE FROM raw_index_search_fts")
             except sqlite3.Error:
                 pass
+        self._invalidate_fts_current_cache()
         rows = self._conn().execute(
             "SELECT artifact_id FROM raw_index_artifacts ORDER BY artifact_id"
         ).fetchall()
@@ -630,6 +635,7 @@ class RawIndexStore:
                 )
             except sqlite3.Error:
                 pass
+        self._invalidate_fts_current_cache()
 
     def _search_text_for_artifact(self, artifact_id: int) -> str:
         parts: list[str] = []
@@ -730,6 +736,13 @@ class RawIndexStore:
         return candidate_ids, ""
 
     def _fts_count_current(self) -> bool:
+        current_data_version = self._sqlite_data_version()
+        if (
+            current_data_version is not None
+            and self._fts_current_cache is not None
+            and self._fts_current_cache_version == current_data_version
+        ):
+            return self._fts_current_cache
         try:
             fts_count = int(
                 self._conn().execute(
@@ -742,10 +755,21 @@ class RawIndexStore:
                 ).fetchone()[0]
             )
         except sqlite3.Error:
-            return False
+            return self._cache_fts_current(False)
         if fts_count != search_count:
-            return False
-        return not self._has_fts_id_mismatch()
+            return self._cache_fts_current(False)
+        return self._cache_fts_current(not self._has_fts_id_mismatch())
+
+    def _cache_fts_current(self, is_current: bool) -> bool:
+        current_data_version = self._sqlite_data_version()
+        if current_data_version is not None:
+            self._fts_current_cache_version = current_data_version
+            self._fts_current_cache = is_current
+        return is_current
+
+    def _invalidate_fts_current_cache(self) -> None:
+        self._fts_current_cache_version = None
+        self._fts_current_cache = None
 
     def _has_fts_id_mismatch(self) -> bool:
         try:
