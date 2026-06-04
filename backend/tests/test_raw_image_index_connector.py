@@ -226,6 +226,40 @@ def test_raw_image_index_connector_timeline_uses_fast_candidate_index(tmp_path):
     assert timeline["timeline_strategy"]["revalidated"] is True
 
 
+def test_raw_image_index_connector_hot_keyword_timeline_reuses_store_connection(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        keywords=["a.tmp"],
+        limit=10,
+    )
+    store = conn._require_store()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        keywords=["a.tmp"],
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 1
+    assert timeline["entries"][0]["time_field"] == "Modified"
+    assert conn_calls <= 2
+
+
 def test_raw_image_index_connector_caches_artifact_type_counts_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

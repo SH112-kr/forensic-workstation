@@ -102,7 +102,9 @@ class RawImageIndexConnector(BaseConnector):
         keyword_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
         if keyword_list:
             strategy["keyword_filter"] = "search_text"
-            strategy["rebuilt_search_text"] = store._ensure_search_text_current()
+            strategy["rebuilt_search_text"] = store._ensure_search_text_current(
+                conn=conn,
+            )
             joins.append(
                 "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
             )
@@ -110,6 +112,7 @@ class RawImageIndexConnector(BaseConnector):
             candidate_ids, gap = store._fast_candidate_ids_for_keywords(
                 keyword_list,
                 keyword_likes,
+                conn=conn,
             )
             if candidate_ids is not None:
                 strategy["index"] = "fts5_trigram_or"
@@ -122,7 +125,7 @@ class RawImageIndexConnector(BaseConnector):
                         "offset": offset,
                         "limit": limit,
                         "truncated": False,
-                        "coverage": store._coverage_summary(),
+                        "coverage": store._coverage_summary(conn=conn),
                         "timeline_strategy": strategy,
                         "entries": [],
                     }
@@ -157,7 +160,7 @@ class RawImageIndexConnector(BaseConnector):
                 "offset": offset,
                 "limit": limit,
                 "truncated": int(total) > offset,
-                "coverage": store._coverage_summary(),
+                "coverage": store._coverage_summary(conn=conn),
                 "timeline_strategy": strategy,
                 "entries": [],
             }
@@ -193,7 +196,7 @@ class RawImageIndexConnector(BaseConnector):
             "offset": offset,
             "limit": limit,
             "truncated": int(total) > offset + len(entries),
-            "coverage": store._coverage_summary(),
+            "coverage": store._coverage_summary(conn=conn),
             "timeline_strategy": strategy,
             "entries": entries,
         }
