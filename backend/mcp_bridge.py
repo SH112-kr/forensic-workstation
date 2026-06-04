@@ -881,7 +881,13 @@ async def build_raw_file_index(
 
 
 def _parse_raw_index_roots(roots: str) -> list[str]:
-    values = [item.strip() for item in str(roots or "").split(",") if item.strip()]
+    values = list(
+        dict.fromkeys(
+            item.strip()
+            for item in str(roots or "").split(",")
+            if item.strip()
+        )
+    )
     return values or ["/c:"]
 
 

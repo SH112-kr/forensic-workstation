@@ -426,6 +426,31 @@ def test_build_raw_file_index_reuses_existing_sidecar(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_reuses_sidecar_for_duplicate_roots(monkeypatch, tmp_path):
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    first = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    first_call_count = image.list_calls
+
+    second = _run(mcp_bridge.build_raw_file_index(
+        roots=" /c:,/c: ",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert second["status"] == "opened_existing"
+    assert second["db_path"] == first["db_path"]
+    assert image.list_calls == first_call_count
+
+
 def test_build_raw_file_index_reuse_checks_coverage_without_search(monkeypatch, tmp_path):
     from core.connectors import raw_image_index as raw_index_connector
 
