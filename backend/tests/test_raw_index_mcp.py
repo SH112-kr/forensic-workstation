@@ -239,6 +239,61 @@ def test_get_summary_preserves_raw_index_not_evaluable_coverage(
     assert result["coverage"]["gaps"][0]["error"] == "simulated parser failure"
 
 
+def test_coverage_explainer_uses_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.coverage_explainer("File System Entry"))
+
+    assert result["ok"] is True
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["case_context"]["case_format"] == "raw_image_sidecar"
+    assert result["coverage"][0]["artifact_type"] == "File System Entry"
+    assert result["coverage"][0]["status"] == "searched"
+    assert result["coverage"][0]["record_count"] == 1
+    assert result["coverage"][0]["cases"] == ["raw_index"]
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_coverage_explainer_reports_raw_unsupported_family_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.coverage_explainer("Prefetch"))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage"][0]["artifact_type"] == "Prefetch"
+    assert result["coverage"][0]["status"] == "not_evaluable"
+    assert result["coverage"][0]["reason"] == "raw_artifact_family_not_indexed"
+    assert result["summary"]["not_evaluable"] == 1
+
+
+def test_coverage_explainer_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.coverage_explainer())
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
 def test_search_artifacts_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
