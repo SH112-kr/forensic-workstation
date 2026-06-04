@@ -578,6 +578,77 @@ def _raw_find_suspicious_not_evaluable(
     }
 
 
+def _raw_investigation_gap_not_evaluable(
+    raw,
+    findings_payload: str,
+    snapshot_slug: str,
+) -> dict:
+    from core.analysis.investigation_gap import (
+        _corroboration_gaps,
+        _detection_gaps,
+        _load_optional_findings,
+        _truncation_pivots,
+    )
+
+    findings = _load_optional_findings(findings_payload or None)
+    findings_available = findings is not None
+    skipped_sections = [] if findings_available else [
+        "detection_gaps",
+        "corroboration_gaps",
+    ]
+    bucket_gaps = None
+    if snapshot_slug:
+        bucket_gaps = {
+            "ok": False,
+            "status": "not_evaluable",
+            "snapshot_slug": snapshot_slug,
+            "reason": "raw_snapshot_bucket_reconciliation_unsupported",
+            "stale_references": [],
+            "note": (
+                "Snapshot hit-id reconciliation currently requires parsed "
+                "AXIOM/KAPE case connectors. Raw sidecar hit-id reconciliation "
+                "is not implemented yet."
+            ),
+        }
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "findings_available": findings_available,
+        "skipped_sections": skipped_sections,
+        "substrate_gaps": [],
+        "detection_gaps": (
+            _detection_gaps(findings) if findings_available else []
+        ),
+        "corroboration_gaps": (
+            _corroboration_gaps(findings) if findings_available else []
+        ),
+        "truncation_gaps": (
+            _truncation_pivots(findings) if findings_available else []
+        ),
+        "bucket_gaps": bucket_gaps,
+        "recommended_next_queries": [],
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": "raw_investigation_gap_unsupported",
+            "detail": (
+                "investigation_gap_report currently composes parsed-case "
+                "health, coverage, anti-forensics, and snapshot hit-id "
+                "reconciliation. The active raw sidecar does not yet expose "
+                "equivalent substrates for this composition."
+            ),
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this report as no investigation gaps. "
+                "AXIOM/KAPE remain parity references until raw case-health, "
+                "coverage, and anti-forensic substrates are implemented."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3402,6 +3473,13 @@ async def investigation_gap_report(
             k: v for k, v in (app_state._connectors or {}).items()
             if k.startswith("axiom:")
         }
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask(_raw_investigation_gap_not_evaluable(
+                raw,
+                findings_json,
+                snapshot_slug,
+            ))
         return _mask(_run(
             axiom_conns,
             findings_payload=findings_json or None,

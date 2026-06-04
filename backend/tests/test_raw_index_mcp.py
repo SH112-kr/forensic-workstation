@@ -1068,6 +1068,103 @@ def test_assess_evidence_strength_scores_supplied_raw_gap_payload(monkeypatch):
     }
 
 
+def test_investigation_gap_report_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.investigation_gap_report())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_investigation_gap_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["findings_available"] is False
+    assert set(result["skipped_sections"]) == {
+        "detection_gaps",
+        "corroboration_gaps",
+    }
+    assert result["substrate_gaps"] == []
+    assert result["detection_gaps"] == []
+    assert result["corroboration_gaps"] == []
+    assert result["truncation_gaps"] == []
+    assert result["bucket_gaps"] is None
+    assert result["recommended_next_queries"] == []
+
+
+def test_investigation_gap_report_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.investigation_gap_report())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_investigation_gap_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
+def test_investigation_gap_report_preserves_supplied_raw_detection_gaps(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    payload = {
+        "findings": [],
+        "unevaluable_rules": [
+            {
+                "rule_name": "raw_sidecar_detection_rules",
+                "reason": "raw_find_suspicious_unsupported",
+            },
+        ],
+    }
+
+    result = _run(mcp_bridge.investigation_gap_report(
+        findings_json=json.dumps(payload),
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["findings_available"] is True
+    assert result["skipped_sections"] == []
+    assert result["detection_gaps"][0]["rule_name"] == (
+        "raw_sidecar_detection_rules"
+    )
+    assert result["detection_gaps"][0]["reason"] == (
+        "raw_find_suspicious_unsupported"
+    )
+    assert result["coverage_gap"]["reason"] == (
+        "raw_investigation_gap_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
 def test_hunt_evtx_rules_reports_raw_index_unsupported_as_not_evaluable(
     monkeypatch,
     tmp_path,
