@@ -2562,6 +2562,38 @@ async def build_entity_graph(
                 hit_id_filter=bucket_hit_ids,
             )
         else:
+            raw = _get_raw_index()
+            if raw and not _parsed_case_loaded():
+                raw_coverage = raw.get_coverage()
+                result = {
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "source_type": "raw_image_sidecar",
+                    "nodes": [],
+                    "edges": [],
+                    "entity_types": ets or [],
+                    "edge_types": edts or [],
+                    "coverage_gap": {
+                        "status": "not_evaluable",
+                        "reason": "raw_entity_graph_unsupported",
+                        "detail": (
+                            "The active raw sidecar currently exposes file "
+                            "search and timeline records, but the typed entity "
+                            "graph builder still depends on parsed-case entity "
+                            "families. Do not interpret this as no entities."
+                        ),
+                    },
+                    "raw_index_coverage": raw_coverage,
+                    "notes": [
+                        (
+                            "AXIOM/KAPE entity graph output remains a parity "
+                            "reference until raw entity extraction is implemented."
+                        ),
+                    ],
+                }
+                if bucket_info is not None:
+                    result["bucket_filter"] = bucket_info
+                return _mask(result)
             axiom = _get_axiom()
             result = _build(
                 connectors=None,

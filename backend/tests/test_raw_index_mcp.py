@@ -838,6 +838,56 @@ def test_extract_iocs_preserves_raw_index_not_evaluable_coverage(
     )
 
 
+def test_build_entity_graph_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_entity_graph(
+        entity_types="file,process",
+        edge_types="executed",
+        all_cases=False,
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_entity_graph_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["nodes"] == []
+    assert result["edges"] == []
+
+
+def test_build_entity_graph_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_entity_graph())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_entity_graph_unsupported"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["nodes"] == []
+    assert result["edges"] == []
+
+
 class _State:
     def __init__(self):
         self.captured = {}
