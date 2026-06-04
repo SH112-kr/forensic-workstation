@@ -118,6 +118,7 @@ class RawIndexStore:
                 """,
                 (artifact_id, primary_path, source_path),
             )
+        self._refresh_search_text(artifact_id)
         self._conn().commit()
         return artifact_id
 
@@ -131,30 +132,55 @@ class RawIndexStore:
     ) -> dict[str, Any]:
         params: list[Any] = []
         where: list[str] = []
+        join_sql = ""
+        strategy: dict[str, Any] = {
+            "index": "none",
+            "revalidated": False,
+            "rebuilt_search_text": False,
+            "fast_candidate_gap": "",
+        }
         if artifact_type:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)
         if keyword:
-            where.append(
-                """
-                a.artifact_id IN (
-                    SELECT artifact_id
-                    FROM raw_index_artifact_strings
-                    WHERE value LIKE ?
-                    UNION
-                    SELECT artifact_id
-                    FROM raw_index_locations
-                    WHERE location_value LIKE ?
-                )
-                """
+            strategy["rebuilt_search_text"] = self._ensure_search_text_current()
+            join_sql = (
+                "JOIN raw_index_search_text st "
+                "ON st.artifact_id = a.artifact_id"
             )
             like = f"%{keyword}%"
-            params.extend([like, like])
+            candidate_ids, gap = self._fast_candidate_ids(keyword, like)
+            if candidate_ids is not None:
+                strategy["index"] = "fts5_trigram"
+                if not candidate_ids:
+                    return {
+                        "total": 0,
+                        "total_estimated": 0,
+                        "total_is_estimated": False,
+                        "count_accuracy": "exact",
+                        "returned": 0,
+                        "offset": offset,
+                        "limit": limit,
+                        "truncated": False,
+                        "coverage": self._coverage_summary(),
+                        "search_strategy": strategy,
+                        "hits": [],
+                    }
+                placeholders = ",".join("?" * len(candidate_ids))
+                where.append(f"a.artifact_id IN ({placeholders})")
+                params.extend(candidate_ids)
+            else:
+                strategy["index"] = "materialized_like"
+                strategy["fast_candidate_gap"] = gap
+            where.append("st.search_text LIKE ?")
+            params.append(like)
+            strategy["revalidated"] = True
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         total = self._conn().execute(
             f"""
             SELECT COUNT(DISTINCT a.artifact_id)
             FROM raw_index_artifacts a
+            {join_sql}
             {where_sql}
             """,
             params,
@@ -165,6 +191,7 @@ class RawIndexStore:
                 a.artifact_id, a.artifact_type, a.source_path,
                 a.primary_path, a.description
             FROM raw_index_artifacts a
+            {join_sql}
             {where_sql}
             ORDER BY a.artifact_id
             LIMIT ? OFFSET ?
@@ -182,6 +209,7 @@ class RawIndexStore:
             "limit": limit,
             "truncated": int(total) > offset + len(hits),
             "coverage": self._coverage_summary(),
+            "search_strategy": strategy,
             "hits": hits,
         }
 
@@ -274,3 +302,151 @@ class RawIndexStore:
             "gaps": gaps,
             "parser_runs": len(rows),
         }
+
+    def rebuild_search_text(self) -> None:
+        self._conn().execute("DELETE FROM raw_index_search_text")
+        if self._fts_available():
+            try:
+                self._conn().execute("DELETE FROM raw_index_search_fts")
+            except sqlite3.Error:
+                pass
+        rows = self._conn().execute(
+            "SELECT artifact_id FROM raw_index_artifacts ORDER BY artifact_id"
+        ).fetchall()
+        for row in rows:
+            self._refresh_search_text(int(row["artifact_id"]))
+        self._conn().commit()
+
+    def _ensure_search_text_current(self) -> bool:
+        artifact_count = int(
+            self._conn().execute(
+                "SELECT COUNT(*) FROM raw_index_artifacts"
+            ).fetchone()[0]
+        )
+        search_count = int(
+            self._conn().execute(
+                "SELECT COUNT(*) FROM raw_index_search_text"
+            ).fetchone()[0]
+        )
+        if artifact_count == search_count:
+            return False
+        self.rebuild_search_text()
+        return True
+
+    def _refresh_search_text(self, artifact_id: int) -> None:
+        search_text = self._search_text_for_artifact(artifact_id)
+        self._conn().execute(
+            """
+            INSERT OR REPLACE INTO raw_index_search_text(
+                artifact_id, search_text
+            ) VALUES (?, ?)
+            """,
+            (artifact_id, search_text),
+        )
+        if self._fts_available():
+            try:
+                self._conn().execute(
+                    "DELETE FROM raw_index_search_fts WHERE rowid = ?",
+                    (artifact_id,),
+                )
+                self._conn().execute(
+                    """
+                    INSERT INTO raw_index_search_fts(rowid, search_text)
+                    VALUES (?, ?)
+                    """,
+                    (artifact_id, search_text),
+                )
+            except sqlite3.Error:
+                pass
+
+    def _search_text_for_artifact(self, artifact_id: int) -> str:
+        parts: list[str] = []
+        row = self._conn().execute(
+            """
+            SELECT artifact_type, source_ref, source_path, primary_path,
+                   description
+            FROM raw_index_artifacts
+            WHERE artifact_id = ?
+            """,
+            (artifact_id,),
+        ).fetchone()
+        if row:
+            parts.extend(str(row[key] or "") for key in row.keys())
+        parts.extend(
+            str(r["value"] or "")
+            for r in self._conn().execute(
+                """
+                SELECT value
+                FROM raw_index_artifact_strings
+                WHERE artifact_id = ?
+                ORDER BY field_name, value
+                """,
+                (artifact_id,),
+            ).fetchall()
+        )
+        parts.extend(
+            str(r["location_value"] or "")
+            for r in self._conn().execute(
+                """
+                SELECT location_value
+                FROM raw_index_locations
+                WHERE artifact_id = ?
+                ORDER BY location_value
+                """,
+                (artifact_id,),
+            ).fetchall()
+        )
+        return "\n".join(part for part in parts if part)
+
+    def _fast_candidate_ids(
+        self,
+        keyword: str,
+        like_pattern: str,
+    ) -> tuple[list[int] | None, str]:
+        if len(str(keyword or "")) < 3:
+            return None, "keyword_too_short_for_trigram"
+        if not self._fts_available():
+            return None, "fts_unavailable"
+        if not self._fts_count_current():
+            return None, "stale_fts"
+        try:
+            rows = self._conn().execute(
+                """
+                SELECT rowid
+                FROM raw_index_search_fts
+                WHERE search_text LIKE ?
+                ORDER BY rowid
+                """,
+                (like_pattern,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None, "fts_query_failed"
+        return [int(row["rowid"]) for row in rows], ""
+
+    def _fts_count_current(self) -> bool:
+        try:
+            fts_count = int(
+                self._conn().execute(
+                    "SELECT COUNT(*) FROM raw_index_search_fts"
+                ).fetchone()[0]
+            )
+            search_count = int(
+                self._conn().execute(
+                    "SELECT COUNT(*) FROM raw_index_search_text"
+                ).fetchone()[0]
+            )
+        except sqlite3.Error:
+            return False
+        return fts_count == search_count
+
+    def _fts_available(self) -> bool:
+        try:
+            return self._conn().execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'raw_index_search_fts'
+                """
+            ).fetchone() is not None
+        except sqlite3.Error:
+            return False

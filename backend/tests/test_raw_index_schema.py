@@ -24,6 +24,7 @@ def test_initialize_schema_creates_required_tables(tmp_path):
         "raw_index_artifact_strings",
         "raw_index_artifact_times",
         "raw_index_locations",
+        "raw_index_search_text",
     } <= tables
 
     version = conn.execute(

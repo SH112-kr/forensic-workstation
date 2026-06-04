@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-RAW_INDEX_SCHEMA_VERSION = 1
+RAW_INDEX_SCHEMA_VERSION = 2
 
 
 SCHEMA_SQL = """
@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS raw_index_locations (
     FOREIGN KEY(artifact_id) REFERENCES raw_index_artifacts(artifact_id)
 );
 
+CREATE TABLE IF NOT EXISTS raw_index_search_text (
+    artifact_id INTEGER PRIMARY KEY,
+    search_text TEXT NOT NULL,
+    FOREIGN KEY(artifact_id) REFERENCES raw_index_artifacts(artifact_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_raw_artifact_type
     ON raw_index_artifacts(artifact_type);
 CREATE INDEX IF NOT EXISTS idx_raw_strings_value
@@ -64,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_raw_times_ms
     ON raw_index_artifact_times(unix_timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_raw_locations_value
     ON raw_index_locations(location_value);
+CREATE INDEX IF NOT EXISTS idx_raw_search_text_artifact
+    ON raw_index_search_text(artifact_id);
 """
 
 
@@ -72,5 +80,20 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO raw_index_metadata(key, value) VALUES (?, ?)",
         ("schema_version", str(RAW_INDEX_SCHEMA_VERSION)),
+    )
+    search_backend = "materialized_like"
+    try:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS raw_index_search_fts
+            USING fts5(search_text, tokenize='trigram')
+            """
+        )
+        search_backend = "fts5_trigram"
+    except sqlite3.Error:
+        search_backend = "materialized_like"
+    conn.execute(
+        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("search_index_backend", search_backend),
     )
     conn.commit()
