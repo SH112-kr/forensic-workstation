@@ -1092,65 +1092,26 @@ async def search_artifacts(
         if raw:
             field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []
             if kw_list:
-                all_hits = {}
-                per_keyword_totals = {}
-                truncated_keywords = []
-                for kw in kw_list:
-                    result = raw.search(
-                        keyword=kw,
-                        filters={
-                            "artifact_type": artifact_type,
-                            "start_date": start_date,
-                            "end_date": end_date,
-                        },
-                        limit=cap,
-                        offset=0,
-                    )
-                    if result.get("status") == "not_evaluable":
-                        result = dict(result)
-                        result["source_type"] = "raw_image_sidecar"
-                        return _mask(result)
-                    per_keyword_totals[kw] = result.get("total", 0)
-                    if result.get("truncated"):
-                        truncated_keywords.append(kw)
-                    for h in result.get("hits", []):
-                        hid = h.get("hit_id")
-                        if hid not in all_hits:
-                            all_hits[hid] = h
-                            all_hits[hid]["_matched_keyword"] = kw
-                if truncated_keywords:
-                    return _mask({
-                        "ok": False,
-                        "source_type": "raw_image_sidecar",
-                        "status": "not_evaluable",
-                        "error": "Raw multi-keyword search hit pagination truncated before exact union could be computed.",
-                        "coverage_gap": {
-                            "status": "not_evaluable",
-                            "reason": "raw_multi_keyword_union_truncated",
-                            "keywords": truncated_keywords,
-                        },
-                        "per_keyword_totals": per_keyword_totals,
-                    })
-                merged = sorted(all_hits.values(), key=lambda h: h.get("hit_id", 0))
-                page = merged[offset:offset + cap]
+                result = raw.search(
+                    keyword="",
+                    filters={
+                        "artifact_type": artifact_type,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "keywords": kw_list,
+                    },
+                    limit=cap,
+                    offset=offset,
+                )
+                page = result.get("hits", [])
                 if field_list:
                     for hit in page:
                         if "fields" in hit:
                             hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
-                return _mask({
-                    "source_type": "raw_image_sidecar",
-                    "total": len(merged),
-                    "total_estimated": len(merged),
-                    "total_is_estimated": False,
-                    "count_accuracy": "exact",
-                    "returned": len(page),
-                    "offset": offset,
-                    "limit": cap,
-                    "truncated": len(merged) > offset + len(page),
-                    "hits": page,
-                    "per_keyword_totals": per_keyword_totals,
-                    "union_returned": len(merged),
-                })
+                result = dict(result)
+                result["source_type"] = "raw_image_sidecar"
+                result["union_returned"] = result.get("total", result.get("returned", 0))
+                return _mask(result)
 
             result = raw.search(
                 keyword=keyword,

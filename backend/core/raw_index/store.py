@@ -127,6 +127,7 @@ class RawIndexStore:
         self,
         *,
         keyword: str = "",
+        keywords: list[str] | None = None,
         artifact_type: str = "",
         start_date: str = "",
         end_date: str = "",
@@ -142,51 +143,64 @@ class RawIndexStore:
             "rebuilt_search_text": False,
             "fast_candidate_gap": "",
             "date_filter": "none",
+            "keyword_mode": "none",
         }
         if artifact_type:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)
-        like = ""
-        if keyword:
+        keyword_terms = [str(keyword).strip()] if str(keyword or "").strip() else []
+        keyword_terms.extend(str(k).strip() for k in (keywords or []) if str(k).strip())
+        keyword_terms = list(dict.fromkeys(keyword_terms))
+        keyword_likes: list[str] = []
+        if keyword_terms:
             strategy["rebuilt_search_text"] = self._ensure_search_text_current()
             join_sql = (
                 "JOIN raw_index_search_text st "
                 "ON st.artifact_id = a.artifact_id"
             )
-            like = f"%{keyword}%"
-            candidate_ids, gap = self._fast_candidate_ids(keyword, like)
-            if candidate_ids is not None:
-                strategy["index"] = "fts5_trigram"
-                if not candidate_ids:
-                    if start_date or end_date:
-                        strategy["date_filter"] = "artifact_times"
-                    return {
-                        "total": 0,
-                        "total_estimated": 0,
-                        "total_is_estimated": False,
-                        "count_accuracy": "exact",
-                        "returned": 0,
-                        "offset": offset,
-                        "limit": limit,
-                        "truncated": False,
-                        "coverage": self._coverage_summary(),
-                        "search_strategy": strategy,
-                        "hits": [],
-                    }
-                placeholders = ",".join("?" * len(candidate_ids))
-                where.append(f"a.artifact_id IN ({placeholders})")
-                params.extend(candidate_ids)
+            keyword_likes = [f"%{term}%" for term in keyword_terms]
+            if len(keyword_terms) == 1:
+                strategy["keyword_mode"] = "single"
+                like = keyword_likes[0]
+                candidate_ids, gap = self._fast_candidate_ids(keyword_terms[0], like)
+                if candidate_ids is not None:
+                    strategy["index"] = "fts5_trigram"
+                    if not candidate_ids:
+                        if start_date or end_date:
+                            strategy["date_filter"] = "artifact_times"
+                        return {
+                            "total": 0,
+                            "total_estimated": 0,
+                            "total_is_estimated": False,
+                            "count_accuracy": "exact",
+                            "returned": 0,
+                            "offset": offset,
+                            "limit": limit,
+                            "truncated": False,
+                            "coverage": self._coverage_summary(),
+                            "search_strategy": strategy,
+                            "hits": [],
+                        }
+                    placeholders = ",".join("?" * len(candidate_ids))
+                    where.append(f"a.artifact_id IN ({placeholders})")
+                    params.extend(candidate_ids)
+                else:
+                    strategy["index"] = "materialized_like"
+                    strategy["fast_candidate_gap"] = gap
+                where.append("st.search_text LIKE ?")
+                params.append(like)
             else:
-                strategy["index"] = "materialized_like"
-                strategy["fast_candidate_gap"] = gap
-            where.append("st.search_text LIKE ?")
-            params.append(like)
+                strategy["keyword_mode"] = "or"
+                strategy["index"] = "materialized_like_or"
+                keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
+                where.append(f"({keyword_sql})")
+                params.extend(keyword_likes)
             strategy["revalidated"] = True
         if start_date or end_date:
             strategy["date_filter"] = "artifact_times"
             if self._has_untimed_candidate(
                 artifact_type=artifact_type,
-                keyword_like=like,
+                keyword_likes=keyword_likes,
             ):
                 coverage = self._coverage_summary()
                 coverage = dict(coverage)
@@ -505,18 +519,20 @@ class RawIndexStore:
         self,
         *,
         artifact_type: str = "",
-        keyword_like: str = "",
+        keyword_likes: list[str] | None = None,
     ) -> bool:
         joins = []
         where = []
         params: list[Any] = []
-        if keyword_like:
+        keyword_likes = keyword_likes or []
+        if keyword_likes:
             self._ensure_search_text_current()
             joins.append(
                 "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
             )
-            where.append("st.search_text LIKE ?")
-            params.append(keyword_like)
+            keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
+            where.append(f"({keyword_sql})")
+            params.extend(keyword_likes)
         if artifact_type:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)

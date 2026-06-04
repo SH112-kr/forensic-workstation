@@ -46,6 +46,39 @@ def _seed_raw_connector(db_path):
     return connector
 
 
+def _seed_multi_keyword_raw_connector(db_path):
+    from core.connectors.raw_image_index import RawImageIndexConnector
+    from core.raw_index.store import RawIndexStore
+
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "seed",
+        "unit",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha-one.exe", "alpha-two.exe", "beta-one.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="unit",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+    connector = RawImageIndexConnector()
+    connector.connect(str(db_path))
+    return connector
+
+
 def test_open_raw_index_sets_raw_connector(monkeypatch, tmp_path):
     from core.raw_index.store import RawIndexStore
 
@@ -105,6 +138,27 @@ def test_search_artifacts_uses_raw_index_date_filters(monkeypatch, tmp_path):
     assert result["total_is_estimated"] is False
     assert result["search_strategy"]["date_filter"] == "artifact_times"
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
+def test_search_artifacts_uses_raw_index_exact_keyword_union(monkeypatch, tmp_path):
+    raw = _seed_multi_keyword_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keywords="alpha,beta",
+        artifact_type="File System Entry",
+        limit=1,
+    ))
+
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["total"] == 3
+    assert result["total_is_estimated"] is False
+    assert result["count_accuracy"] == "exact"
+    assert result["returned"] == 1
+    assert result["truncated"] is True
+    assert result["search_strategy"]["keyword_mode"] == "or"
+    assert result["search_strategy"]["index"] == "materialized_like_or"
 
 
 def test_get_artifact_types_uses_active_raw_index(monkeypatch, tmp_path):
