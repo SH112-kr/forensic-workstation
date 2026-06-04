@@ -4286,7 +4286,43 @@ async def map_to_mitre(custom_findings: str = "") -> dict:
 @mcp.tool()
 async def get_tagged_hits(tag_name: str = "") -> dict:
     """Get investigator-tagged hits."""
-    return await _traced("get_tagged_hits", {"tag_name": tag_name}, lambda: _mask(_get_axiom().get_tagged_hits(tag_name)), timeout_seconds=TIMEOUT_LIGHT)
+    def fn():
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "tag_name": tag_name,
+                "total_tagged": 0,
+                "returned": 0,
+                "truncated": False,
+                "hits": [],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_tagged_hits_unsupported",
+                    "detail": (
+                        "Investigator tag lookup currently depends on "
+                        "parsed-case tag metadata. The raw sidecar does not "
+                        "store tag assignments yet."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "Do not interpret this as no tagged hits. Raw-sidecar "
+                        "tag storage has not been implemented yet."
+                    ),
+                ],
+            })
+        return _mask(_get_axiom().get_tagged_hits(tag_name))
+
+    return await _traced(
+        "get_tagged_hits",
+        {"tag_name": tag_name},
+        fn,
+        timeout_seconds=TIMEOUT_LIGHT,
+    )
 
 
 @mcp.tool()
