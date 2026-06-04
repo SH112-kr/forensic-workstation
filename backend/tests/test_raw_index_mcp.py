@@ -1264,6 +1264,115 @@ def test_detect_anti_forensics_preserves_raw_index_not_evaluable_coverage(
     assert result["rules"] == []
 
 
+def test_correlate_keywords_uses_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_multi_timed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.correlate(
+        keywords="alpha-one.exe,alpha-two.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+        window_minutes=5,
+        limit=10,
+    ))
+
+    assert result["mode"] == "multi_keyword_correlation"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["count_accuracy"] == "exact"
+    assert result["per_keyword"]["alpha-one.exe"]["total_hits"] == 1
+    assert result["per_keyword"]["alpha-two.exe"]["total_hits"] == 1
+    assert result["per_keyword"]["alpha-one.exe"]["truncated"] is False
+    assert result["co_occurrence_windows"][0]["keywords_present"] == [
+        "alpha-one.exe",
+        "alpha-two.exe",
+    ]
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_correlate_keywords_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.correlate(
+        keywords="alpha-one.exe,alpha-two.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_correlate_not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["per_keyword"] == {}
+    assert result["co_occurrence_windows"] == []
+
+
+def test_correlate_event_id_seed_reports_raw_index_unsupported(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.correlate(
+        keywords="event_id:4648,agent.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_correlate_event_id_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["per_keyword"] == {}
+    assert result["co_occurrence_windows"] == []
+
+
+def test_correlate_pivot_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.correlate(
+        pivot_field="user",
+        pivot_value="analyst",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_correlate_pivot_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
 class _State:
     def __init__(self):
         self.captured = {}

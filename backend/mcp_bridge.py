@@ -649,6 +649,38 @@ def _raw_investigation_gap_not_evaluable(
     }
 
 
+def _raw_correlate_not_evaluable(
+    raw,
+    *,
+    reason: str,
+    detail: str,
+) -> dict:
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "mode": "multi_keyword_correlation",
+        "per_keyword": {},
+        "co_occurrence_windows": [],
+        "total_co_occurrences": 0,
+        "chronological_events": [],
+        "total_chronological_events": 0,
+        "truncated": False,
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": reason,
+            "detail": detail,
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this as no correlation. The raw sidecar "
+                "could not evaluate the requested correlation substrate."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3828,10 +3860,57 @@ async def correlate(
               "keywords": keywords, "window_minutes": window_minutes, "limit": limit, "offset": offset}
     def fn():
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
+        raw = _get_raw_index()
 
         if kw_list:
+            if raw and not _parsed_case_loaded():
+                raw_coverage = raw.get_coverage()
+                if str(raw_coverage.get("status") or "") == "not_evaluable":
+                    return _mask(_raw_correlate_not_evaluable(
+                        raw,
+                        reason="raw_correlate_not_evaluable",
+                        detail=(
+                            "The active raw sidecar reports not_evaluable "
+                            "coverage, so keyword correlation cannot be "
+                            "computed without risking a silent miss."
+                        ),
+                    ))
+                if any(k.lower().startswith("event_id:") for k in kw_list):
+                    return _mask(_raw_correlate_not_evaluable(
+                        raw,
+                        reason="raw_correlate_event_id_unsupported",
+                        detail=(
+                            "event_id seeds require parsed EVTX event fields. "
+                            "The active raw sidecar does not yet expose EVTX "
+                            "event-id records, so returning zero would be a "
+                            "silent miss risk."
+                        ),
+                    ))
+                result = _correlate_keywords(
+                    raw,
+                    kw_list,
+                    start_date,
+                    end_date,
+                    window_minutes,
+                    limit,
+                    offset,
+                )
+                result["source_type"] = "raw_image_sidecar"
+                result["count_accuracy"] = "exact"
+                result["raw_index_coverage"] = raw_coverage
+                return _mask(result)
             return _mask(_correlate_keywords(_get_axiom(), kw_list, start_date, end_date, window_minutes, limit, offset))
         elif pivot_field and pivot_value:
+            if raw and not _parsed_case_loaded():
+                return _mask(_raw_correlate_not_evaluable(
+                    raw,
+                    reason="raw_correlate_pivot_unsupported",
+                    detail=(
+                        "Classic correlate pivot mode currently depends on "
+                        "parsed-case field/source/user semantics that the raw "
+                        "sidecar does not expose yet."
+                    ),
+                ))
             from core.analysis.correlator import correlate as _corr
             return _mask(_corr(_get_axiom(), pivot_field, pivot_value, window_minutes, limit, offset))
         else:

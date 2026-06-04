@@ -274,6 +274,14 @@ class RawImageIndexConnector(BaseConnector):
         store = self._require_store()
         return store._coverage_summary(conn=store._conn())
 
+    def _iso_to_ms(self, value: str) -> int | None:
+        if not value:
+            return None
+        try:
+            return _iso_date_to_ms(str(value), is_end=False)
+        except Exception:
+            return None
+
     def _load_metadata(
         self,
         *,
