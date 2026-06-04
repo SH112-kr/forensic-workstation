@@ -115,6 +115,7 @@ class RawImageIndexConnector(BaseConnector):
         keyword_list = list(
             dict.fromkeys(str(k).strip() for k in raw_keywords if str(k).strip())
         )
+        keyword_likes: list[str] = []
         if keyword_list:
             strategy["keyword_filter"] = "search_text"
             strategy["rebuilt_search_text"] = store._ensure_search_text_current(
@@ -154,6 +155,36 @@ class RawImageIndexConnector(BaseConnector):
             where.append(f"({keyword_sql})")
             params.extend(keyword_likes)
             strategy["revalidated"] = True
+        if _has_untimed_timeline_candidate(
+            store,
+            artifact_type_list=artifact_type_list,
+            keyword_likes=keyword_likes,
+            conn=conn,
+        ):
+            coverage = dict(store._coverage_summary(conn=conn))
+            gaps = list(coverage.get("gaps", []))
+            gaps.append({
+                "status": "not_evaluable",
+                "reason": "raw_timeline_date_filter_without_indexed_times",
+                "artifact_types": artifact_type_list,
+                "keywords": keyword_list,
+            })
+            coverage["status"] = "not_evaluable"
+            coverage["gaps"] = gaps
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "total_events": 0,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 0,
+                "offset": offset,
+                "limit": limit,
+                "truncated": False,
+                "coverage": coverage,
+                "timeline_strategy": strategy,
+                "entries": [],
+            }
         join_sql = "\n            ".join(joins)
         where_sql = " AND ".join(where)
         total = conn.execute(
@@ -252,6 +283,25 @@ class RawImageIndexConnector(BaseConnector):
         if self._store is None:
             raise RuntimeError("RawImageIndexConnector is not connected")
         return self._store
+
+
+def _has_untimed_timeline_candidate(
+    store: RawIndexStore,
+    *,
+    artifact_type_list: list[str],
+    keyword_likes: list[str],
+    conn: Any,
+) -> bool:
+    if artifact_type_list:
+        return any(
+            store._has_untimed_candidate(
+                artifact_type=artifact_type,
+                keyword_likes=keyword_likes,
+                conn=conn,
+            )
+            for artifact_type in artifact_type_list
+        )
+    return store._has_untimed_candidate(keyword_likes=keyword_likes, conn=conn)
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
