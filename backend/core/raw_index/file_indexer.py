@@ -100,6 +100,17 @@ def _index_file_listing(
                 continue
             entry_path = str(entry.get("path", ""))
             if not entry_path:
+                entry_name = str(entry.get("name") or "")
+                coverage_gaps.append({
+                    "path": path,
+                    "status": "coverage_gap",
+                    "reason": "raw_file_index_missing_entry_path",
+                    "error": (
+                        f"directory entry missing path: {entry_name}"
+                        if entry_name
+                        else "directory entry missing path"
+                    ),
+                })
                 continue
             if entry.get("is_dir"):
                 queue.append(entry_path)

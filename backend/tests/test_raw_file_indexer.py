@@ -100,6 +100,19 @@ class _CountingRootImage:
         return []
 
 
+class _MissingPathImage:
+    def list_directory(self, path="/"):
+        if path == "/c:":
+            return [
+                {
+                    "name": "nameless-path.exe",
+                    "is_dir": False,
+                    "size": 10,
+                },
+            ]
+        return []
+
+
 def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -244,6 +257,31 @@ def test_index_file_listing_blank_roots_are_not_evaluable(tmp_path):
     assert image.calls == []
     assert search["total"] == 0
     assert search["coverage"]["status"] == "not_evaluable"
+
+
+def test_index_file_listing_records_missing_entry_paths_as_coverage_gaps(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    result = index_file_listing(
+        _MissingPathImage(),
+        store,
+        roots=["/c:"],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    search = store.search(
+        keyword="nameless-path.exe",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["status"] == "partial"
+    assert result["indexed_files"] == 0
+    assert result["coverage_gaps"][0]["path"] == "/c:"
+    assert result["coverage_gaps"][0]["reason"] == "raw_file_index_missing_entry_path"
+    assert search["total"] == 0
+    assert search["coverage"]["status"] == "coverage_gap"
 
 
 def test_index_file_listing_records_listing_exceptions_as_coverage_gaps(tmp_path):
