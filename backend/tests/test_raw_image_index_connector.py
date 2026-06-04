@@ -682,3 +682,19 @@ def test_raw_image_index_connector_accepts_reordered_expected_index_roots(tmp_pa
     meta = connector.connect(str(db_path), expected_index_roots=["/d:", "/c:"])
 
     assert meta["index_roots"] == "/c:,/d:"
+
+
+def test_raw_image_index_connector_accepts_equivalent_drive_root_forms(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+            ("index_roots", r"C:\,/D:/,/c:"),
+        )
+
+    connector = RawImageIndexConnector()
+
+    meta = connector.connect(str(db_path), expected_index_roots=["/d:", "/c:"])
+
+    assert meta["index_roots"] == "/c:,/d:"

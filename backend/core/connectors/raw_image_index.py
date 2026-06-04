@@ -323,25 +323,35 @@ def _normalize_index_roots(value: Any) -> str:
         return ""
     if isinstance(value, str):
         roots = [
-            str(root).strip()
+            _canonical_index_root(root)
             for root in value.split(",")
             if str(root).strip()
         ]
     else:
         try:
             roots = [
-                str(root).strip()
+                _canonical_index_root(root)
                 for root in value
                 if str(root).strip()
             ]
         except TypeError:
-            roots = [str(value).strip()] if str(value).strip() else []
+            roots = [_canonical_index_root(value)] if str(value).strip() else []
     return ",".join(
         sorted(
             dict.fromkeys(roots),
             key=str.lower,
         )
     )
+
+
+def _canonical_index_root(value: Any) -> str:
+    text = str(value).strip()
+    root = text.replace("\\", "/").rstrip("/")
+    if len(root) == 2 and root[1] == ":" and root[0].isalpha():
+        return f"/{root[0].lower()}:"
+    if len(root) == 3 and root[0] == "/" and root[2] == ":" and root[1].isalpha():
+        return f"/{root[1].lower()}:"
+    return text
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
