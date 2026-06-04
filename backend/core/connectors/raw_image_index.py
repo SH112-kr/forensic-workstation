@@ -140,7 +140,7 @@ class RawImageIndexConnector(BaseConnector):
             if candidate_ids is not None:
                 strategy["index"] = "fts5_trigram_or"
                 if not candidate_ids:
-                    return {
+                    return _attach_timeline_coverage_status({
                         "total_events": 0,
                         "total_is_estimated": False,
                         "count_accuracy": "exact",
@@ -151,7 +151,7 @@ class RawImageIndexConnector(BaseConnector):
                         "coverage": store._coverage_summary(conn=conn),
                         "timeline_strategy": strategy,
                         "entries": [],
-                    }
+                    })
                 placeholders = ",".join("?" * len(candidate_ids))
                 where.append(f"a.artifact_id IN ({placeholders})")
                 params.extend(candidate_ids)
@@ -206,7 +206,7 @@ class RawImageIndexConnector(BaseConnector):
         ).fetchone()[0]
         total = int(total)
         if limit <= 0 or offset >= total:
-            return {
+            return _attach_timeline_coverage_status({
                 "total_events": total,
                 "total_is_estimated": False,
                 "count_accuracy": "exact",
@@ -217,7 +217,7 @@ class RawImageIndexConnector(BaseConnector):
                 "coverage": store._coverage_summary(conn=conn),
                 "timeline_strategy": strategy,
                 "entries": [],
-            }
+            })
         rows = conn.execute(
             f"""
             SELECT t.artifact_id, t.unix_timestamp_ms, t.formatted_value,
@@ -242,7 +242,7 @@ class RawImageIndexConnector(BaseConnector):
             }
             for row in rows
         ]
-        return {
+        return _attach_timeline_coverage_status({
             "total_events": int(total),
             "total_is_estimated": False,
             "count_accuracy": "exact",
@@ -253,7 +253,7 @@ class RawImageIndexConnector(BaseConnector):
             "coverage": store._coverage_summary(conn=conn),
             "timeline_strategy": strategy,
             "entries": entries,
-        }
+        })
 
     def get_artifact_type_counts(self) -> list[dict]:
         return self._require_store().get_artifact_type_counts()
@@ -316,6 +316,19 @@ def _has_untimed_timeline_candidate(
         keyword_likes=keyword_likes,
         conn=conn,
     )
+
+
+def _attach_timeline_coverage_status(result: dict[str, Any]) -> dict[str, Any]:
+    coverage = result.get("coverage")
+    if not isinstance(coverage, dict):
+        return result
+    status = str(coverage.get("status") or "")
+    if status == "not_evaluable":
+        result["ok"] = False
+        result["status"] = "not_evaluable"
+    elif status == "coverage_gap":
+        result.setdefault("status", "coverage_gap")
+    return result
 
 
 def _normalize_index_roots(value: Any) -> str:

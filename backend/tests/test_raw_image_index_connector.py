@@ -66,6 +66,24 @@ def _seed_untimed(db_path):
     store.close()
 
 
+def _seed_failed(db_path):
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.finish_parser_run(
+        run_id,
+        status="failed",
+        coverage_status="not_evaluable",
+        finished_at="2026-06-04T00:00:01Z",
+        error="simulated parser failure",
+    )
+    store.close()
+
+
 def _seed_timed_types(db_path, artifact_types):
     store = RawIndexStore(str(db_path))
     store.open()
@@ -220,6 +238,26 @@ def test_raw_image_index_connector_timeline_matching_untimed_artifact_is_not_eva
     assert timeline["coverage"]["gaps"][0]["reason"] == (
         "raw_timeline_date_filter_without_indexed_times"
     )
+
+
+def test_raw_image_index_connector_timeline_reports_parser_failure_as_not_evaluable(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_failed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    assert timeline["ok"] is False
+    assert timeline["status"] == "not_evaluable"
+    assert timeline["total_events"] == 0
+    assert timeline["total_is_estimated"] is False
+    assert timeline["coverage"]["status"] == "not_evaluable"
+    assert timeline["coverage"]["gaps"][0]["error"] == "simulated parser failure"
 
 
 def test_raw_image_index_connector_timeline_checks_multi_type_untimed_candidates_once(tmp_path):
