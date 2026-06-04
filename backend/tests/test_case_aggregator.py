@@ -48,12 +48,74 @@ def test_aggregate_artifact_counts_matrix(mfdb_case, kape_case):
     assert r["families"][0] == "Windows Event Logs"  # 400 hits
 
 
+def test_aggregate_artifact_counts_surfaces_raw_not_evaluable_coverage():
+    class _RawNotEvaluableCounts:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def get_artifact_type_counts(self):
+            return []
+
+        def get_coverage(self):
+            return {
+                "status": "not_evaluable",
+                "gaps": [{"error": "simulated parser failure"}],
+            }
+
+    r = aggregate_artifact_counts({"raw_index": _RawNotEvaluableCounts()})
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["matrix"] == {}
+    assert r["results"][0]["ok"] is False
+    assert r["results"][0]["status"] == "not_evaluable"
+    assert r["results"][0]["coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
 def test_compare_cases_envelope(mfdb_case, kape_case, broken_case):
     r = compare_cases({"axiom:a": mfdb_case, "axiom:b": kape_case, "axiom:x": broken_case})
     assert r["case_count"] == 3
     statuses = [m["ok"] for m in r["metadata"]]
     assert True in statuses and False in statuses
     assert len(r["warnings"]) >= 1
+
+
+def test_compare_cases_surfaces_raw_not_evaluable_artifact_counts():
+    class _RawNotEvaluableCounts:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def get_artifact_type_counts(self):
+            return []
+
+        def get_coverage(self):
+            return {
+                "status": "not_evaluable",
+                "gaps": [{"error": "simulated parser failure"}],
+            }
+
+    r = compare_cases({"raw_index": _RawNotEvaluableCounts()})
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["artifact_counts"]["results"][0]["ok"] is False
+    assert r["artifact_counts"]["results"][0]["coverage"]["status"] == (
+        "not_evaluable"
+    )
 
 
 def test_search_across_cases_provenance(mfdb_case, kape_case):

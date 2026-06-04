@@ -130,10 +130,25 @@ def aggregate_artifact_counts(connectors: dict[str, Any]) -> dict[str, Any]:
         }
     """
     cases = iter_cases(connectors)
-    results, warnings = safe_collect(
-        cases,
-        lambda cid, c: c.get_artifact_type_counts() or [],
-    )
+    def _run_counts(case_id: str, connector: Any) -> Any:
+        counts = connector.get_artifact_type_counts() or []
+        coverage_getter = getattr(connector, "get_coverage", None)
+        if callable(coverage_getter):
+            coverage = coverage_getter() or {}
+            if isinstance(coverage, dict) and coverage.get("status") in {
+                "not_evaluable",
+                "coverage_gap",
+            }:
+                return {
+                    "ok": False,
+                    "status": coverage.get("status"),
+                    "error": coverage.get("status"),
+                    "coverage": coverage,
+                    "artifact_type_counts": counts,
+                }
+        return counts
+
+    results, warnings = safe_collect(cases, _run_counts)
 
     matrix: dict[str, dict[str, int]] = {}
     totals: dict[str, int] = {}
@@ -150,9 +165,11 @@ def aggregate_artifact_counts(connectors: dict[str, Any]) -> dict[str, Any]:
             totals[fam] = totals.get(fam, 0) + cnt
 
     families = sorted(matrix.keys(), key=lambda f: (-totals.get(f, 0), f))
+    result_status = _aggregate_status(results)
 
     return {
-        "ok": True,
+        "ok": result_status == "searched",
+        **({"status": result_status} if result_status != "searched" else {}),
         "case_count": len(cases),
         "results": results,
         "matrix": matrix,
@@ -166,14 +183,17 @@ def compare_cases(connectors: dict[str, Any]) -> dict[str, Any]:
     """Return both metadata and artifact-count matrix in a single envelope."""
     meta = aggregate_metadata(connectors)
     counts = aggregate_artifact_counts(connectors)
+    result_status = _aggregate_status(counts.get("results", []))
     return {
-        "ok": True,
+        "ok": result_status == "searched",
+        **({"status": result_status} if result_status != "searched" else {}),
         "case_count": meta["case_count"],
         "metadata": meta["results"],
         "artifact_counts": {
             "matrix": counts["matrix"],
             "families": counts["families"],
             "totals": counts["totals"],
+            "results": counts["results"],
         },
         "warnings": sorted(set(meta["warnings"] + counts["warnings"])),
     }
