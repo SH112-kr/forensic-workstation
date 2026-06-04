@@ -362,7 +362,7 @@ def test_insert_artifact_reuses_connection_for_hot_insert_path(tmp_path):
         parser_run_id=run_id,
     )
 
-    assert conn_calls <= 3
+    assert conn_calls == 1
 
 
 def test_insert_artifact_skips_data_version_probe_when_fts_freshness_unknown(tmp_path):

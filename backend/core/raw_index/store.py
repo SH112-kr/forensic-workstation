@@ -77,11 +77,11 @@ class RawIndexStore:
                 self._conn().commit()
                 self._pending_commit = False
 
-    def _commit(self) -> None:
+    def _commit(self, conn: sqlite3.Connection | None = None) -> None:
         if self._batch_depth:
             self._pending_commit = True
             return
-        self._conn().commit()
+        (conn or self._conn()).commit()
 
     def start_parser_run(self, parser_name: str, source_ref: str, *, started_at: str) -> int:
         cur = self._conn().execute(
@@ -201,12 +201,14 @@ class RawIndexStore:
                 locations=[primary_path] if primary_path else [],
             ),
             replace_fts=False,
+            conn=conn,
+            fts_available=self._fts_available(conn=conn),
         )
-        self._commit()
+        self._commit(conn)
         self._invalidate_artifact_type_counts_cache()
         self._invalidate_untimed_candidate_cache()
         if fts_was_current and fts_updated:
-            self._cache_fts_current(True)
+            self._cache_fts_current(True, conn=conn)
         return artifact_id
 
     def search(
