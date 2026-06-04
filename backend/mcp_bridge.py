@@ -1153,9 +1153,13 @@ async def pivot_across_cases(
         from state import app_state
         from core.analysis.case_aggregator import pivot_across_cases as _pivot
         _ensure_cases_hydrated()
-        axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+        conns = {
+            k: v
+            for k, v in app_state._connectors.items()
+            if k.startswith("axiom:") or k == "raw_index"
+        }
         return _mask(_pivot(
-            axiom_conns, entity_type, entity_value,
+            conns, entity_type, entity_value,
             window_minutes=window_minutes, limit_per_case=limit_per_case,
             match_key=match_key,
         ))
