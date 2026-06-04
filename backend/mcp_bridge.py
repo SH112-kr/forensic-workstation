@@ -1277,10 +1277,9 @@ async def search_artifacts(
             from state import app_state
             from core.analysis.case_aggregator import search_across_cases
             _ensure_cases_hydrated()
-            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             cap = min(limit, config.search_max_limit)
             return _mask(search_across_cases(
-                axiom_conns,
+                app_state._connectors,
                 keyword=keyword or (keywords.split(",")[0].strip() if keywords else ""),
                 artifact_type=artifact_type, start_date=start_date, end_date=end_date,
                 limit_per_case=cap, global_limit=cap, global_offset=offset,
@@ -1439,9 +1438,8 @@ async def build_timeline(
             from state import app_state
             from core.analysis.case_aggregator import timeline_across_cases
             _ensure_cases_hydrated()
-            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             return _mask(timeline_across_cases(
-                axiom_conns,
+                app_state._connectors,
                 start_date=start_date, end_date=end_date,
                 artifact_types=type_list,
                 limit_per_case=cap, global_limit=cap, global_offset=offset,

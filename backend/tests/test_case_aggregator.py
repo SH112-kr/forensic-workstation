@@ -21,6 +21,12 @@ def test_iter_cases_filters_axiom_prefix(mfdb_case, kape_case):
     assert [cid for cid, _ in cases] == ["a", "b"]
 
 
+def test_iter_cases_includes_active_raw_index(mfdb_case):
+    conns = {"raw_index": mfdb_case, "e01": mfdb_case}
+    cases = iter_cases(conns)
+    assert [cid for cid, _ in cases] == ["raw_index"]
+
+
 def test_safe_collect_survives_partial_failure(mfdb_case, broken_case):
     cases = iter_cases({"axiom:a": mfdb_case, "axiom:x": broken_case})
     results, warnings = safe_collect(cases, lambda cid, c: c.get_artifact_type_counts())

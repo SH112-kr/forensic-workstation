@@ -230,6 +230,26 @@ def test_search_artifacts_uses_raw_index_exact_keyword_union(monkeypatch, tmp_pa
     }
 
 
+def test_search_artifacts_all_cases_includes_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keyword="agent.exe",
+        artifact_type="File System Entry",
+        limit=10,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["per_case_totals"] == {"raw_index": 1}
+    assert result["returned"] == 1
+    assert result["hits"][0]["case_id"] == "raw_index"
+    assert result["hits"][0]["source_type"] == "raw_image_sidecar"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_get_artifact_types_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
@@ -293,6 +313,27 @@ def test_build_timeline_uses_raw_index_keyword_filter(monkeypatch, tmp_path):
     assert result["total_events"] == 1
     assert result["total_is_estimated"] is False
     assert result["timeline_strategy"]["keyword_filter"] == "search_text"
+    assert result["entries"][0]["artifact_type"] == "File System Entry"
+
+
+def test_build_timeline_all_cases_includes_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        limit=10,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["merged_total"] == 1
+    assert result["returned"] == 1
+    assert result["entries"][0]["case_id"] == "raw_index"
+    assert result["entries"][0]["source_type"] == "raw_image_sidecar"
     assert result["entries"][0]["artifact_type"] == "File System Entry"
 
 

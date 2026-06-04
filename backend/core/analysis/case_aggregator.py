@@ -22,18 +22,22 @@ from typing import Any, Callable, Iterable
 
 
 def iter_cases(connectors: dict[str, Any]) -> list[tuple[str, Any]]:
-    """Return ``(case_id, connector)`` for every connected axiom:* case.
+    """Return ``(case_id, connector)`` for every connected case connector.
 
     A list rather than a generator so callers can iterate multiple times (e.g.
     once for metadata, once for counts) without reopening the connector dict.
     """
     cases: list[tuple[str, Any]] = []
     for name, c in connectors.items():
-        if not name.startswith("axiom:"):
+        if name.startswith("axiom:"):
+            case_id = name.replace("axiom:", "", 1)
+        elif name == "raw_index":
+            case_id = "raw_index"
+        else:
             continue
         if not getattr(c, "is_connected", lambda: False)():
             continue
-        cases.append((name.replace("axiom:", ""), c))
+        cases.append((case_id, c))
     return cases
 
 
