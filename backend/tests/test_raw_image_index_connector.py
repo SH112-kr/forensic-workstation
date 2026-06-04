@@ -162,6 +162,21 @@ def test_raw_image_index_connector_search_and_detail(tmp_path):
     assert "search" in conn.get_capabilities()
 
 
+def test_raw_image_index_connector_missing_hit_detail_reports_not_evaluable_coverage(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_failed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    detail = conn.get_hit_detail(999)
+
+    assert detail["ok"] is False
+    assert detail["status"] == "not_evaluable"
+    assert detail["coverage"]["status"] == "not_evaluable"
+    assert detail["coverage"]["gaps"][0]["error"] == "simulated parser failure"
+    assert "not found" in detail["error"]
+
+
 def test_raw_image_index_connector_search_applies_date_filters(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

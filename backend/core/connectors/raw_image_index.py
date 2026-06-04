@@ -71,7 +71,19 @@ class RawImageIndexConnector(BaseConnector):
         )
 
     def get_hit_detail(self, hit_id: int) -> dict:
-        return self._require_store().get_hit_detail(hit_id)
+        store = self._require_store()
+        detail = store.get_hit_detail(hit_id)
+        if isinstance(detail, dict) and detail.get("error"):
+            coverage = store._coverage_summary(conn=store._conn())
+            detail = dict(detail)
+            detail["coverage"] = coverage
+            coverage_status = str(coverage.get("status") or "")
+            if coverage_status == "not_evaluable":
+                detail["ok"] = False
+                detail["status"] = "not_evaluable"
+            elif coverage_status == "coverage_gap":
+                detail.setdefault("status", "coverage_gap")
+        return detail
 
     def get_timeline(
         self,
