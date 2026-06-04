@@ -129,6 +129,21 @@ class RawIndexStore:
         parser_run_id: int | None = None,
     ) -> int:
         conn = self._conn()
+        fts_was_current = False
+        if (
+            self._fts_current_cache is True
+            and self._fts_current_cache_version is not None
+        ):
+            try:
+                previous_data_version = int(
+                    conn.execute("PRAGMA data_version").fetchone()[0]
+                )
+            except sqlite3.Error:
+                previous_data_version = None
+            fts_was_current = (
+                previous_data_version is not None
+                and self._fts_current_cache_version == previous_data_version
+            )
         cur = conn.execute(
             """
             INSERT INTO raw_index_artifacts(
@@ -174,7 +189,7 @@ class RawIndexStore:
                 """,
                 (artifact_id, primary_path, source_path),
             )
-        self._write_search_text(
+        fts_updated = self._write_search_text(
             artifact_id,
             _search_text_from_values(
                 artifact_type=artifact_type,
@@ -190,6 +205,8 @@ class RawIndexStore:
         self._commit()
         self._invalidate_artifact_type_counts_cache()
         self._invalidate_untimed_candidate_cache()
+        if fts_was_current and fts_updated:
+            self._cache_fts_current(True)
         return artifact_id
 
     def search(
@@ -666,7 +683,7 @@ class RawIndexStore:
         search_text: str,
         *,
         replace_fts: bool = True,
-    ) -> None:
+    ) -> bool:
         conn = self._conn()
         conn.execute(
             """
@@ -676,6 +693,7 @@ class RawIndexStore:
             """,
             (artifact_id, search_text),
         )
+        fts_updated = False
         if self._fts_available():
             try:
                 if replace_fts:
@@ -690,9 +708,11 @@ class RawIndexStore:
                     """,
                     (artifact_id, search_text),
                 )
+                fts_updated = True
             except sqlite3.Error:
                 pass
         self._invalidate_fts_current_cache()
+        return fts_updated
 
     def _search_text_for_artifact(self, artifact_id: int) -> str:
         parts: list[str] = []

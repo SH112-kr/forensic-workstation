@@ -202,6 +202,35 @@ def test_insert_artifact_reuses_connection_for_hot_insert_path(tmp_path):
     assert conn_calls <= 3
 
 
+def test_insert_artifact_skips_data_version_probe_when_fts_freshness_unknown(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+
+    data_version_probes = [
+        sql for sql in statements if sql.strip().upper() == "PRAGMA DATA_VERSION"
+    ]
+    assert data_version_probes == []
+
+
 def test_repeated_keyword_searches_cache_search_text_freshness_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -417,7 +446,88 @@ def test_repeated_keyword_searches_cache_fts_freshness_until_external_change(tmp
     ]
 
     assert after_local_write["search_strategy"]["index"] == "fts5_trigram"
-    assert post_write_fts_count_checks
+    assert post_write_fts_count_checks == []
+
+    with sqlite3.connect(db_path) as other_conn:
+        other_conn.execute(
+            "DELETE FROM raw_index_search_fts WHERE rowid = ?",
+            (beta_id,),
+        )
+
+    statements.clear()
+    changed = store.search(keyword="beta", limit=10)
+    post_change_fts_count_checks = [
+        sql
+        for sql in statements
+        if "SELECT COUNT(*) FROM raw_index_search_fts" in sql
+    ]
+
+    assert changed["total"] == 1
+    assert changed["search_strategy"]["index"] == "materialized_like"
+    assert changed["search_strategy"]["fast_candidate_gap"] == "stale_fts"
+    assert post_change_fts_count_checks
+
+
+def test_local_insert_preserves_verified_fts_freshness(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    first = store.search(keyword="alpha", limit=10)
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    beta_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/beta.exe",
+        primary_path="/c:/Tools/beta.exe",
+        description="File System Entry /c:/Tools/beta.exe",
+        strings={"Name": "beta.exe", "Path": "/c:/Tools/beta.exe"},
+        parser_run_id=run_id,
+    )
+    statements.clear()
+    second = store.search(keyword="beta", limit=10)
+
+    post_insert_fts_count_checks = [
+        sql
+        for sql in statements
+        if "SELECT COUNT(*) FROM raw_index_search_fts" in sql
+    ]
+    assert first["search_strategy"]["index"] == "fts5_trigram"
+    assert second["total"] == 1
+    assert second["search_strategy"]["index"] == "fts5_trigram"
+    assert post_insert_fts_count_checks == []
 
     with sqlite3.connect(db_path) as other_conn:
         other_conn.execute(
