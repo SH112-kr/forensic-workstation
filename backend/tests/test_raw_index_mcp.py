@@ -314,6 +314,60 @@ def test_build_raw_file_index_indexes_mounted_image(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_propagates_indexer_not_evaluable(monkeypatch, tmp_path):
+    from core.raw_index import file_indexer as file_indexer_module
+
+    def not_evaluable_indexer(_image, store, *, roots, started_at):
+        run_id = store.start_parser_run(
+            "file_indexer",
+            ",".join(roots),
+            started_at=started_at,
+        )
+        store.finish_parser_run(
+            run_id,
+            status="not_evaluable",
+            coverage_status="not_evaluable",
+            finished_at=started_at,
+            error="simulated parser failure",
+        )
+        return {
+            "ok": False,
+            "status": "not_evaluable",
+            "indexed_files": 0,
+            "coverage_gaps": [
+                {
+                    "status": "not_evaluable",
+                    "reason": "simulated_parser_failure",
+                    "error": "simulated parser failure",
+                }
+            ],
+            "parser_run_id": run_id,
+        }
+
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(
+        file_indexer_module,
+        "index_file_listing",
+        not_evaluable_indexer,
+    )
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["indexed_files"] == 0
+    assert result["coverage_gaps"][0]["reason"] == "simulated_parser_failure"
+    assert "raw_index" not in state.captured
+
+
 def test_build_raw_file_index_batches_metadata_and_file_records(monkeypatch, tmp_path):
     from core.raw_index import store as store_module
 

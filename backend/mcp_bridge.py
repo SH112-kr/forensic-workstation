@@ -828,6 +828,32 @@ async def build_raw_file_index(
         finally:
             store.close()
 
+        if not result.get("ok", True):
+            coverage_gaps = result.get("coverage_gaps", [])
+            first_gap = (
+                coverage_gaps[0]
+                if coverage_gaps and isinstance(coverage_gaps[0], dict)
+                else {}
+            )
+            return {
+                "ok": False,
+                "status": str(result.get("status") or "not_evaluable"),
+                "source_type": "raw_image_sidecar",
+                "db_path": db_path,
+                "fingerprint": fingerprint,
+                "indexed_files": int(result.get("indexed_files", 0) or 0),
+                "coverage_gaps": coverage_gaps,
+                "error": str(
+                    result.get("error")
+                    or first_gap.get("error")
+                    or "raw index was not evaluable"
+                ),
+                "performance": {
+                    "sidecar_reused": False,
+                    "reindexed": True,
+                },
+            }
+
         connector = RawImageIndexConnector()
         meta = connector.connect(db_path, expected_fingerprint=fingerprint)
         app_state.set("raw_index", connector)
