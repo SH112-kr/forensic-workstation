@@ -3512,7 +3512,72 @@ async def find_suspicious(
     """
     def fn():
         from state import app_state
-        from core.analysis.suspicious import find_suspicious as _find
+        from core.analysis.suspicious import (
+            RULE_CATEGORY_MAP,
+            find_suspicious as _find,
+        )
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            requested_rules = [
+                value.strip().lower()
+                for value in str(rules or "").split(",")
+                if value.strip()
+            ] or sorted(RULE_CATEGORY_MAP.keys())
+            raw_coverage = raw.get_coverage()
+            unevaluable = [
+                {
+                    "rule_name": rule_name,
+                    "coverage_status": "not_evaluable",
+                    "reason": "raw_find_suspicious_unsupported",
+                    "category": RULE_CATEGORY_MAP.get(rule_name, "uncategorized"),
+                }
+                for rule_name in requested_rules
+            ]
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "rules_requested": requested_rules,
+                "rules_executed": 0,
+                "rules_with_hits": 0,
+                "total_findings": 0,
+                "findings": [],
+                "zero_result_rules": [],
+                "unevaluable_rules": unevaluable,
+                "coverage_manifest": {
+                    "queries_executed": [],
+                    "queries_with_hits": [],
+                    "queries_zero_hits": [],
+                    "queries_not_in_scope": [],
+                    "queries_not_implemented": {
+                        "raw_sidecar_detection_rules": (
+                            "Raw sidecar detection rules have not been "
+                            "implemented for the indexed artifact families yet."
+                        ),
+                    },
+                    "note": (
+                        "No find_suspicious rules were executed in raw-sidecar "
+                        "mode. This is not evidence of no suspicious activity."
+                    ),
+                },
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_find_suspicious_unsupported",
+                    "detail": (
+                        "find_suspicious currently depends on parsed-case "
+                        "artifact-query families such as EVTX, Prefetch, "
+                        "Services, AmCache, and WER. The active raw sidecar "
+                        "does not yet expose those detection substrates."
+                    ),
+                },
+                "raw_index_coverage": raw_coverage,
+                "notes": [
+                    (
+                        "AXIOM/KAPE find_suspicious output remains a parity "
+                        "reference until raw detection rules are implemented."
+                    ),
+                ],
+            })
         payload = _find(_get_axiom().artifact_queries, rules=rules)
         if score_strength:
             from core.analysis.evidence_strength import score_findings
