@@ -365,6 +365,41 @@ def test_insert_artifact_reuses_connection_for_hot_insert_path(tmp_path):
     assert conn_calls == 1
 
 
+def test_parser_run_writes_reuse_connection_handles(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+
+    assert run_id > 0
+    assert conn_calls == 1
+
+    conn_calls = 0
+
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+
+    assert conn_calls == 1
+
+
 def test_insert_artifact_skips_data_version_probe_when_fts_freshness_unknown(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

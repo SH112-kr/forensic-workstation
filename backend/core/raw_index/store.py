@@ -84,7 +84,8 @@ class RawIndexStore:
         (conn or self._conn()).commit()
 
     def start_parser_run(self, parser_name: str, source_ref: str, *, started_at: str) -> int:
-        cur = self._conn().execute(
+        conn = self._conn()
+        cur = conn.execute(
             """
             INSERT INTO raw_index_parser_runs(
                 parser_name, source_ref, status, started_at
@@ -92,7 +93,7 @@ class RawIndexStore:
             """,
             (parser_name, source_ref, "running", started_at),
         )
-        self._commit()
+        self._commit(conn)
         self._invalidate_coverage_summary_cache()
         return int(cur.lastrowid)
 
@@ -105,7 +106,8 @@ class RawIndexStore:
         finished_at: str,
         error: str = "",
     ) -> None:
-        self._conn().execute(
+        conn = self._conn()
+        conn.execute(
             """
             UPDATE raw_index_parser_runs
             SET status = ?, coverage_status = ?, finished_at = ?, error = ?
@@ -113,7 +115,7 @@ class RawIndexStore:
             """,
             (status, coverage_status, finished_at, error, run_id),
         )
-        self._commit()
+        self._commit(conn)
         self._invalidate_coverage_summary_cache()
 
     def insert_artifact(
