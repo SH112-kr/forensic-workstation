@@ -417,18 +417,17 @@ class RawIndexStore:
             )
             page_params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
-        if (start_date or end_date) and not keyword_terms:
+        if start_date or end_date:
             count_where = ["t.unix_timestamp_ms BETWEEN ? AND ?"]
-            count_params: list[Any] = [start_ms, end_ms]
-            if artifact_type:
-                count_where.append("a.artifact_type = ?")
-                count_params.append(artifact_type)
+            count_params: list[Any] = [start_ms, end_ms, *base_params]
+            count_where.extend(base_where)
             total = conn.execute(
                 f"""
                 SELECT COUNT(DISTINCT t.artifact_id)
                 FROM raw_index_artifact_times AS t
                 INDEXED BY idx_raw_times_ms_artifact_field
                 JOIN raw_index_artifacts a ON a.artifact_id = t.artifact_id
+                {join_sql}
                 WHERE {' AND '.join(count_where)}
                 """,
                 count_params,

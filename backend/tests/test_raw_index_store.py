@@ -2506,6 +2506,92 @@ def test_date_filtered_keyword_search_page_query_uses_exists_probe(tmp_path):
     assert "SELECT artifact_id" not in page_queries[0]
 
 
+def test_date_filtered_keyword_search_count_uses_time_range_index(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        times={
+            "Created": (
+                _ms("2026-10-04T00:00:00Z"),
+                "2026-10-04T00:00:00Z",
+            ),
+            "Modified": (
+                _ms("2026-10-05T00:00:00Z"),
+                "2026-10-05T00:00:00Z",
+            ),
+        },
+        parser_run_id=run_id,
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha-old.exe",
+        primary_path="/c:/Tools/alpha-old.exe",
+        description="File System Entry /c:/Tools/alpha-old.exe",
+        strings={"Name": "alpha-old.exe", "Path": "/c:/Tools/alpha-old.exe"},
+        times={
+            "Modified": (
+                _ms("2026-09-04T00:00:00Z"),
+                "2026-09-04T00:00:00Z",
+            )
+        },
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    conn = store._conn()
+    conn.set_trace_callback(statements.append)
+
+    result = store.search(
+        keyword="alpha",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    count_queries = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT COUNT(")
+        and "raw_index_artifact_times" in sql
+    ]
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["revalidated"] is True
+    assert count_queries
+    assert "COUNT(DISTINCT t.artifact_id)" in count_queries[0]
+    assert "FROM raw_index_artifact_times AS t" in count_queries[0]
+    query_plan = [
+        row[3]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN " + count_queries[0]
+        ).fetchall()
+    ]
+    assert any(
+        "idx_raw_times_ms_artifact_field" in step
+        for step in query_plan
+    )
+
+
 def test_date_filtered_search_count_uses_time_range_index(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
