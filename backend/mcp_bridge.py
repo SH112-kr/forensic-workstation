@@ -2241,9 +2241,13 @@ async def slice_timeline(
             from state import app_state
             from core.analysis.case_aggregator import timeline_across_cases
             _ensure_cases_hydrated()
-            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
+            conns = {
+                k: v
+                for k, v in app_state._connectors.items()
+                if k.startswith("axiom:") or k == "raw_index"
+            }
             base = timeline_across_cases(
-                axiom_conns, start_date=start_date, end_date=end_date,
+                conns, start_date=start_date, end_date=end_date,
                 artifact_types=type_list,
                 limit_per_case=overfetch_cap, global_limit=overfetch_cap, global_offset=0,
             )

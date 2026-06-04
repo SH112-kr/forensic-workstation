@@ -702,6 +702,55 @@ def test_slice_timeline_preserves_raw_index_not_evaluable_coverage(monkeypatch, 
     assert result["entries"] == []
 
 
+def test_slice_timeline_all_cases_includes_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.slice_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        path="agent.exe",
+        limit=10,
+        all_cases=True,
+    ))
+
+    assert result["ok"] is True
+    assert result["per_case"][0]["case_id"] == "raw_index"
+    assert result["entries"][0]["case_id"] == "raw_index"
+    assert result["entries"][0]["source_type"] == "raw_image_sidecar"
+    assert result["entries"][0]["artifact_type"] == "File System Entry"
+    assert result["returned"] == 1
+
+
+def test_slice_timeline_all_cases_preserves_raw_index_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.slice_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        path="agent.exe",
+        limit=10,
+        all_cases=True,
+    ))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["per_case"][0]["case_id"] == "raw_index"
+    assert result["per_case"][0]["coverage"]["status"] == "not_evaluable"
+    assert result["per_case"][0]["coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["entries"] == []
+
+
 def test_get_hit_detail_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
