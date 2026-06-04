@@ -132,6 +132,62 @@ def test_search_rebuilds_missing_materialized_search_text(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Windows/System32/calc.exe"
 
 
+def test_search_rebuilds_materialized_search_text_with_mismatched_ids(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    missing_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/beta.exe",
+        primary_path="/c:/Tools/beta.exe",
+        description="File System Entry /c:/Tools/beta.exe",
+        strings={"Name": "beta.exe", "Path": "/c:/Tools/beta.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute(
+        "DELETE FROM raw_index_search_text WHERE artifact_id = ?",
+        (missing_id,),
+    )
+    store._conn().execute(
+        "INSERT INTO raw_index_search_text(artifact_id, search_text) VALUES (?, ?)",
+        (9999, "orphan-cache-row"),
+    )
+    store._conn().commit()
+
+    result = store.search(
+        keyword="beta",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["rebuilt_search_text"] is True
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/beta.exe"
+
+
 def test_search_keywords_returns_exact_union_beyond_page_limit(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

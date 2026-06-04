@@ -419,10 +419,38 @@ class RawIndexStore:
                 "SELECT COUNT(*) FROM raw_index_search_text"
             ).fetchone()[0]
         )
-        if artifact_count == search_count:
+        if (
+            artifact_count == search_count
+            and not self._has_search_text_id_mismatch()
+        ):
             return False
         self.rebuild_search_text()
         return True
+
+    def _has_search_text_id_mismatch(self) -> bool:
+        missing = self._conn().execute(
+            """
+            SELECT 1
+            FROM raw_index_artifacts a
+            LEFT JOIN raw_index_search_text st
+                ON st.artifact_id = a.artifact_id
+            WHERE st.artifact_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if missing is not None:
+            return True
+        orphan = self._conn().execute(
+            """
+            SELECT 1
+            FROM raw_index_search_text st
+            LEFT JOIN raw_index_artifacts a
+                ON a.artifact_id = st.artifact_id
+            WHERE a.artifact_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        return orphan is not None
 
     def _refresh_search_text(self, artifact_id: int) -> None:
         search_text = self._search_text_for_artifact(artifact_id)
