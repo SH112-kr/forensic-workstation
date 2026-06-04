@@ -292,6 +292,59 @@ def test_rebuild_search_text_reuses_connection_for_chunk_work(tmp_path):
     assert conn_calls <= 2
 
 
+def test_refresh_search_text_reuses_connection_for_single_artifact(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    artifact_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    store._conn().execute(
+        """
+        UPDATE raw_index_artifact_strings
+        SET value = ?
+        WHERE artifact_id = ? AND field_name = ?
+        """,
+        ("bravo.exe", artifact_id, "Name"),
+    )
+    store._conn().commit()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    refreshed = store._refresh_search_text(artifact_id)
+    search_text = original_conn().execute(
+        """
+        SELECT search_text
+        FROM raw_index_search_text
+        WHERE artifact_id = ?
+        """,
+        (artifact_id,),
+    ).fetchone()[0]
+
+    assert isinstance(refreshed, bool)
+    assert "bravo.exe" in search_text
+    assert conn_calls == 1
+
+
 def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

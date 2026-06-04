@@ -761,9 +761,12 @@ class RawIndexStore:
         return orphan is not None
 
     def _refresh_search_text(self, artifact_id: int) -> bool:
+        conn = self._conn()
         return self._write_search_text(
             artifact_id,
-            self._search_text_for_artifact(artifact_id),
+            self._search_text_for_artifact(artifact_id, conn=conn),
+            conn=conn,
+            fts_available=self._fts_available(conn=conn),
         )
 
     def _search_text_for_artifact_rows(
@@ -859,9 +862,15 @@ class RawIndexStore:
             self._invalidate_fts_current_cache()
         return fts_updated
 
-    def _search_text_for_artifact(self, artifact_id: int) -> str:
+    def _search_text_for_artifact(
+        self,
+        artifact_id: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> str:
+        conn = conn or self._conn()
         parts: list[str] = []
-        row = self._conn().execute(
+        row = conn.execute(
             """
             SELECT artifact_type, source_ref, source_path, primary_path,
                    description
@@ -874,7 +883,7 @@ class RawIndexStore:
             parts.extend(str(row[key] or "") for key in row.keys())
         parts.extend(
             str(r["value"] or "")
-            for r in self._conn().execute(
+            for r in conn.execute(
                 """
                 SELECT value
                 FROM raw_index_artifact_strings
@@ -886,7 +895,7 @@ class RawIndexStore:
         )
         parts.extend(
             str(r["location_value"] or "")
-            for r in self._conn().execute(
+            for r in conn.execute(
                 """
                 SELECT location_value
                 FROM raw_index_locations
