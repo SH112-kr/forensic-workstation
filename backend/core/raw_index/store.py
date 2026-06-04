@@ -396,7 +396,7 @@ class RawIndexStore:
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         total = conn.execute(
             f"""
-            SELECT COUNT(DISTINCT a.artifact_id)
+            SELECT COUNT(*)
             FROM raw_index_artifacts a
             {join_sql}
             {where_sql}
@@ -420,8 +420,7 @@ class RawIndexStore:
             })
         rows = conn.execute(
             f"""
-            SELECT DISTINCT
-                a.artifact_id, a.artifact_type, a.source_path,
+            SELECT a.artifact_id, a.artifact_type, a.source_path,
                 a.primary_path, a.description
             FROM raw_index_artifacts a
             {join_sql}

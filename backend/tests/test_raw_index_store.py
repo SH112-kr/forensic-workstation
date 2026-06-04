@@ -1217,6 +1217,62 @@ def test_search_reuses_page_rows_when_hydrating_hit_details(tmp_path):
     assert len(artifact_selects) == 2
 
 
+def test_search_main_queries_do_not_pay_distinct_cost_for_one_to_one_joins(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(
+        keyword="alpha",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    count_queries = [
+        sql
+        for sql in statements
+        if "SELECT COUNT" in sql
+        and "FROM raw_index_artifacts a" in sql
+    ]
+    page_queries = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and "a.artifact_id, a.artifact_type" in sql
+        and "FROM raw_index_artifacts a" in sql
+    ]
+    assert result["total"] == 1
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
+    assert count_queries
+    assert page_queries
+    assert all("DISTINCT" not in sql.upper() for sql in count_queries)
+    assert all("DISTINCT" not in sql.upper() for sql in page_queries)
+
+
 def test_search_limit_zero_skips_page_hydration_queries(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -1254,7 +1310,8 @@ def test_search_limit_zero_skips_page_hydration_queries(tmp_path):
     page_selects = [
         sql
         for sql in statements
-        if "SELECT DISTINCT" in sql
+        if sql.lstrip().upper().startswith("SELECT")
+        and "a.artifact_id, a.artifact_type" in sql
         and "FROM raw_index_artifacts a" in sql
     ]
     detail_selects = [
@@ -1309,7 +1366,8 @@ def test_search_offset_past_total_skips_page_hydration_queries(tmp_path):
     page_selects = [
         sql
         for sql in statements
-        if "SELECT DISTINCT" in sql
+        if sql.lstrip().upper().startswith("SELECT")
+        and "a.artifact_id, a.artifact_type" in sql
         and "FROM raw_index_artifacts a" in sql
     ]
     detail_selects = [
