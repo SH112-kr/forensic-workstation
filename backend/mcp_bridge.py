@@ -793,7 +793,11 @@ async def build_raw_file_index(
         if os.path.exists(db_path) and not force_rebuild:
             try:
                 connector = RawImageIndexConnector()
-                meta = connector.connect(db_path, expected_fingerprint=fingerprint)
+                meta = connector.connect(
+                    db_path,
+                    expected_fingerprint=fingerprint,
+                    expected_index_roots=root_values,
+                )
                 coverage = connector.get_coverage()
                 if (
                     coverage.get("status") == "not_evaluable"
@@ -881,7 +885,11 @@ async def build_raw_file_index(
             }
 
         connector = RawImageIndexConnector()
-        meta = connector.connect(db_path, expected_fingerprint=fingerprint)
+        meta = connector.connect(
+            db_path,
+            expected_fingerprint=fingerprint,
+            expected_index_roots=root_values,
+        )
         app_state.set("raw_index", connector)
         indexer_status = str(result.get("status") or "")
         return {

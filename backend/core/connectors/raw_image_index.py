@@ -23,7 +23,10 @@ class RawImageIndexConnector(BaseConnector):
         self._store.open()
         try:
             self._metadata = self._load_metadata(
-                expected_fingerprint=str(kwargs.get("expected_fingerprint") or "")
+                expected_fingerprint=str(kwargs.get("expected_fingerprint") or ""),
+                expected_index_roots=_normalize_index_roots(
+                    kwargs.get("expected_index_roots")
+                ),
             )
         except Exception:
             self.disconnect()
@@ -259,7 +262,12 @@ class RawImageIndexConnector(BaseConnector):
         store = self._require_store()
         return store._coverage_summary(conn=store._conn())
 
-    def _load_metadata(self, *, expected_fingerprint: str = "") -> dict[str, Any]:
+    def _load_metadata(
+        self,
+        *,
+        expected_fingerprint: str = "",
+        expected_index_roots: str = "",
+    ) -> dict[str, Any]:
         rows = self._require_store()._conn().execute(
             "SELECT key, value FROM raw_index_metadata"
         ).fetchall()
@@ -276,11 +284,18 @@ class RawImageIndexConnector(BaseConnector):
                 "stale raw index fingerprint mismatch: expected "
                 f"{expected_fingerprint}, found {fingerprint or 'missing'}"
             )
+        index_roots = str(meta.get("index_roots") or "")
+        if expected_index_roots and index_roots != expected_index_roots:
+            raise RuntimeError(
+                "stale raw index roots mismatch: expected "
+                f"{expected_index_roots}, found {index_roots or 'missing'}"
+            )
         return {
             "source_type": "raw_image_sidecar",
             "source_path": self._path,
             "schema_version": version,
             "raw_image_fingerprint": fingerprint,
+            "index_roots": index_roots,
         }
 
     def _require_store(self) -> RawIndexStore:
@@ -301,6 +316,25 @@ def _has_untimed_timeline_candidate(
         keyword_likes=keyword_likes,
         conn=conn,
     )
+
+
+def _normalize_index_roots(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return ",".join(
+            str(root).strip()
+            for root in value.split(",")
+            if str(root).strip()
+        )
+    try:
+        return ",".join(
+            str(root).strip()
+            for root in value
+            if str(root).strip()
+        )
+    except TypeError:
+        return str(value).strip()
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:

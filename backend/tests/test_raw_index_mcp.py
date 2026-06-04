@@ -701,6 +701,64 @@ def test_build_raw_file_index_rebuilds_empty_existing_sidecar(monkeypatch, tmp_p
     assert search["total"] == 1
 
 
+def test_build_raw_file_index_rebuilds_sidecar_with_mismatched_roots(monkeypatch, tmp_path):
+    from core.raw_index.store import RawIndexStore
+
+    state = _State()
+    image = _StubImage()
+    cache_root = tmp_path / "cache"
+    fingerprint = mcp_bridge._raw_image_index_fingerprint(image.get_metadata())
+    db_path = mcp_bridge._raw_index_db_path(fingerprint, ["/c:"], str(cache_root))
+    store = RawIndexStore(db_path)
+    store.open()
+    store._conn().execute(
+        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("raw_image_fingerprint", fingerprint),
+    )
+    store._conn().execute(
+        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("index_roots", "/d:"),
+    )
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/d:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/d:",
+        source_path="/d:/stale.exe",
+        primary_path="/d:/stale.exe",
+        description="File System Entry /d:/stale.exe",
+        strings={"Name": "stale.exe", "Path": "/d:/stale.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(cache_root),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    search = state.captured["raw_index"].search(keyword="agent.exe")
+
+    assert result["status"] == "indexed"
+    assert result["indexed_files"] == 1
+    assert image.list_calls > 0
+    assert search["total"] == 1
+    assert search["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_build_raw_file_index_force_rebuild_replaces_existing_sidecar(monkeypatch, tmp_path):
     state = _State()
     image = _StubImage()

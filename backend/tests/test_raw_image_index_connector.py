@@ -651,3 +651,18 @@ def test_raw_image_index_connector_rejects_fingerprint_mismatch(tmp_path):
 
     with pytest.raises(RuntimeError, match="fingerprint mismatch"):
         connector.connect(str(db_path), expected_fingerprint="fingerprint-b")
+
+
+def test_raw_image_index_connector_rejects_index_roots_mismatch(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+            ("index_roots", "/d:"),
+        )
+
+    connector = RawImageIndexConnector()
+
+    with pytest.raises(RuntimeError, match="index roots mismatch"):
+        connector.connect(str(db_path), expected_index_roots=["/c:"])
