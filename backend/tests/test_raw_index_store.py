@@ -1352,6 +1352,8 @@ def test_search_reports_parser_failures_as_not_evaluable(tmp_path):
         offset=0,
     )
 
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
     assert result["total"] == 0
     assert result["total_is_estimated"] is False
     assert result["coverage"]["status"] == "not_evaluable"

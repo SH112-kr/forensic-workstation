@@ -267,7 +267,7 @@ class RawIndexStore:
                     if not candidate_ids:
                         if start_date or end_date:
                             strategy["date_filter"] = "artifact_times"
-                        return {
+                        return _attach_search_coverage_status({
                             "total": 0,
                             "total_estimated": 0,
                             "total_is_estimated": False,
@@ -279,7 +279,7 @@ class RawIndexStore:
                             "coverage": self._coverage_summary(conn=conn),
                             "search_strategy": strategy,
                             "hits": [],
-                        }
+                        })
                     placeholders = ",".join("?" * len(candidate_ids))
                     where.append(f"a.artifact_id IN ({placeholders})")
                     params.extend(candidate_ids)
@@ -300,7 +300,7 @@ class RawIndexStore:
                     if not candidate_ids:
                         if start_date or end_date:
                             strategy["date_filter"] = "artifact_times"
-                        return {
+                        return _attach_search_coverage_status({
                             "total": 0,
                             "total_estimated": 0,
                             "total_is_estimated": False,
@@ -312,7 +312,7 @@ class RawIndexStore:
                             "coverage": self._coverage_summary(conn=conn),
                             "search_strategy": strategy,
                             "hits": [],
-                        }
+                        })
                     placeholders = ",".join("?" * len(candidate_ids))
                     where.append(f"a.artifact_id IN ({placeholders})")
                     params.extend(candidate_ids)
@@ -379,7 +379,7 @@ class RawIndexStore:
         ).fetchone()[0]
         total = int(total)
         if limit <= 0 or offset >= total:
-            return {
+            return _attach_search_coverage_status({
                 "total": total,
                 "total_estimated": total,
                 "total_is_estimated": False,
@@ -391,7 +391,7 @@ class RawIndexStore:
                 "coverage": self._coverage_summary(conn=conn),
                 "search_strategy": strategy,
                 "hits": [],
-            }
+            })
         rows = conn.execute(
             f"""
             SELECT DISTINCT
@@ -407,7 +407,7 @@ class RawIndexStore:
         ).fetchall()
         artifact_ids = [int(row["artifact_id"]) for row in rows]
         hits = self._hydrate_hit_details(artifact_ids, rows, conn=conn)
-        return {
+        return _attach_search_coverage_status({
             "total": int(total),
             "total_estimated": int(total),
             "total_is_estimated": False,
@@ -419,7 +419,7 @@ class RawIndexStore:
             "coverage": self._coverage_summary(conn=conn),
             "search_strategy": strategy,
             "hits": hits,
-        }
+        })
 
     def get_hit_detail(self, artifact_id: int) -> dict[str, Any]:
         details = self._get_hit_details([artifact_id])
@@ -1166,6 +1166,19 @@ class RawIndexStore:
 def _id_chunks(values: list[int], size: int = 900) -> Iterator[list[int]]:
     for start in range(0, len(values), size):
         yield values[start:start + size]
+
+
+def _attach_search_coverage_status(result: dict[str, Any]) -> dict[str, Any]:
+    coverage = result.get("coverage")
+    if not isinstance(coverage, dict):
+        return result
+    status = str(coverage.get("status") or "")
+    if status == "not_evaluable":
+        result["ok"] = False
+        result["status"] = "not_evaluable"
+    elif status == "coverage_gap":
+        result.setdefault("status", "coverage_gap")
+    return result
 
 
 def _search_text_from_values(
