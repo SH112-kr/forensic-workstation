@@ -5730,6 +5730,50 @@ async def compare_case_image_entity(
         "image_path_hints": image_path_hints,
     }
     def fn():
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            hints = [x.strip() for x in image_path_hints.split(",") if x.strip()]
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "entity_value": entity_value,
+                "mfdb": {
+                    "total_hits": 0,
+                    "returned_hits": 0,
+                    "artifact_types": [],
+                    "candidate_paths": hints,
+                },
+                "mounted_image": {
+                    "checked_paths": 0,
+                    "present_count": 0,
+                    "missing_count": 0,
+                    "disk_checks": [],
+                },
+                "joined_assessment": {
+                    "has_artifact_history": False,
+                    "has_current_disk_presence": False,
+                    "executed_then_missing_suspected": False,
+                },
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_case_image_compare_unsupported",
+                    "detail": (
+                        "compare_case_image_entity is defined as a parsed "
+                        "MFDB/KAPE artifact-history to mounted-image presence "
+                        "join. The active raw sidecar is not a parsed-case "
+                        "history source for this comparison yet."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "No mounted-image paths were checked in this mode. "
+                        "Do not infer absence of current disk presence or "
+                        "artifact history from this unsupported comparison."
+                    ),
+                ],
+            })
         axiom = _get_axiom()
         e01 = _get_e01()
         search_result = axiom.search(
