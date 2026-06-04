@@ -655,6 +655,31 @@ async def open_case(path: str, case_name: str = "") -> dict:
 
 
 @mcp.tool()
+async def open_raw_index(path: str) -> dict:
+    """Open a raw image sidecar index as the active raw-index connector.
+
+    Reading guide for AI consumers:
+    - This opens an existing sidecar index, not the raw image itself.
+    - Stale or mismatched sidecars must be treated as not_evaluable until rebuilt.
+    - AXIOM/KAPE parity references should remain available during migration.
+    """
+    def fn():
+        from core.connectors.raw_image_index import RawImageIndexConnector
+
+        c = RawImageIndexConnector()
+        meta = c.connect(path)
+        app_state.set("raw_index", c)
+        return meta
+
+    return await _traced(
+        "open_raw_index",
+        {"path": path},
+        fn,
+        timeout_seconds=TIMEOUT_LIGHT,
+    )
+
+
+@mcp.tool()
 async def server_runtime_info() -> dict:
     """Show MCP server runtime/version state for stale-session diagnostics."""
     return await _traced("server_runtime_info", {}, lambda: _runtime_status(), timeout_seconds=TIMEOUT_LIGHT)
