@@ -496,6 +496,13 @@ def _get_axiom() -> AxiomMfdbConnector:
 
 # ── Masking Tools ──
 
+def _get_raw_index():
+    c = _connectors.get("raw_index")
+    if c and c.is_connected():
+        return c
+    return None
+
+
 def _parsed_case_loaded() -> bool:
     return any(
         (name == "axiom" or name.startswith("axiom:"))
@@ -881,6 +888,14 @@ async def get_summary() -> dict:
 async def get_artifact_types() -> dict:
     """List artifact types with counts."""
     def fn():
+        raw = _get_raw_index()
+        if raw:
+            types = raw.get_artifact_type_counts()
+            return _mask({
+                "source_type": "raw_image_sidecar",
+                "artifact_types": types,
+                "total_types": len(types),
+            })
         types = _get_axiom().get_artifact_type_counts()
         return _mask({"artifact_types": types, "total_types": len(types)})
     return await _traced("get_artifact_types", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
@@ -1071,9 +1086,93 @@ async def search_artifacts(
                 artifact_type=artifact_type, start_date=start_date, end_date=end_date,
                 limit_per_case=cap, global_limit=cap, global_offset=offset,
             ))
-        axiom = _get_axiom()
         cap = min(limit, config.search_max_limit)
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
+        raw = _get_raw_index()
+        if raw:
+            if start_date or end_date:
+                return _mask({
+                    "ok": False,
+                    "source_type": "raw_image_sidecar",
+                    "status": "not_evaluable",
+                    "error": "Date-filtered raw artifact search is not implemented for this sidecar connector.",
+                    "coverage_gap": {
+                        "status": "not_evaluable",
+                        "reason": "raw_search_date_filter_not_supported",
+                    },
+                    "suggested_tool": "build_timeline",
+                })
+
+            field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []
+            if kw_list:
+                all_hits = {}
+                per_keyword_totals = {}
+                truncated_keywords = []
+                for kw in kw_list:
+                    result = raw.search(
+                        keyword=kw,
+                        filters={"artifact_type": artifact_type},
+                        limit=cap,
+                        offset=0,
+                    )
+                    per_keyword_totals[kw] = result.get("total", 0)
+                    if result.get("truncated"):
+                        truncated_keywords.append(kw)
+                    for h in result.get("hits", []):
+                        hid = h.get("hit_id")
+                        if hid not in all_hits:
+                            all_hits[hid] = h
+                            all_hits[hid]["_matched_keyword"] = kw
+                if truncated_keywords:
+                    return _mask({
+                        "ok": False,
+                        "source_type": "raw_image_sidecar",
+                        "status": "not_evaluable",
+                        "error": "Raw multi-keyword search hit pagination truncated before exact union could be computed.",
+                        "coverage_gap": {
+                            "status": "not_evaluable",
+                            "reason": "raw_multi_keyword_union_truncated",
+                            "keywords": truncated_keywords,
+                        },
+                        "per_keyword_totals": per_keyword_totals,
+                    })
+                merged = sorted(all_hits.values(), key=lambda h: h.get("hit_id", 0))
+                page = merged[offset:offset + cap]
+                if field_list:
+                    for hit in page:
+                        if "fields" in hit:
+                            hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
+                return _mask({
+                    "source_type": "raw_image_sidecar",
+                    "total": len(merged),
+                    "total_estimated": len(merged),
+                    "total_is_estimated": False,
+                    "count_accuracy": "exact",
+                    "returned": len(page),
+                    "offset": offset,
+                    "limit": cap,
+                    "truncated": len(merged) > offset + len(page),
+                    "hits": page,
+                    "per_keyword_totals": per_keyword_totals,
+                    "union_returned": len(merged),
+                })
+
+            result = raw.search(
+                keyword=keyword,
+                filters={"artifact_type": artifact_type},
+                limit=cap,
+                offset=offset,
+            )
+            page = result.get("hits", [])
+            if field_list:
+                for hit in page:
+                    if "fields" in hit:
+                        hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
+            result = dict(result)
+            result["source_type"] = "raw_image_sidecar"
+            return _mask(result)
+
+        axiom = _get_axiom()
 
         if kw_list:
             # Multi-keyword OR search: union results from each keyword
@@ -1131,7 +1230,16 @@ async def search_artifacts(
 @mcp.tool()
 async def get_hit_detail(hit_id: int) -> dict:
     """Get full detail for a specific artifact hit."""
-    return await _traced("get_hit_detail", {"hit_id": hit_id}, lambda: _mask(_get_axiom().get_hit_detail(hit_id)), timeout_seconds=TIMEOUT_LIGHT)
+    def fn():
+        raw = _get_raw_index()
+        if raw:
+            detail = raw.get_hit_detail(hit_id)
+            if isinstance(detail, dict):
+                detail = dict(detail)
+                detail["source_type"] = "raw_image_sidecar"
+            return _mask(detail)
+        return _mask(_get_axiom().get_hit_detail(hit_id))
+    return await _traced("get_hit_detail", {"hit_id": hit_id}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
 @mcp.tool()
@@ -1179,6 +1287,24 @@ async def build_timeline(
                 artifact_types=type_list,
                 limit_per_case=cap, global_limit=cap, global_offset=offset,
             ))
+
+        raw = _get_raw_index()
+        if raw:
+            if kw_list:
+                return _mask({
+                    "ok": False,
+                    "source_type": "raw_image_sidecar",
+                    "status": "not_evaluable",
+                    "error": "Keyword-filtered raw timelines are not implemented for this sidecar connector.",
+                    "coverage_gap": {
+                        "status": "not_evaluable",
+                        "reason": "raw_timeline_keyword_filter_not_supported",
+                    },
+                })
+            result = raw.get_timeline(start_date, end_date, type_list, cap, offset)
+            result = dict(result)
+            result["source_type"] = "raw_image_sidecar"
+            return _mask(result)
 
         axiom = _get_axiom()
         if kw_list:
