@@ -3082,8 +3082,48 @@ async def hunt_evtx_rules(
                         reported so nothing silently disappears.
     """
     def fn():
-        from core.analysis.evtx_rules import hunt_evtx_rules as _hunt
+        from core.analysis.evtx_rules import BUILTIN_RULES, hunt_evtx_rules as _hunt
         ids = [r.strip() for r in rule_ids.split(",") if r.strip()] if rule_ids else None
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            requested_ids = ids or [str(rule.get("id", "")) for rule in BUILTIN_RULES]
+            raw_coverage = raw.get_coverage()
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "rule_pack": "builtin",
+                "rule_ids_requested": requested_ids,
+                "severity_min": severity_min,
+                "rules_evaluated": 0,
+                "rules_fired": 0,
+                "total_hits": 0,
+                "results": [],
+                "unevaluable_rules": [
+                    {
+                        "rule_id": rule_id,
+                        "coverage_status": "not_evaluable",
+                        "reason": "raw_evtx_hunt_unsupported",
+                    }
+                    for rule_id in requested_ids
+                ],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_evtx_hunt_unsupported",
+                    "detail": (
+                        "hunt_evtx_rules requires parsed Windows Event Log "
+                        "records. The active raw sidecar does not yet index "
+                        "EVTX rows, so no EVTX hunt rules were evaluated."
+                    ),
+                },
+                "raw_index_coverage": raw_coverage,
+                "notes": [
+                    (
+                        "Do not interpret this as no EVTX activity. Build raw "
+                        "EVTX indexing or use AXIOM/KAPE parity sources first."
+                    ),
+                ],
+            })
         return _mask(_hunt(_get_axiom().artifact_queries, rule_ids=ids,
                             severity_min=severity_min, limit_per_rule=limit_per_rule))
     return await _traced(
