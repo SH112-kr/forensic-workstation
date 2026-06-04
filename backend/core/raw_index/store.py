@@ -12,6 +12,7 @@ from core.raw_index.schema import initialize_schema
 
 
 MAX_FAST_CANDIDATE_IDS = 900
+RAW_INDEX_CACHE_SIZE_KIB = 32768
 
 
 class RawIndexStore:
@@ -43,6 +44,7 @@ class RawIndexStore:
             os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        self._configure_connection(self.conn)
         initialize_schema(self.conn)
         self._fts_available_cache = None
         self._search_text_current_cache_version = None
@@ -66,6 +68,10 @@ class RawIndexStore:
         if self.conn is None:
             raise RuntimeError("RawIndexStore is not open")
         return self.conn
+
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        conn.execute(f"PRAGMA cache_size = -{RAW_INDEX_CACHE_SIZE_KIB}")
+        conn.execute("PRAGMA temp_store = MEMORY")
 
     @contextmanager
     def batch(self) -> Iterator[None]:

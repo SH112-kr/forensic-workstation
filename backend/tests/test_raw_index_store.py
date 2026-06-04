@@ -12,6 +12,18 @@ def _ms(value: str) -> int:
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
 
 
+def test_store_open_configures_sidecar_connection_for_large_index_workloads(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    cache_size = store._conn().execute("PRAGMA cache_size").fetchone()[0]
+    temp_store = store._conn().execute("PRAGMA temp_store").fetchone()[0]
+
+    assert int(cache_size) <= -32768
+    assert int(temp_store) == 2
+
+
 def test_store_inserts_artifact_and_returns_exact_count(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
