@@ -1056,6 +1056,23 @@ async def get_summary() -> dict:
     """Get case overview."""
     def fn():
         if not _parsed_case_loaded():
+            raw = _get_raw_index()
+            if raw:
+                coverage = raw.get_coverage()
+                result = {
+                    "ok": True,
+                    "summary_scope": "raw_image_sidecar",
+                    "parsed_case_loaded": False,
+                    **raw.get_metadata(),
+                    "coverage": coverage,
+                }
+                coverage_status = str(coverage.get("status") or "")
+                if coverage_status == "not_evaluable":
+                    result["ok"] = False
+                    result["status"] = "not_evaluable"
+                elif coverage_status == "coverage_gap":
+                    result["status"] = "coverage_gap"
+                return _mask(result)
             guidance = _selected_evidence_guidance()
             if guidance.get("evidence_mode") != "no_selected_evidence":
                 return _mask({

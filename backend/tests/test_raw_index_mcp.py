@@ -207,6 +207,38 @@ def test_open_raw_index_reports_missing_sidecar_as_not_evaluable(monkeypatch, tm
     assert "raw_index" not in state.captured
 
 
+def test_get_summary_uses_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.get_summary())
+
+    assert result["ok"] is True
+    assert result["summary_scope"] == "raw_image_sidecar"
+    assert result["parsed_case_loaded"] is False
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage"]["status"] == "searched"
+    assert result["schema_version"]
+
+
+def test_get_summary_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.get_summary())
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["summary_scope"] == "raw_image_sidecar"
+    assert result["coverage"]["status"] == "not_evaluable"
+    assert result["coverage"]["gaps"][0]["error"] == "simulated parser failure"
+
+
 def test_search_artifacts_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
