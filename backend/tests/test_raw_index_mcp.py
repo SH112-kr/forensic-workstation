@@ -1038,6 +1038,53 @@ def test_hunt_evtx_rules_preserves_raw_index_not_evaluable_coverage(
     assert result["results"] == []
 
 
+def test_detect_anti_forensics_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.detect_anti_forensics(max_details_per_rule=7))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["detail_cap_per_rule"] == 7
+    assert result["rules_fired"] == 0
+    assert result["total_hits"] == 0
+    assert result["rules"] == []
+    assert result["coverage_gap"]["reason"] == "raw_anti_forensics_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_detect_anti_forensics_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.detect_anti_forensics())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_anti_forensics_unsupported"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["rules"] == []
+
+
 class _State:
     def __init__(self):
         self.captured = {}

@@ -3177,6 +3177,44 @@ async def detect_anti_forensics(max_details_per_rule: int = 50) -> dict:
     """
     def fn():
         from core.analysis.anti_forensics import detect_anti_forensics as _run
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            raw_coverage = raw.get_coverage()
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "rules_fired": 0,
+                "total_hits": 0,
+                "detail_cap_per_rule": max_details_per_rule,
+                "any_rule_truncated": False,
+                "rules": [],
+                "unevaluable_rules": [
+                    {
+                        "rule_name": "raw_sidecar_anti_forensics",
+                        "coverage_status": "not_evaluable",
+                        "reason": "raw_anti_forensics_unsupported",
+                    },
+                ],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_anti_forensics_unsupported",
+                    "detail": (
+                        "detect_anti_forensics requires parsed EVTX, process "
+                        "creation, PowerShell/scriptblock, service, registry, "
+                        "and Prefetch-style artifacts. The active raw sidecar "
+                        "does not yet expose those anti-forensic substrates."
+                    ),
+                },
+                "raw_index_coverage": raw_coverage,
+                "notes": [
+                    (
+                        "Do not interpret this as no anti-forensic activity. "
+                        "Use raw EVTX/registry parsing or AXIOM/KAPE parity "
+                        "sources before drawing absence conclusions."
+                    ),
+                ],
+            })
         return _mask(_run(
             _get_axiom().artifact_queries,
             max_details_per_rule=max_details_per_rule,
