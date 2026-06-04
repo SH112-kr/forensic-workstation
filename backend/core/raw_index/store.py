@@ -29,7 +29,7 @@ class RawIndexStore:
         self._fts_current_cache: bool | None = None
         self._fast_candidate_cache_version: int | None = None
         self._fast_candidate_cache: dict[
-            tuple[tuple[str, ...], tuple[str, ...]], tuple[list[int] | None, str]
+            tuple[str, ...], tuple[list[int] | None, str]
         ] = {}
         self._artifact_type_counts_cache_version: int | None = None
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
@@ -972,10 +972,7 @@ class RawIndexStore:
             return None, "fts_unavailable"
         if not self._fts_count_current(conn=conn):
             return None, "stale_fts"
-        cache_key = (
-            tuple(str(keyword or "") for keyword in keywords),
-            tuple(str(pattern or "") for pattern in like_patterns),
-        )
+        cache_key = tuple(sorted(set(str(pattern or "") for pattern in like_patterns)))
         current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             if self._fast_candidate_cache_version != current_data_version:
