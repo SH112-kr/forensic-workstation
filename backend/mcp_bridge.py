@@ -857,14 +857,16 @@ async def build_raw_file_index(
         connector = RawImageIndexConnector()
         meta = connector.connect(db_path, expected_fingerprint=fingerprint)
         app_state.set("raw_index", connector)
+        indexer_status = str(result.get("status") or "")
         return {
             "ok": True,
-            "status": "indexed",
+            "status": "indexed" if indexer_status == "completed" else indexer_status,
             "source_type": meta["source_type"],
             "db_path": db_path,
             "fingerprint": fingerprint,
             "indexed_files": int(result.get("indexed_files", 0)),
             "coverage_gaps": result.get("coverage_gaps", []),
+            "coverage": connector.get_coverage(),
             "artifact_type_counts": connector.get_artifact_type_counts(),
             "performance": {
                 "sidecar_reused": False,

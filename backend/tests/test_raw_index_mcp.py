@@ -290,6 +290,24 @@ class _MultiRootImage(_StubImage):
         return []
 
 
+class _PartialImage(_StubImage):
+    def list_directory(self, path="/"):
+        self.list_calls += 1
+        if path == "/c:":
+            return [
+                {
+                    "name": "agent.exe",
+                    "path": "/c:/Tools/agent.exe",
+                    "is_dir": False,
+                    "size": 42,
+                },
+                {"name": "Broken", "path": "/c:/Broken", "is_dir": True},
+            ]
+        if path == "/c:/Broken":
+            return [{"error": "simulated unreadable directory"}]
+        return []
+
+
 def test_build_raw_file_index_indexes_mounted_image(monkeypatch, tmp_path):
     state = _State()
     image = _StubImage()
@@ -312,6 +330,29 @@ def test_build_raw_file_index_indexes_mounted_image(monkeypatch, tmp_path):
     assert search["total"] == 1
     assert search["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
     assert "raw_index" in state.captured
+
+
+def test_build_raw_file_index_preserves_partial_status(monkeypatch, tmp_path):
+    state = _State()
+    image = _PartialImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    search = state.captured["raw_index"].search(keyword="agent.exe")
+
+    assert result["ok"] is True
+    assert result["status"] == "partial"
+    assert result["indexed_files"] == 1
+    assert result["coverage"]["status"] == "coverage_gap"
+    assert result["coverage_gaps"][0]["path"] == "/c:/Broken"
+    assert search["total"] == 1
+    assert search["coverage"]["status"] == "coverage_gap"
 
 
 def test_build_raw_file_index_propagates_indexer_not_evaluable(monkeypatch, tmp_path):
