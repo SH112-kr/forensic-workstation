@@ -267,6 +267,11 @@ class _StubImage:
 
 
 class _MultiRootImage(_StubImage):
+    def get_metadata(self):
+        meta = super().get_metadata()
+        meta["volumes"] = ["/c:", "/d:"]
+        return meta
+
     def list_directory(self, path="/"):
         self.list_calls += 1
         if path == "/c:":
@@ -597,6 +602,27 @@ def test_build_raw_file_index_reuses_sidecar_for_backslash_drive_root(monkeypatc
     assert second["status"] == "opened_existing"
     assert second["db_path"] == first["db_path"]
     assert image.list_calls == first_call_count
+
+
+def test_build_raw_file_index_rejects_roots_missing_from_volume_metadata(monkeypatch, tmp_path):
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/z:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_index_root_not_in_mounted_volumes"
+    assert result["coverage_gap"]["missing_roots"] == ["/z:"]
+    assert image.list_calls == 0
+    assert "raw_index" not in state.captured
 
 
 def test_build_raw_file_index_reuse_checks_coverage_without_search(monkeypatch, tmp_path):

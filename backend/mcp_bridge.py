@@ -746,6 +746,32 @@ async def build_raw_file_index(
         image_meta = image.get_metadata()
         fingerprint = _raw_image_index_fingerprint(image_meta)
         root_values = _parse_raw_index_roots(roots)
+        missing_roots, available_roots = _raw_index_missing_volume_roots(
+            root_values,
+            image_meta,
+        )
+        if missing_roots:
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "fingerprint": fingerprint,
+                "error": (
+                    "Requested raw index roots are not present in mounted "
+                    f"image volumes: {', '.join(missing_roots)}"
+                ),
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_index_root_not_in_mounted_volumes",
+                    "requested_roots": root_values,
+                    "available_roots": available_roots,
+                    "missing_roots": missing_roots,
+                },
+                "performance": {
+                    "sidecar_reused": False,
+                    "reindexed": False,
+                },
+            }
         db_path = _raw_index_db_path(fingerprint, root_values, cache_root)
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
@@ -894,6 +920,32 @@ def _parse_raw_index_roots(roots: str) -> list[str]:
     return values or ["/c:"]
 
 
+def _raw_index_missing_volume_roots(
+    root_values: list[str],
+    image_meta: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    available_roots = sorted(
+        dict.fromkeys(
+            root
+            for root in (
+                _raw_index_drive_root(volume)
+                for volume in image_meta.get("volumes", [])
+            )
+            if root
+        ),
+        key=str.lower,
+    )
+    if not available_roots:
+        return [], []
+    available = set(available_roots)
+    missing = [
+        root
+        for root in root_values
+        if (drive_root := _raw_index_drive_root(root)) and drive_root not in available
+    ]
+    return missing, available_roots
+
+
 def _canonical_raw_index_root(root: str) -> str:
     value = root.rstrip("/\\")
     if len(value) == 2 and value[1] == ":":
@@ -901,6 +953,15 @@ def _canonical_raw_index_root(root: str) -> str:
     if len(value) == 3 and value[0] == "/" and value[2] == ":":
         return f"/{value[1].lower()}:"
     return root
+
+
+def _raw_index_drive_root(value: Any) -> str:
+    text = str(value).strip().replace("\\", "/")
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return f"/{text[0].lower()}:"
+    if len(text) >= 3 and text[0] == "/" and text[2] == ":" and text[1].isalpha():
+        return f"/{text[1].lower()}:"
+    return ""
 
 
 def _raw_image_index_fingerprint(image_meta: dict[str, Any]) -> str:
