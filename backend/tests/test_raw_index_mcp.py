@@ -79,6 +79,30 @@ def _seed_multi_keyword_raw_connector(db_path):
     return connector
 
 
+def _seed_failed_raw_connector(db_path):
+    from core.connectors.raw_image_index import RawImageIndexConnector
+    from core.raw_index.store import RawIndexStore
+
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.finish_parser_run(
+        run_id,
+        status="failed",
+        coverage_status="not_evaluable",
+        finished_at="2026-06-04T00:00:01Z",
+        error="simulated parser failure",
+    )
+    store.close()
+    connector = RawImageIndexConnector()
+    connector.connect(str(db_path))
+    return connector
+
+
 def test_open_raw_index_sets_raw_connector(monkeypatch, tmp_path):
     from core.raw_index.store import RawIndexStore
 
@@ -217,6 +241,21 @@ def test_get_artifact_types_uses_active_raw_index(monkeypatch, tmp_path):
     assert result["total_types"] == 1
     assert result["artifact_types"][0]["artifact_name"] == "File System Entry"
     assert result["artifact_types"][0]["count_accuracy"] == "exact"
+
+
+def test_get_artifact_types_preserves_raw_index_not_evaluable_coverage(monkeypatch, tmp_path):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.get_artifact_types())
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["total_types"] == 0
+    assert result["coverage"]["status"] == "not_evaluable"
+    assert result["coverage"]["gaps"][0]["error"] == "simulated parser failure"
 
 
 def test_build_timeline_uses_active_raw_index(monkeypatch, tmp_path):

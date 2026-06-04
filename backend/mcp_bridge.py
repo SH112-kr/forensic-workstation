@@ -1081,11 +1081,20 @@ async def get_artifact_types() -> dict:
         raw = _get_raw_index()
         if raw:
             types = raw.get_artifact_type_counts()
-            return _mask({
+            coverage = raw.get_coverage()
+            result = {
                 "source_type": "raw_image_sidecar",
                 "artifact_types": types,
                 "total_types": len(types),
-            })
+                "coverage": coverage,
+            }
+            coverage_status = str(coverage.get("status") or "")
+            if coverage_status == "not_evaluable":
+                result["ok"] = False
+                result["status"] = "not_evaluable"
+            elif coverage_status == "coverage_gap":
+                result["status"] = "coverage_gap"
+            return _mask(result)
         types = _get_axiom().get_artifact_type_counts()
         return _mask({"artifact_types": types, "total_types": len(types)})
     return await _traced("get_artifact_types", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
