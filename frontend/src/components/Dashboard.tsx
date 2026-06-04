@@ -133,10 +133,10 @@ export default function Dashboard() {
 
   if (!caseInfo) return null;
 
-  // E01 / memory direct-analysis mode — no AXIOM artifacts available
+  // Disk / memory direct-analysis mode — no AXIOM artifacts available
   if (isDirectMode) {
     const isE01 = caseInfo.case_mode === 'e01';
-    const modeLabel = isE01 ? 'Disk Image (E01)' : 'Memory Dump';
+    const modeLabel = isE01 ? 'Disk Image' : 'Memory Dump';
     const quickActions: { label: string; view: string; desc: string }[] = isE01
       ? [
           { label: 'Binary Analysis', view: 'binary', desc: 'Extract & Ghidra-analyze files from image' },

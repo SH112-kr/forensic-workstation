@@ -8,16 +8,14 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from state import IMAGE_EXTENSIONS
+
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 # Allowed extensions
 FORENSIC_EXTENSIONS = {
     ".mfdb": "AXIOM Case",
-    ".e01": "Disk Image",
-    ".ex01": "Disk Image",
-    ".vmdk": "Disk Image",
-    ".dd": "Disk Image",
-    ".img": "Disk Image",
+    **{ext: "Disk Image" for ext in IMAGE_EXTENSIONS},
     ".raw": "Memory Dump",
     ".vmem": "Memory Dump",
     ".dmp": "Memory Dump",

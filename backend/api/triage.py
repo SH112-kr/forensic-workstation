@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from state import IMAGE_EXTENSIONS, load_active_case, load_allowed_evidence
 
 router = APIRouter(prefix="/api/triage", tags=["triage"])
 
@@ -30,6 +31,56 @@ class TriageRequest(BaseModel):
     case_name: str = ""
     output_dir: str = ""
     vss: bool = True
+
+
+_ANALYSIS_OUTPUT_DIRNAME = "forensic-workstation-output"
+
+
+def _default_analysis_output_root() -> str:
+    candidates: list[str] = []
+
+    def add(path: str) -> None:
+        value = str(path or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    active = load_active_case()
+    if active:
+        for entry in [active, *active.get("all_cases", [])]:
+            add(entry.get("path", ""))
+            for loc in entry.get("evidence_locations", []) or []:
+                add(loc)
+
+    for path in load_allowed_evidence().get("paths", []):
+        if str(path).lower().endswith(IMAGE_EXTENSIONS) or os.path.isdir(str(path)):
+            add(str(path))
+
+    for candidate in candidates:
+        path = os.path.abspath(candidate)
+        if os.path.isfile(path):
+            target_dir = os.path.dirname(path)
+        elif os.path.isdir(path):
+            target_dir = path
+        else:
+            continue
+        root = os.path.join(target_dir, _ANALYSIS_OUTPUT_DIRNAME)
+        try:
+            os.makedirs(root, exist_ok=True)
+        except OSError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot create analysis output directory beside selected evidence: {root}. "
+                    "Choose a writable output_dir or grant write access to the evidence folder."
+                ),
+            ) from e
+        return root
+
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_dir = os.path.dirname(backend_dir)
+    root = os.path.join(project_dir, "export")
+    os.makedirs(root, exist_ok=True)
+    return root
 
 
 def _count_parsed_files(parsed_dir: str) -> dict:
@@ -337,13 +388,11 @@ async def run_triage(req: TriageRequest):
     drive = req.source_drive.rstrip(":\\/") + ":\\"
     datestamp = datetime.now().strftime("%Y%m%d")
     cname = req.case_name or "case"
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    project_dir = os.path.dirname(backend_dir)
 
     if req.output_dir:
         out_dir = req.output_dir
     else:
-        out_dir = os.path.join(project_dir, "export", f"{datestamp}_{cname}")
+        out_dir = os.path.join(_default_analysis_output_root(), f"{datestamp}_{cname}")
 
     collected_dir = os.path.join(out_dir, "collected")
     parsed_dir = os.path.join(out_dir, "parsed")

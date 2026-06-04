@@ -43,6 +43,7 @@ from core.analysis.masker import DataMasker
 from core.config import config
 from core.dependencies import dependency_report, diagnose_exception
 from state import (
+    IMAGE_EXTENSIONS,
     app_state,
     build_not_allowed_message,
     is_path_allowed,
@@ -1901,7 +1902,7 @@ async def service_persistence_gate(
             service name, image path, ServiceDll, or registry path.
         include_parsed_case: Use the active parsed case's System Services
             artifact if available.
-        include_mounted_image: Use the mounted E01/VMDK/raw image SYSTEM hive
+        include_mounted_image: Use the mounted disk image SYSTEM hive
             if available.
         verify_payload_files: Re-check candidate payload paths with the
             mounted image using get_file_info-style timestamp evidence.
@@ -2854,13 +2855,23 @@ async def generate_report(output_path: str = "") -> dict:
     """Generate HTML investigation report."""
     def fn():
         from core.analysis.report_generator import generate_report as _gen
-        return _gen({"axiom": _get_axiom()}, _masker, output_path)
+        target_path = output_path
+        if not target_path:
+            out_dir = _analysis_output_dir("reports")
+            target_path = os.path.join(
+                out_dir,
+                f"report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.html",
+            )
+        result = _gen({"axiom": _get_axiom()}, _masker, target_path)
+        if isinstance(result, dict):
+            result["analysis_output"] = _analysis_output_context(create=False)
+        return result
     return await _traced("generate_report", {"output_path": output_path}, fn)
 
 
-# ── E01 Image Tools ──
+# ── Disk Image Tools ──
 
-_EXTRACT_DIR = os.path.join(os.path.dirname(__file__), "extracted")
+_ANALYSIS_OUTPUT_DIRNAME = "forensic-workstation-output"
 
 
 def _get_e01() -> E01ImageConnector:
@@ -2897,6 +2908,115 @@ def _workspace_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _output_target_candidates() -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+
+    def add(path: str, source: str) -> None:
+        value = str(path or "").strip()
+        if not value:
+            return
+        norm = os.path.normcase(os.path.abspath(value))
+        if any(item.get("norm") == norm for item in candidates):
+            return
+        candidates.append({"path": value, "source": source, "norm": norm})
+
+    e01 = _connectors.get("e01")
+    if e01 is not None and e01.is_connected():
+        try:
+            add(str(e01.get_metadata().get("image_path", "")), "mounted_image")
+        except Exception:
+            pass
+
+    try:
+        selected = resolve_image_evidence("").get("path", "")
+        add(selected, "selected_image")
+    except Exception:
+        pass
+
+    try:
+        active = load_active_case()
+    except Exception:
+        active = {}
+    for entry in [active, *active.get("all_cases", [])] if isinstance(active, dict) else []:
+        add(str(entry.get("path", "")), "active_case")
+        for loc in entry.get("evidence_locations", []) or []:
+            add(str(loc), "active_case_evidence")
+
+    try:
+        allowed = load_allowed_evidence().get("paths", [])
+    except Exception:
+        allowed = []
+    for path in allowed:
+        add(str(path), "allowed_evidence")
+
+    return candidates
+
+
+def _analysis_output_context(create: bool = False) -> dict[str, Any]:
+    for candidate in _output_target_candidates():
+        path = os.path.abspath(candidate["path"])
+        if os.path.isfile(path):
+            target_dir = os.path.dirname(path)
+        elif os.path.isdir(path):
+            target_dir = path
+        else:
+            continue
+        root = os.path.join(target_dir, _ANALYSIS_OUTPUT_DIRNAME)
+        if create:
+            try:
+                os.makedirs(root, exist_ok=True)
+            except OSError as e:
+                raise RuntimeError(
+                    f"Cannot create analysis output directory beside selected evidence: {root}. "
+                    "Choose a writable output_dir or grant write access to the evidence folder."
+                ) from e
+        return {
+            "root": root,
+            "target_path": path,
+            "target_dir": target_dir,
+            "target_source": candidate.get("source", ""),
+            "fallback_to_workspace": False,
+        }
+
+    root = os.path.join(_workspace_root(), "export")
+    if create:
+        os.makedirs(root, exist_ok=True)
+    return {
+        "root": root,
+        "target_path": "",
+        "target_dir": "",
+        "target_source": "",
+        "fallback_to_workspace": True,
+        "fallback_reason": "No existing selected evidence or active case folder was available.",
+    }
+
+
+def _analysis_output_dir(*parts: str, create: bool = True) -> str:
+    root = _analysis_output_context(create=create)["root"]
+    path = os.path.join(root, *[str(part) for part in parts if str(part)])
+    if create:
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(
+                f"Cannot create analysis output directory: {path}. "
+                "Choose a writable output_dir or grant write access to the evidence folder."
+            ) from e
+    return path
+
+
+def _analysis_relative_path(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return os.path.relpath(path, _analysis_output_context(create=False)["root"])
+    except Exception:
+        try:
+            return os.path.relpath(path, _workspace_root())
+        except Exception:
+            return path
+
+
 def _evidence_context(
     input_ref: str = "",
     result_source: str = "",
@@ -2931,7 +3051,7 @@ def _evidence_context(
     }
     allowed_images = [
         path for path in load_allowed_evidence().get("paths", [])
-        if str(path).lower().endswith((".e01", ".ex01", ".vmdk", ".raw", ".dd"))
+        if str(path).lower().endswith(IMAGE_EXTENSIONS)
     ]
     selected_image = resolve_image_evidence(input_ref)
     warnings: list[str] = []
@@ -2955,6 +3075,7 @@ def _evidence_context(
         "selected_image": selected_image,
         "mounted_image": mounted,
         "active_parsed_case": active_case,
+        "analysis_output": _analysis_output_context(create=False),
         "allowed_image_count": len(allowed_images),
         "source_separation": {
             "parsed_case_configured": active_case["configured"],
@@ -2982,7 +3103,7 @@ def _selected_evidence_guidance(input_ref: str = "active_image") -> dict[str, An
     allowed = load_allowed_evidence().get("paths", [])
     allowed_images = [
         path for path in allowed
-        if str(path).lower().endswith((".e01", ".ex01", ".vmdk", ".raw", ".dd"))
+        if str(path).lower().endswith(IMAGE_EXTENSIONS)
     ]
     allowed_cases = [
         path for path in allowed
@@ -3060,8 +3181,16 @@ def _is_safe_local_analysis_path(path: str) -> bool:
     if not path:
         return False
     norm = os.path.normcase(os.path.abspath(path))
-    root = os.path.normcase(_workspace_root())
-    return is_path_allowed(path) or norm.startswith(root)
+    root = os.path.normcase(os.path.abspath(_workspace_root()))
+    output_root = os.path.normcase(os.path.abspath(_analysis_output_context(create=False)["root"]))
+
+    def under(candidate: str, parent: str) -> bool:
+        try:
+            return os.path.commonpath([candidate, parent]) == parent
+        except Exception:
+            return False
+
+    return is_path_allowed(path) or under(norm, root) or under(norm, output_root)
 
 
 def _safe_artifact_filename(path: str, fallback: str = "artifact") -> str:
@@ -3070,6 +3199,100 @@ def _safe_artifact_filename(path: str, fallback: str = "artifact") -> str:
     digest = hashlib.sha1(str(path).encode("utf-8", errors="ignore")).hexdigest()[:10]
     base, ext = os.path.splitext(name)
     return f"{base or fallback}_{digest}{ext}"
+
+
+_DOCUMENT_CONTENT_EXTENSIONS = {
+    ".doc",
+    ".docx",
+    ".docm",
+    ".dot",
+    ".dotx",
+    ".xls",
+    ".xlsx",
+    ".xlsm",
+    ".ppt",
+    ".pptx",
+    ".pptm",
+    ".hwp",
+    ".hwpx",
+    ".pdf",
+    ".rtf",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".txt",
+    ".text",
+    ".md",
+}
+
+
+def _is_document_content_path(path: str) -> bool:
+    return os.path.splitext(str(path or "").replace("\\", "/").rstrip("/"))[1].lower() in _DOCUMENT_CONTENT_EXTENSIONS
+
+
+def _document_content_reason(document_access_reason: str) -> str:
+    return str(document_access_reason or "").strip()
+
+
+def _document_content_access_allowed(document_access_approved: bool, document_access_reason: str) -> bool:
+    return bool(document_access_approved) and bool(_document_content_reason(document_access_reason))
+
+
+def _document_content_access_context(
+    path: str,
+    operation: str,
+    source: str,
+    document_access_reason: str,
+) -> dict[str, Any]:
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    return {
+        "policy": "document_content_permissioned_access",
+        "approved": True,
+        "reason": _document_content_reason(document_access_reason),
+        "operation": operation,
+        "path": path,
+        "extension": ext,
+        "source": source,
+        "scope": "limited extraction or static inspection only",
+        "guardrails": {
+            "default_blocked": True,
+            "requires_explicit_analyst_approval": True,
+            "document_body_minimization_required": True,
+            "do_not_quote_full_document_content": True,
+            "permission_is_not_a_verdict": True,
+        },
+    }
+
+
+def _document_content_access_block(path: str, operation: str, source: str = "mounted_image") -> dict[str, Any]:
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    return {
+        "ok": False,
+        "error": (
+            "Document content access is blocked by default. Re-run with "
+            "document_access_approved=True and a non-empty document_access_reason "
+            "only when analyst approval exists."
+        ),
+        "blocked_by_policy": "document_content_no_open",
+        "operation": operation,
+        "path": path,
+        "extension": ext,
+        "source": source,
+        "approval_required": True,
+        "approval_parameters": {
+            "document_access_approved": "boolean true after explicit analyst approval",
+            "document_access_reason": "non-empty reason describing the narrow investigative need",
+        },
+        "allowed_alternatives": [
+            "list_files for path/existence",
+            "get_file_timestamps or vss_get_file_timestamps for timestamps",
+            "metadata-only artifact searches that do not extract or display document body content",
+        ],
+        "policy_note": (
+            "Document-like files such as DOCX/HWP/PDF/TXT are not extracted or read by default. "
+            "Permissioned access is limited to the approved investigative purpose and is not a verdict."
+        ),
+    }
 
 
 def _evidence_bound_export_path(subdir: str, internal_path: str, fallback: str) -> str:
@@ -3081,7 +3304,7 @@ def _evidence_bound_export_path(subdir: str, internal_path: str, fallback: str) 
             image_path = str(e01.get_metadata().get("image_path", ""))
         except Exception:
             image_path = ""
-    out_dir = os.path.join(_workspace_root(), "export", subdir)
+    out_dir = _analysis_output_dir(subdir)
     os.makedirs(out_dir, exist_ok=True)
     filename = _safe_artifact_filename(f"{image_path}::{internal_path}", fallback=fallback)
     fallback_ext = os.path.splitext(fallback)[1]
@@ -3090,8 +3313,20 @@ def _evidence_bound_export_path(subdir: str, internal_path: str, fallback: str) 
     return os.path.join(out_dir, filename)
 
 
-def _materialize_local_artifact(path: str, subdir: str) -> dict[str, Any]:
+def _materialize_local_artifact(
+    path: str,
+    subdir: str,
+    document_access_approved: bool = False,
+    document_access_reason: str = "",
+    document_access_operation: str = "materialize_local_artifact",
+) -> dict[str, Any]:
     """Return a local path for either a local file or a mounted-image path."""
+    is_document = _is_document_content_path(path)
+    if is_document and not _document_content_access_allowed(document_access_approved, document_access_reason):
+        return {
+            **_document_content_access_block(path, document_access_operation),
+            "evidence_context": _evidence_context(path, "blocked_document_content", internal_path=path),
+        }
     if os.path.exists(path):
         if not _is_safe_local_analysis_path(path):
             return {
@@ -3100,15 +3335,23 @@ def _materialize_local_artifact(path: str, subdir: str) -> dict[str, Any]:
                 "evidence_context": _evidence_context(path, "blocked_local_file", local_path=path),
             }
         local_path = os.path.abspath(path)
-        return {
+        result = {
             "ok": True,
             "source": "local_file",
             "local_path": local_path,
             "evidence_context": _evidence_context(path, "local_file", local_path=local_path),
         }
+        if is_document:
+            result["document_access"] = _document_content_access_context(
+                path,
+                document_access_operation,
+                "local_file",
+                document_access_reason,
+            )
+        return result
 
     e01 = _get_e01()
-    out_dir = os.path.join(_workspace_root(), "export", subdir)
+    out_dir = _analysis_output_dir(subdir)
     os.makedirs(out_dir, exist_ok=True)
     output_path = os.path.join(out_dir, _safe_artifact_filename(path))
     try:
@@ -3120,11 +3363,12 @@ def _materialize_local_artifact(path: str, subdir: str) -> dict[str, Any]:
             "error": str(e),
             "evidence_context": _evidence_context(path, "mounted_image", internal_path=path),
         }
-    return {
+    result = {
         "ok": True,
         "source": "mounted_image",
         "local_path": extraction.get("output_path", output_path),
         "extraction": extraction,
+        "analysis_output": _analysis_output_context(create=False),
         "evidence_context": _evidence_context(
             path,
             "mounted_image",
@@ -3132,6 +3376,14 @@ def _materialize_local_artifact(path: str, subdir: str) -> dict[str, Any]:
             internal_path=path,
         ),
     }
+    if is_document:
+        result["document_access"] = _document_content_access_context(
+            path,
+            document_access_operation,
+            "mounted_image",
+            document_access_reason,
+        )
+    return result
 
 
 def _vss_snapshot_guardrails(total: int | None = None, parser_failures: list | None = None) -> dict[str, Any]:
@@ -3208,7 +3460,7 @@ def _vss_context(snapshot: dict[str, Any], input_ref: str, local_path: str = "")
 
 def _vss_export_path(snapshot_id: str, subdir: str, internal_path: str, fallback: str) -> str:
     safe_snapshot = re.sub(r"[^A-Za-z0-9._-]", "_", str(snapshot_id or "snapshot"))
-    out_dir = os.path.join(_workspace_root(), "export", "vss", safe_snapshot, subdir)
+    out_dir = _analysis_output_dir("vss", safe_snapshot, subdir)
     os.makedirs(out_dir, exist_ok=True)
     e01 = _connectors.get("e01")
     image_path = ""
@@ -3241,7 +3493,7 @@ def _vss_snapshot_export_root(snapshot_id: str, local_path: str = "") -> str:
         for idx, part in enumerate(parts):
             if part == safe_snapshot and idx > 0 and parts[idx - 1].lower() == "vss":
                 return os.sep.join(parts[: idx + 1])
-    return os.path.join(_workspace_root(), "export", "vss", safe_snapshot)
+    return _analysis_output_dir("vss", safe_snapshot)
 
 
 def _write_vss_quarantine_manifest(
@@ -3298,6 +3550,7 @@ def _write_vss_quarantine_manifest(
                     "volume": extraction.get("volume", ""),
                 },
                 "image": image_identity,
+                "analysis_output": _analysis_output_context(create=False),
                 "entries": [],
                 "interpretation_guardrails": {
                     "static_analysis_only": True,
@@ -3309,13 +3562,11 @@ def _write_vss_quarantine_manifest(
             }
         manifest["updated_at_utc"] = now
         manifest["image"] = image_identity or manifest.get("image", {})
+        manifest["analysis_output"] = _analysis_output_context(create=False)
 
         rel_output = ""
         if output_path:
-            try:
-                rel_output = os.path.relpath(output_path, _workspace_root())
-            except Exception:
-                rel_output = output_path
+            rel_output = _analysis_relative_path(output_path)
         entry_basis = "|".join([
             snapshot_id,
             source_path,
@@ -3866,7 +4117,7 @@ def _get_vol() -> VolatilityConnector:
 
 @mcp.tool()
 async def mount_image(e01_path: str = "", evidence_ref: str = "") -> dict:
-    """Mount E01/VMDK/raw disk image for file extraction."""
+    """Mount E01/VM/raw disk image for file extraction."""
     def fn():
         ref = evidence_ref or e01_path
         resolved = resolve_image_evidence(ref)
@@ -3978,11 +4229,29 @@ async def list_files(path: str = "/", pattern: str = "") -> dict:
 
 
 @mcp.tool()
-async def extract_file(internal_path: str, output_dir: str = "") -> dict:
-    """Extract a file from mounted disk image for STATIC ANALYSIS ONLY. Extracted files may be malware — NEVER execute them."""
+async def extract_file(
+    internal_path: str,
+    output_dir: str = "",
+    document_access_approved: bool = False,
+    document_access_reason: str = "",
+) -> dict:
+    """Extract a file from mounted disk image for STATIC ANALYSIS ONLY.
+
+    Document-like files are blocked by default. To extract one, pass
+    document_access_approved=True with a non-empty document_access_reason
+    after explicit analyst approval. Extracted files may be malware; never
+    execute them.
+    """
     def fn():
+        is_document = _is_document_content_path(internal_path)
+        if is_document and not _document_content_access_allowed(document_access_approved, document_access_reason):
+            return _mask({
+                **_document_content_access_block(internal_path, "extract_file"),
+                "evidence_context": _evidence_context(internal_path, "blocked_document_content", internal_path=internal_path),
+                "interpretation_guardrails": _raw_artifact_guardrails("file_extract", total=0),
+            })
         e01 = _get_e01()
-        out_dir = output_dir or _EXTRACT_DIR
+        out_dir = output_dir or _analysis_output_dir("extract")
         # Build safe output filename from internal path
         safe_name = internal_path.replace("\\", "/").split("/")[-1]
         output_path = os.path.join(out_dir, safe_name)
@@ -3993,8 +4262,31 @@ async def extract_file(internal_path: str, output_dir: str = "") -> dict:
             output_path = f"{base}_{counter}{ext}"
             counter += 1
         result = e01.extract_file(internal_path, output_path)
+        result["analysis_output"] = _analysis_output_context(create=False)
+        if is_document:
+            result["document_access"] = _document_content_access_context(
+                internal_path,
+                "extract_file",
+                "mounted_image",
+                document_access_reason,
+            )
+            result["guardrails"] = {
+                **result.get("guardrails", {}),
+                "static_analysis_only": True,
+                "document_body_minimization_required": True,
+                "permission_is_not_a_verdict": True,
+            }
         return _mask(result)
-    return await _traced("extract_file", {"internal_path": internal_path}, fn)
+    return await _traced(
+        "extract_file",
+        {
+            "internal_path": internal_path,
+            "output_dir": output_dir,
+            "document_access_approved": document_access_approved,
+            "document_access_reason_present": bool(_document_content_reason(document_access_reason)),
+        },
+        fn,
+    )
 
 
 @mcp.tool()
@@ -4240,22 +4532,38 @@ async def vss_extract_file(
     internal_path: str,
     output_dir: str = "",
     volume: str = "/c:",
+    document_access_approved: bool = False,
+    document_access_reason: str = "",
 ) -> dict:
     """Extract a file from one VSS snapshot for STATIC ANALYSIS ONLY.
 
-    VSS extractions are placed under export/vss/<snapshot_id>/... by default
-    so current-FS and historical-layer files cannot silently overwrite each
-    other. A manifest.json is updated in the snapshot export root for report
-    provenance. Extracted files may be malware; never execute them.
+    VSS extractions are placed under
+    forensic-workstation-output/vss/<snapshot_id>/... beside the selected
+    evidence by default, so current-FS and historical-layer files cannot
+    silently overwrite each other. Document-like files are blocked by default
+    and require explicit analyst approval plus a non-empty
+    document_access_reason. A manifest.json is updated in the snapshot export
+    root for report provenance. Extracted files may be malware; never execute
+    them.
     """
     params = {
         "snapshot_id": snapshot_id,
         "internal_path": internal_path,
         "output_dir": output_dir,
         "volume": volume,
+        "document_access_approved": document_access_approved,
+        "document_access_reason_present": bool(_document_content_reason(document_access_reason)),
     }
 
     def fn():
+        is_document = _is_document_content_path(internal_path)
+        if is_document and not _document_content_access_allowed(document_access_approved, document_access_reason):
+            snapshot = _vss_snapshot_metadata_by_id(_get_e01(), snapshot_id, volume)
+            return _mask({
+                **_document_content_access_block(internal_path, "vss_extract_file", source="vss_snapshot"),
+                "evidence_context": _vss_context(snapshot, internal_path),
+                "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
+            })
         if output_dir:
             safe_snapshot = re.sub(r"[^A-Za-z0-9._-]", "_", snapshot_id)
             out_root = os.path.join(os.path.abspath(output_dir), "vss", safe_snapshot)
@@ -4291,9 +4599,23 @@ async def vss_extract_file(
         result.update({
             "ok": True,
             "evidence_context": _vss_context(snapshot, internal_path, local_path=result.get("output_path", "")),
+            "analysis_output": _analysis_output_context(create=False),
             "quarantine_manifest": manifest,
             "interpretation_guardrails": _vss_snapshot_guardrails(),
         })
+        if is_document:
+            result["document_access"] = _document_content_access_context(
+                internal_path,
+                "vss_extract_file",
+                "vss_snapshot",
+                document_access_reason,
+            )
+            result["guardrails"] = {
+                **result.get("guardrails", {}),
+                "static_analysis_only": True,
+                "document_body_minimization_required": True,
+                "permission_is_not_a_verdict": True,
+            }
         return _mask(result)
 
     return await _traced("vss_extract_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
@@ -4901,7 +5223,7 @@ async def query_evtx_file(
       - a mounted-image internal path, e.g.
         /c:/Windows/System32/winevt/Logs/System.evtx
       - a local EVTX file that is either explicitly allowlisted or already
-        extracted under this workspace.
+        extracted under forensic-workstation-output.
 
     Args:
         evtx_path: Internal mounted-image path or local EVTX path.
@@ -4942,18 +5264,14 @@ async def query_evtx_file(
                 except ValueError:
                     return {"ok": False, "error": f"Invalid event id: {part}"}
 
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         local_path = evtx_path
         source = "local_file"
         if os.path.exists(local_path):
-            norm = os.path.normcase(os.path.abspath(local_path))
-            root_norm = os.path.normcase(root)
-            if not (is_path_allowed(local_path) or norm.startswith(root_norm)):
+            if not _is_safe_local_analysis_path(local_path):
                 return {"ok": False, "error": build_not_allowed_message(local_path)}
         else:
             e01 = _get_e01()
-            out_dir = os.path.join(root, "export", "evtx_query")
-            os.makedirs(out_dir, exist_ok=True)
+            out_dir = _analysis_output_dir("evtx_query")
             safe_name = evtx_path.replace("\\", "/").rstrip("/").split("/")[-1] or "eventlog.evtx"
             local_path = os.path.join(out_dir, safe_name)
             extraction = e01.extract_file(evtx_path, local_path)
@@ -4976,6 +5294,7 @@ async def query_evtx_file(
                     local_path=local_path,
                     internal_path="" if source == "local_file" else evtx_path,
                 ),
+                "analysis_output": _analysis_output_context(create=False),
                 "interpretation_guardrails": _raw_artifact_guardrails(
                     "evtx",
                     total=0,
@@ -5002,6 +5321,7 @@ async def query_evtx_file(
                 local_path=local_path,
                 internal_path="" if source == "local_file" else evtx_path,
             ),
+            "analysis_output": _analysis_output_context(create=False),
             "parsed_record_count": parsed.get("record_count", 0),
             "event_id_counts_in_file": parsed.get("event_id_counts", {}),
             "parser_failures": parsed.get("parser_failures", []),
@@ -5032,7 +5352,8 @@ async def query_prefetch_files(
 
     Args:
         prefetch_path: Optional single PF file path. May be a mounted-image
-            internal path or a safe local file under the workspace/allowlist.
+            internal path or a safe local file under the workspace, allowlist,
+            or forensic-workstation-output.
         directory: Mounted-image or local directory to search when
             prefetch_path is empty. Defaults to Windows Prefetch.
         pattern: Glob pattern for directory searches.
@@ -5305,31 +5626,47 @@ async def query_registry_hive(
 
 
 @mcp.tool()
-async def inspect_pe_file(file_path: str) -> dict:
+async def inspect_pe_file(
+    file_path: str,
+    document_access_approved: bool = False,
+    document_access_reason: str = "",
+) -> dict:
     """Hash and inspect a PE file's signature/version metadata without executing it.
 
     Args:
         file_path: Mounted-image internal path or safe local file path.
+        document_access_approved: Required for document-like extensions such as .txt.
+        document_access_reason: Non-empty approval reason for document-like extensions.
 
     Reading guide for AI consumers:
         - This is static metadata only. Unsigned does not automatically mean
           malicious, and signed does not automatically mean benign.
-        - For mounted-image paths, the file is extracted under the workspace
-          export directory for static inspection only.
+        - For mounted-image paths, the file is extracted under the selected
+          evidence folder's forensic-workstation-output directory when possible.
         - Pair this with file timestamps and execution artifacts before
           making a persistence or malware conclusion.
     """
-    params = {"file_path": file_path}
+    params = {
+        "file_path": file_path,
+        "document_access_approved": document_access_approved,
+        "document_access_reason_present": bool(_document_content_reason(document_access_reason)),
+    }
 
     def fn():
-        materialized = _materialize_local_artifact(file_path, "pe_inspect")
+        materialized = _materialize_local_artifact(
+            file_path,
+            "pe_inspect",
+            document_access_approved=document_access_approved,
+            document_access_reason=document_access_reason,
+            document_access_operation="inspect_pe_file",
+        )
         if not materialized.get("ok"):
             materialized["interpretation_guardrails"] = _raw_artifact_guardrails("pe", total=0)
             return materialized
         local_path = materialized["local_path"]
         hashes = _hash_local_file(local_path)
         ps_meta = _powershell_pe_metadata(local_path)
-        return _mask({
+        result = {
             "ok": True,
             "source": materialized.get("source"),
             "input_path": file_path,
@@ -5349,7 +5686,10 @@ async def inspect_pe_file(file_path: str) -> dict:
                 "unsigned_is_malice_verdict": False,
                 "signed_is_benign_verdict": False,
             },
-        })
+        }
+        if materialized.get("document_access"):
+            result["document_access"] = materialized["document_access"]
+        return _mask(result)
 
     return await _traced("inspect_pe_file", params, fn, timeout_seconds=TIMEOUT_MEDIUM)
 
@@ -5948,7 +6288,7 @@ async def auto_triage(
     Args:
         source_drive: Mounted drive letter (e.g. "G:" or "G")
         case_name: Case identifier (default: auto-generated from date)
-        output_dir: Output directory (default: ./export/YYYYMMDD_casename/)
+        output_dir: Output directory (default: forensic-workstation-output/YYYYMMDD_casename beside selected evidence)
         kape_path: Path to kape.exe (auto-detected if empty)
         skip_kape: Skip KAPE collection (use existing parsed data in output_dir)
         vss: Include Volume Shadow Copies (default: True, requires admin)
@@ -5981,13 +6321,10 @@ async def auto_triage(
         drive = source_drive.rstrip(":\\/ ") + ":\\"
         datestamp = _dt.now().strftime("%Y%m%d")
         cname = case_name or "case"
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.dirname(backend_dir)
-
         if output_dir:
             out_dir = output_dir
         else:
-            out_dir = os.path.join(project_dir, "export", f"{datestamp}_{cname}")
+            out_dir = _analysis_output_dir(f"{datestamp}_{cname}")
 
         collected_dir = os.path.join(out_dir, "collected")
         parsed_dir = os.path.join(out_dir, "parsed")
@@ -6209,11 +6546,13 @@ async def auto_triage(
         t7 = _t.time()
         try:
             from core.analysis.report_generator import generate_report as _gen
-            report_result = _gen({"axiom": c}, _masker, "")
+            report_path = os.path.join(out_dir, "reports", f"report_{datestamp}_{cname}.html")
+            os.makedirs(os.path.dirname(report_path), exist_ok=True)
+            report_result = _gen({"axiom": c}, _masker, report_path)
             steps.append({
                 "step": "generate_report",
                 "duration_s": round(_t.time() - t7, 1),
-                "report_path": report_result.get("output_path", ""),
+                "report_path": report_result.get("path", report_result.get("output_path", "")),
             })
         except Exception as e:
             steps.append({"step": "generate_report", "error": str(e)})
@@ -6225,6 +6564,7 @@ async def auto_triage(
             "case_name": case_meta.get("case_name", cname),
             "total_duration_s": total_duration,
             "output_dir": out_dir,
+            "analysis_output": _analysis_output_context(create=False),
             "parsed_dir": parsed_dir,
             "total_hits": case_meta.get("total_hits", 0),
             "artifact_types": case_meta.get("artifact_types", {}),

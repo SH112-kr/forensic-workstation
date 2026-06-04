@@ -10,7 +10,23 @@ from typing import Any
 _STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 _ACTIVE_CASE_FILE = os.path.join(_STATE_DIR, ".active_case.json")
 _ALLOWED_EVIDENCE_FILE = os.path.join(_STATE_DIR, ".allowed_evidence.json")
-IMAGE_EXTENSIONS = (".e01", ".ex01", ".vmdk", ".raw", ".dd")
+IMAGE_EXTENSIONS = (
+    ".e01",
+    ".ex01",
+    ".vmdk",
+    ".vhd",
+    ".vhdx",
+    ".avhd",
+    ".avhdx",
+    ".vdi",
+    ".qcow",
+    ".qcow2",
+    ".hdd",
+    ".hds",
+    ".raw",
+    ".dd",
+    ".img",
+)
 
 
 def normalize_path(path: str) -> str:

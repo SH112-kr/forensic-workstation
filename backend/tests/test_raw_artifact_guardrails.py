@@ -174,6 +174,10 @@ def test_initial_triage_pack_raw_image_fallback(monkeypatch):
 
 
 def test_evidence_bound_export_path_includes_mounted_image_identity(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "load_active_case", lambda: {})
+    monkeypatch.setattr(mcp_bridge, "load_allowed_evidence", lambda: {"paths": []})
+    monkeypatch.setattr(mcp_bridge, "resolve_image_evidence", lambda _ref="": {})
+
     class _E01:
         def is_connected(self):
             return True
@@ -194,3 +198,36 @@ def test_evidence_bound_export_path_includes_mounted_image_identity(monkeypatch)
     assert first != second
     assert first.endswith(".hive")
     assert second.endswith(".hive")
+
+
+def test_default_analysis_output_is_created_beside_selected_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "load_active_case", lambda: {})
+    monkeypatch.setattr(mcp_bridge, "load_allowed_evidence", lambda: {"paths": []})
+    monkeypatch.setattr(mcp_bridge, "resolve_image_evidence", lambda _ref="": {})
+
+    evidence_dir = tmp_path / "case"
+    evidence_dir.mkdir()
+    image_path = evidence_dir / "host.E01"
+    image_path.write_bytes(b"evidence placeholder")
+
+    class _E01:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"image_path": str(image_path)}
+
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _E01())
+
+    output_path = mcp_bridge._evidence_bound_export_path(
+        "unit",
+        "/c:/Windows/System32/config/SYSTEM",
+        "SYSTEM.hive",
+    )
+    context = mcp_bridge._analysis_output_context(create=False)
+
+    expected_root = evidence_dir / "forensic-workstation-output"
+    assert context["root"] == str(expected_root)
+    assert context["fallback_to_workspace"] is False
+    assert str(expected_root / "unit") in output_path
+    assert output_path.endswith(".hive")

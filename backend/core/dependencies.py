@@ -97,7 +97,7 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         display_name="dissect",
         kind="python",
         required=True,
-        required_for="E01/raw disk image mounting and file extraction",
+        required_for="E01, VM, and raw disk image mounting and file extraction",
         blocked_capabilities=[
             "Mounted image browsing",
             "Raw-image EVTX, Prefetch, registry, and file extraction tools",

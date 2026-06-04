@@ -57,3 +57,20 @@ def test_resolve_image_evidence_active_case_is_explicit(tmp_path, monkeypatch):
 
     assert resolved["path"] == state.normalize_path(str(active))
     assert resolved["source"] == "active_case"
+
+
+def test_resolve_image_evidence_accepts_vm_disk_images(tmp_path, monkeypatch):
+    selected = tmp_path / "guest.vhdx"
+    selected.write_bytes(b"")
+
+    allowed_file = tmp_path / "allowed.json"
+    active_file = tmp_path / "active.json"
+    allowed_file.write_text(json.dumps({"paths": [str(selected)], "source": "test"}), encoding="utf-8")
+    active_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(state, "_ALLOWED_EVIDENCE_FILE", str(allowed_file))
+    monkeypatch.setattr(state, "_ACTIVE_CASE_FILE", str(active_file))
+
+    resolved = state.resolve_image_evidence("guest.vhdx")
+
+    assert resolved["path"] == state.normalize_path(str(selected))
+    assert resolved["source"] == "allowed_evidence"

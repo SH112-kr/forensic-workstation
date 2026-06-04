@@ -16,6 +16,8 @@ interface EvidenceItem {
 // Default-deselect threshold: files larger than this are treated as "review
 // before loading" so an accidental giant image doesn't auto-enter the allowlist.
 const LARGE_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB
+const DISK_IMAGE_EXT_RE = /\.(e01|ex01|vmdk|vhd|vhdx|avhd|avhdx|vdi|qcow|qcow2|hdd|hds|dd|raw|img)$/i;
+const MEMORY_EXT_RE = /\.(raw|vmem|dmp|mem)$/i;
 
 interface SavedProject {
   name: string;
@@ -236,9 +238,9 @@ export default function CaseManager() {
           goToDashboard();
         }
       } else if (loadedDirect) {
-        // E01 / memory image loaded — no AXIOM connector, limited analysis
+        // Disk / memory image loaded — no AXIOM connector, limited analysis
         const mode = loadedDirect.type === 'disk_image' ? 'e01' : 'memory';
-        const caseName = projectName || (mode === 'e01' ? 'E01 Analysis' : 'Memory Analysis');
+        const caseName = projectName || (mode === 'e01' ? 'Disk Image Analysis' : 'Memory Analysis');
         setCaseInfo({
           case_name: caseName,
           case_mode: mode,
@@ -254,7 +256,7 @@ export default function CaseManager() {
         goToDashboard();
       } else {
         // No loadable evidence found
-        setError('Project saved. No loadable evidence found. Add an AXIOM case (.mfdb), KAPE output directory, E01 disk image, or memory dump.');
+        setError('Project saved. No loadable evidence found. Add an AXIOM case (.mfdb), KAPE output directory, disk image, or memory dump.');
       }
     } catch (e: any) {
       setError(e.message);
@@ -309,8 +311,8 @@ export default function CaseManager() {
     }
   };
 
-  const isImagePath = (p: string) => /\.(e01|ex01|vmdk|dd|raw|img)$/i.test(p.trim());
-  const isMemoryPath = (p: string) => /\.(raw|vmem|dmp|mem)$/i.test(p.trim());
+  const isImagePath = (p: string) => DISK_IMAGE_EXT_RE.test(p.trim());
+  const isMemoryPath = (p: string) => MEMORY_EXT_RE.test(p.trim());
 
   // Quick open (supports multiple paths)
   const handleQuickOpen = async () => {
@@ -324,8 +326,8 @@ export default function CaseManager() {
       const otherPaths = validPaths.filter(p => !isImagePath(p));
 
       if (imagePaths.length > 0 && otherPaths.length === 0) {
-        // E01 / disk image quick open — route through project API
-        const firstName = imagePaths[0].split(/[\\/]/).pop()?.replace(/\.(e01|ex01|vmdk|dd|raw|img)$/i, '') || 'Image Case';
+        // Disk image quick open — route through project API
+        const firstName = imagePaths[0].split(/[\\/]/).pop()?.replace(DISK_IMAGE_EXT_RE, '') || 'Image Case';
         const data = await post('/api/project/create', {
           name: firstName,
           description: '',
@@ -537,7 +539,7 @@ export default function CaseManager() {
           </label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginTop: 8 }}>
             {recentCases.map((rc, i) => {
-              const sourceTag = rc.source === 'project' ? 'PRJ' : rc.source === 'kape' ? 'KAPE' : rc.source === 'e01' ? 'E01' : rc.source === 'memory' ? 'MEM' : 'AXIOM';
+              const sourceTag = rc.source === 'project' ? 'PRJ' : rc.source === 'kape' ? 'KAPE' : rc.source === 'e01' ? 'IMG' : rc.source === 'memory' ? 'MEM' : 'AXIOM';
               const sourceColor = rc.source === 'project' ? '#a78bfa' : rc.source === 'kape' ? '#60a5fa' : rc.source === 'e01' ? '#f59e0b' : rc.source === 'memory' ? '#c084fc' : '#4ade80';
               const timeAgo = (() => {
                 const diff = Date.now() - new Date(rc.openedAt).getTime();
@@ -848,8 +850,8 @@ export default function CaseManager() {
             Open case files directly
           </label>
           <p style={{ fontSize: 12, color: 'var(--text-dim)', margin: '0 0 10px' }}>
-            Supports AXIOM (.mfdb), KAPE output directory, or disk images (.e01, .vmdk, .dd).
-            E01 images load in direct-analysis mode (file browser, binary analysis, registry).
+            Supports AXIOM (.mfdb), KAPE output directory, or disk images (.e01, .vmdk, .vhdx, .qcow2, .dd).
+            Disk images load in direct-analysis mode (file browser, binary analysis, registry).
           </p>
           {quickPaths.map((p, i) => (
             <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
@@ -857,7 +859,7 @@ export default function CaseManager() {
                 id={`fw-quick-path-${i}`}
                 className="input input-mono"
                 style={{ flex: 1 }}
-                placeholder={i === 0 ? "Path to .mfdb, KAPE directory, or .e01 image..." : "Additional path..."}
+                placeholder={i === 0 ? "Path to .mfdb, KAPE directory, or disk image..." : "Additional path..."}
                 value={p}
                 onChange={e => {
                   const next = [...quickPaths];

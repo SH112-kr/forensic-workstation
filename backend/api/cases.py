@@ -151,7 +151,7 @@ async def get_summary():
     if e01 and e01.is_connected():
         meta = e01.get_metadata()
         return {
-            "case_name": meta.get("hostname") or "E01 Image",
+            "case_name": meta.get("hostname") or "Disk Image",
             "case_mode": "e01",
             "source_type": "e01",
             "source_path": meta.get("image_path", ""),

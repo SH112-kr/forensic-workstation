@@ -9,7 +9,7 @@ Privacy and MCP disclosure gate proposal: [docs/MCP_DISCLOSURE_GATE_SPEC.md](doc
 ## What It Does
 
 - Opens AXIOM `.mfdb` cases and KAPE CSV output directories.
-- Mounts E01/raw disk images for static file extraction and raw artifact queries.
+- Mounts E01, VM, and raw disk images for static file extraction and raw artifact queries.
 - Parses high-value Windows artifacts such as EVTX, Prefetch, SRUM, registry hives, WER, services, and timestamps.
 - Runs structured suspicious-activity rules, anti-forensics checks, MITRE mapping, timeline views, IOC extraction, and report generation.
 - Exposes the same investigation functions through MCP for Claude Code/Codex workflows.
@@ -58,7 +58,7 @@ Tracked dependencies include:
 | Dependency | Used For | Impact When Missing |
 |---|---|---|
 | `regipy` | Offline registry hive parsing | Blocks service persistence, USB, timezone, SAM/SYSTEM/SOFTWARE registry pivots |
-| `dissect.target` | E01/raw image mounting | Blocks mounted image browsing and raw image extraction |
+| `dissect.target` | E01/VM/raw image mounting | Blocks mounted image browsing and raw image extraction |
 | `python-evtx` | Offline EVTX parsing | Falls back to PowerShell `Get-WinEvent` where possible |
 | `volatility3` | Memory analysis | Blocks memory process, network, and malfind views |
 | `yara-python` | YARA scans | Blocks YARA rule loading and scans |
@@ -83,10 +83,11 @@ dependency_health
 |---|---|---|
 | AXIOM case | `.mfdb` | Full artifact search, timeline, detection, MITRE, report workflows |
 | KAPE parsed output | CSV directory | Full artifact workflows when expected CSVs are present |
-| Disk image | `.E01`, raw image | Static extraction and raw artifact tools; KAPE parsing recommended for full detection |
+| Disk image | `.E01`, `.VMDK`, `.VHDX`, `.VDI`, `.QCOW2`, raw image | Static extraction and raw artifact tools; KAPE parsing recommended for full detection |
 | Memory dump | `.raw`, `.vmem`, `.dmp` | Volatility-backed analysis |
 | Windows registry hive | `SYSTEM`, `SOFTWARE`, `SAM`, `NTUSER.DAT` | Requires `regipy` |
 | Windows event log | `.evtx` | Offline parser with fallback behavior |
+| Document file | `.docx`, `.hwp`, `.pdf`, `.txt` | Metadata/path/timestamp context only; content extraction and reading are blocked |
 | Binary | `.exe`, `.dll` | Static Ghidra analysis only; never execute extracted files |
 | Logs | IIS, Apache, syslog-style logs | Import and keyword/status/IP search |
 | Network capture | `.pcap`, `.pcapng` | Requires `pyshark` and `tshark` |
@@ -144,7 +145,7 @@ The MCP bridge exposes offline DFIR tools to Claude Code/Codex. Key groups:
 
 ## Raw Image Workflow
 
-When only an E01/raw image is loaded, start with source coverage instead of assuming parsed artifacts exist:
+When only a disk image is loaded, start with source coverage instead of assuming parsed artifacts exist:
 
 ```text
 mount_image(evidence_ref="active_image")

@@ -15,7 +15,7 @@ from core.connectors.base import BaseConnector
 
 
 class E01ImageConnector(BaseConnector):
-    """Open E01/VMDK/raw images using dissect for file extraction.
+    """Open E01/VM/raw disk images using dissect for file extraction.
 
     Uses EwfContainer + Target for E01 files to avoid SmartLog interference.
     Falls back to Target.open() for other image formats.
@@ -100,7 +100,17 @@ class E01ImageConnector(BaseConnector):
             "volumes": [],
             "fallback_filesystems": [],
             "root_listing": [],
+            "image_format_notes": [],
         }
+        ext = os.path.splitext(self._path)[1].lower()
+        if ext in {".vmdk", ".vhd", ".vhdx", ".avhd", ".avhdx", ".vdi", ".qcow", ".qcow2", ".hdd", ".hds"}:
+            meta["image_format_notes"].append(
+                "VM disk images expose guest disk state only; analyze separate memory dumps for RAM state."
+            )
+        if ext in {".avhd", ".avhdx"}:
+            meta["image_format_notes"].append(
+                "Hyper-V differencing/checkpoint disks may require the parent chain to represent the intended point in time."
+            )
         try:
             meta["hostname"] = str(t.hostname)
         except Exception:

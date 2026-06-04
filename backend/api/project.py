@@ -14,6 +14,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from state import IMAGE_EXTENSIONS
+
 router = APIRouter(prefix="/api/project", tags=["project"])
 
 _PROJECTS_DIR = os.path.join(
@@ -205,7 +207,7 @@ async def evidence_types():
             {"type": "axiom", "label": "AXIOM Case", "extensions": [".mfdb"], "description": "Magnet AXIOM case database"},
             {"type": "kape", "label": "KAPE Output", "extensions": [], "description": "KAPE parsed CSV directory", "is_dir": True},
             {"type": "memory", "label": "Memory Dump", "extensions": [".raw", ".vmem", ".dmp", ".mem"], "description": "RAM dump for Volatility analysis"},
-            {"type": "disk_image", "label": "Disk Image", "extensions": [".e01", ".E01", ".ex01", ".vmdk", ".raw", ".dd"], "description": "Forensic disk image for file extraction"},
+            {"type": "disk_image", "label": "Disk Image", "extensions": list(IMAGE_EXTENSIONS), "description": "Forensic, VM, or raw disk image for file extraction"},
             {"type": "evtx", "label": "Event Logs", "extensions": [".evtx"], "description": "Windows event log files or directory", "is_dir_ok": True},
             {"type": "pcap", "label": "Network Capture", "extensions": [".pcap", ".pcapng"], "description": "Network packet capture"},
             {"type": "logs", "label": "Server Logs", "extensions": [".log", ".txt", ".zip"], "description": "Apache/IIS/syslog files", "is_dir_ok": True},
@@ -233,9 +235,8 @@ async def scan_evidence(req: ScanEvidenceRequest):
     # Extension → evidence type mapping
     ext_map = {
         ".mfdb": "axiom",
+        **{ext: "disk_image" for ext in IMAGE_EXTENSIONS},
         ".raw": "memory", ".vmem": "memory", ".dmp": "memory", ".mem": "memory",
-        ".e01": "disk_image", ".E01": "disk_image", ".ex01": "disk_image",
-        ".vmdk": "disk_image", ".dd": "disk_image",
         ".evtx": "evtx",
         ".pcap": "pcap", ".pcapng": "pcap",
         ".yar": "yara_rules", ".yara": "yara_rules",
