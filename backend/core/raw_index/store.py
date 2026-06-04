@@ -418,15 +418,32 @@ class RawIndexStore:
                 )
                 page_params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
-        total = conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM raw_index_artifacts a
-            {join_sql}
-            {where_sql}
-            """,
-            params,
-        ).fetchone()[0]
+        if (start_date or end_date) and not keyword_terms:
+            count_where = ["t.unix_timestamp_ms BETWEEN ? AND ?"]
+            count_params: list[Any] = [start_ms, end_ms]
+            if artifact_type:
+                count_where.append("a.artifact_type = ?")
+                count_params.append(artifact_type)
+            total = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT t.artifact_id)
+                FROM raw_index_artifact_times AS t
+                INDEXED BY idx_raw_times_ms_artifact_field
+                JOIN raw_index_artifacts a ON a.artifact_id = t.artifact_id
+                WHERE {' AND '.join(count_where)}
+                """,
+                count_params,
+            ).fetchone()[0]
+        else:
+            total = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM raw_index_artifacts a
+                {join_sql}
+                {where_sql}
+                """,
+                params,
+            ).fetchone()[0]
         total = int(total)
         if limit <= 0 or offset >= total:
             return _attach_search_coverage_status({
