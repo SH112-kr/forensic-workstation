@@ -464,9 +464,10 @@ class RawIndexStore:
         timestamps: dict[int, dict[str, str]] = {
             artifact_id: {} for artifact_id in artifact_ids
         }
+        conn = self._conn()
         for chunk in _id_chunks(artifact_ids):
             placeholders = ",".join("?" * len(chunk))
-            for row in self._conn().execute(
+            for row in conn.execute(
                 f"""
                 SELECT artifact_id, field_name, value
                 FROM raw_index_artifact_strings
@@ -478,7 +479,7 @@ class RawIndexStore:
                 fields.setdefault(int(row["artifact_id"]), {})[
                     row["field_name"]
                 ] = row["value"]
-            for row in self._conn().execute(
+            for row in conn.execute(
                 f"""
                 SELECT artifact_id, field_name, formatted_value
                 FROM raw_index_artifact_times

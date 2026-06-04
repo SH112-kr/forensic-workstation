@@ -492,6 +492,65 @@ def test_search_loads_page_hit_details_in_batches(tmp_path):
     assert len(time_detail_selects) == 1
 
 
+def test_hydrate_hit_details_reuses_connection_per_page(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    artifact_ids = []
+    for name in ("alpha.exe", "beta.exe"):
+        artifact_id = store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    _ms("2026-10-04T00:00:00Z"),
+                    "2026-10-04T00:00:00Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+        artifact_ids.append(artifact_id)
+    placeholders = ",".join("?" * len(artifact_ids))
+    artifact_rows = store._conn().execute(
+        f"""
+        SELECT artifact_id, artifact_type, source_path, primary_path,
+               description
+        FROM raw_index_artifacts
+        WHERE artifact_id IN ({placeholders})
+        ORDER BY artifact_id
+        """,
+        artifact_ids,
+    ).fetchall()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    details = store._hydrate_hit_details(artifact_ids, artifact_rows)
+
+    assert conn_calls == 1
+    assert [detail["fields"]["Name"] for detail in details] == [
+        "alpha.exe",
+        "beta.exe",
+    ]
+    assert details[0]["timestamps"]["Modified"] == "2026-10-04T00:00:00Z"
+
+
 def test_search_reuses_page_rows_when_hydrating_hit_details(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
