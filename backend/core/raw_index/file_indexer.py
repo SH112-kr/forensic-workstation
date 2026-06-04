@@ -14,11 +14,14 @@ def index_file_listing(
     roots: list[str],
     started_at: str,
 ) -> dict[str, Any]:
+    normalized_roots = list(
+        dict.fromkeys(str(root).strip() for root in roots if str(root).strip())
+    )
     with store.batch():
         return _index_file_listing(
             image,
             store,
-            roots=roots,
+            roots=normalized_roots,
             started_at=started_at,
         )
 
