@@ -112,6 +112,14 @@ def _index_file_listing(
                     ),
                 })
                 continue
+            if "is_dir" not in entry:
+                coverage_gaps.append({
+                    "path": entry_path,
+                    "status": "coverage_gap",
+                    "reason": "raw_file_index_missing_entry_type",
+                    "error": f"directory entry missing is_dir: {entry_path}",
+                })
+                continue
             if entry.get("is_dir"):
                 queue.append(entry_path)
                 continue

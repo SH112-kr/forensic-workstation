@@ -113,6 +113,19 @@ class _MissingPathImage:
         return []
 
 
+class _MissingIsDirImage:
+    def list_directory(self, path="/"):
+        if path == "/c:":
+            return [
+                {
+                    "name": "unknown-type",
+                    "path": "/c:/Unknown",
+                    "size": 10,
+                },
+            ]
+        return []
+
+
 def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -280,6 +293,31 @@ def test_index_file_listing_records_missing_entry_paths_as_coverage_gaps(tmp_pat
     assert result["indexed_files"] == 0
     assert result["coverage_gaps"][0]["path"] == "/c:"
     assert result["coverage_gaps"][0]["reason"] == "raw_file_index_missing_entry_path"
+    assert search["total"] == 0
+    assert search["coverage"]["status"] == "coverage_gap"
+
+
+def test_index_file_listing_records_missing_entry_type_as_coverage_gap(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    result = index_file_listing(
+        _MissingIsDirImage(),
+        store,
+        roots=["/c:"],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    search = store.search(
+        keyword="unknown-type",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["status"] == "partial"
+    assert result["indexed_files"] == 0
+    assert result["coverage_gaps"][0]["path"] == "/c:/Unknown"
+    assert result["coverage_gaps"][0]["reason"] == "raw_file_index_missing_entry_type"
     assert search["total"] == 0
     assert search["coverage"]["status"] == "coverage_gap"
 
