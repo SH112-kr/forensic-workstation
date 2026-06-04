@@ -284,8 +284,17 @@ class RawIndexStore:
                     where.append(f"a.artifact_id IN ({placeholders})")
                     params.extend(candidate_ids)
                 else:
-                    strategy["index"] = "materialized_like"
                     strategy["fast_candidate_gap"] = gap
+                    if gap == "fast_candidate_too_large":
+                        strategy["index"] = "fts5_trigram_join"
+                        join_sql += (
+                            "\nJOIN raw_index_search_fts fts "
+                            "ON fts.rowid = a.artifact_id"
+                        )
+                        where.append("fts.search_text LIKE ?")
+                        params.append(like)
+                    else:
+                        strategy["index"] = "materialized_like"
                 where.append("st.search_text LIKE ?")
                 params.append(like)
             else:
@@ -317,8 +326,20 @@ class RawIndexStore:
                     where.append(f"a.artifact_id IN ({placeholders})")
                     params.extend(candidate_ids)
                 else:
-                    strategy["index"] = "materialized_like_or"
                     strategy["fast_candidate_gap"] = gap
+                    if gap == "fast_candidate_too_large":
+                        strategy["index"] = "fts5_trigram_join_or"
+                        join_sql += (
+                            "\nJOIN raw_index_search_fts fts "
+                            "ON fts.rowid = a.artifact_id"
+                        )
+                        fts_keyword_sql = " OR ".join(
+                            "fts.search_text LIKE ?" for _ in keyword_likes
+                        )
+                        where.append(f"({fts_keyword_sql})")
+                        params.extend(keyword_likes)
+                    else:
+                        strategy["index"] = "materialized_like_or"
                 keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
                 where.append(f"({keyword_sql})")
                 params.extend(keyword_likes)

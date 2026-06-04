@@ -1813,7 +1813,7 @@ def test_search_falls_back_when_fast_candidate_index_ids_mismatch(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/beta.exe"
 
 
-def test_search_falls_back_when_fast_candidate_set_is_too_large(tmp_path):
+def test_search_uses_fts_join_when_fast_candidate_set_is_too_large(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
     store.open()
@@ -1851,6 +1851,8 @@ def test_search_falls_back_when_fast_candidate_set_is_too_large(tmp_path):
         coverage_status="searched",
         finished_at="2026-06-04T00:00:01Z",
     )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
 
     single = store.search(
         keyword="agent",
@@ -1866,19 +1868,28 @@ def test_search_falls_back_when_fast_candidate_set_is_too_large(tmp_path):
     assert single["total"] == 905
     assert single["returned"] == 5
     assert single["total_is_estimated"] is False
-    assert single["search_strategy"]["index"] == "materialized_like"
+    assert single["search_strategy"]["index"] == "fts5_trigram_join"
     assert (
         single["search_strategy"]["fast_candidate_gap"]
         == "fast_candidate_too_large"
     )
+    assert single["search_strategy"]["revalidated"] is True
     assert multi["total"] == 905
     assert multi["returned"] == 5
     assert multi["total_is_estimated"] is False
-    assert multi["search_strategy"]["index"] == "materialized_like_or"
+    assert multi["search_strategy"]["index"] == "fts5_trigram_join_or"
     assert (
         multi["search_strategy"]["fast_candidate_gap"]
         == "fast_candidate_too_large"
     )
+    assert multi["search_strategy"]["revalidated"] is True
+    joined_queries = [
+        sql
+        for sql in statements
+        if "JOIN raw_index_search_fts fts" in sql
+        and "st.search_text LIKE" in sql
+    ]
+    assert joined_queries
 
 
 def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
