@@ -99,6 +99,34 @@ def test_raw_image_index_connector_timeline_is_exact(tmp_path):
     assert timeline["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_raw_image_index_connector_timeline_limit_zero_skips_page_query(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    statements: list[str] = []
+    conn._require_store()._conn().set_trace_callback(statements.append)
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=0,
+    )
+
+    page_selects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT T.ARTIFACT_ID")
+        and "FROM raw_index_artifact_times t" in sql
+    ]
+    assert timeline["total_events"] == 1
+    assert timeline["total_is_estimated"] is False
+    assert timeline["returned"] == 0
+    assert timeline["truncated"] is True
+    assert timeline["entries"] == []
+    assert page_selects == []
+
+
 def test_raw_image_index_connector_timeline_applies_keyword_filter(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

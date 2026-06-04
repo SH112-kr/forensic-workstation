@@ -148,6 +148,19 @@ class RawImageIndexConnector(BaseConnector):
             """,
             params,
         ).fetchone()[0]
+        if limit <= 0:
+            return {
+                "total_events": int(total),
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 0,
+                "offset": offset,
+                "limit": limit,
+                "truncated": int(total) > offset,
+                "coverage": store._coverage_summary(),
+                "timeline_strategy": strategy,
+                "entries": [],
+            }
         rows = conn.execute(
             f"""
             SELECT t.artifact_id, t.unix_timestamp_ms, t.formatted_value,
