@@ -314,6 +314,39 @@ def test_build_raw_file_index_indexes_mounted_image(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_batches_metadata_and_file_records(monkeypatch, tmp_path):
+    from core.raw_index import store as store_module
+
+    class _TracingStore(store_module.RawIndexStore):
+        statements: list[str] = []
+
+        def open(self) -> None:
+            super().open()
+            self._conn().set_trace_callback(type(self).statements.append)
+
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(store_module, "RawIndexStore", _TracingStore)
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    commit_count = sum(
+        1
+        for statement in _TracingStore.statements
+        if statement.strip().upper() == "COMMIT"
+    )
+
+    assert result["status"] == "indexed"
+    assert result["indexed_files"] == 1
+    assert commit_count == 1
+
+
 def test_build_raw_file_index_reuses_existing_sidecar(monkeypatch, tmp_path):
     state = _State()
     image = _StubImage()
