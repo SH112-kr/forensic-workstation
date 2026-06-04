@@ -403,20 +403,19 @@ class RawIndexStore:
                 """
             )
             params.extend([start_ms, end_ms])
-            if not keyword_terms:
-                page_where = base_where
-                page_params = base_params
-                page_where.append(
-                    """
-                    EXISTS (
-                        SELECT 1
-                        FROM raw_index_artifact_times t_range
-                        WHERE t_range.artifact_id = a.artifact_id
-                        AND t_range.unix_timestamp_ms BETWEEN ? AND ?
-                    )
-                    """
+            page_where = base_where
+            page_params = base_params
+            page_where.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM raw_index_artifact_times t_range
+                    WHERE t_range.artifact_id = a.artifact_id
+                    AND t_range.unix_timestamp_ms BETWEEN ? AND ?
                 )
-                page_params.extend([start_ms, end_ms])
+                """
+            )
+            page_params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         if (start_date or end_date) and not keyword_terms:
             count_where = ["t.unix_timestamp_ms BETWEEN ? AND ?"]

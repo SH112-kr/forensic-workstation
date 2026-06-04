@@ -2430,6 +2430,82 @@ def test_date_filtered_search_page_query_uses_exists_without_artifact_type(tmp_p
     )
 
 
+def test_date_filtered_keyword_search_page_query_uses_exists_probe(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        times={
+            "Modified": (
+                _ms("2026-10-04T00:00:00Z"),
+                "2026-10-04T00:00:00Z",
+            )
+        },
+        parser_run_id=run_id,
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha-old.exe",
+        primary_path="/c:/Tools/alpha-old.exe",
+        description="File System Entry /c:/Tools/alpha-old.exe",
+        strings={"Name": "alpha-old.exe", "Path": "/c:/Tools/alpha-old.exe"},
+        times={
+            "Modified": (
+                _ms("2026-09-04T00:00:00Z"),
+                "2026-09-04T00:00:00Z",
+            )
+        },
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    conn = store._conn()
+    conn.set_trace_callback(statements.append)
+
+    result = store.search(
+        keyword="alpha",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    page_queries = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT A.ARTIFACT_ID")
+        and "FROM raw_index_artifacts a" in sql
+        and "ORDER BY a.artifact_id" in sql
+    ]
+    assert result["total"] == 1
+    assert result["returned"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["revalidated"] is True
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
+    assert page_queries
+    assert "EXISTS" in page_queries[0]
+    assert "raw_index_artifact_times t_range" in page_queries[0]
+    assert "SELECT artifact_id" not in page_queries[0]
+
+
 def test_date_filtered_search_count_uses_time_range_index(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
