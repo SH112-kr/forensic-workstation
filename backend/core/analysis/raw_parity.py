@@ -117,6 +117,17 @@ def _collect_complete_search(
             total = _result_total(result)
         page_hits = list(result.get("hits", []))
         returned = int(result.get("returned", len(page_hits)) or 0)
+        if returned != len(page_hits):
+            gap_result = dict(result)
+            gap_result["pagination_gap"] = {
+                "reason": "pagination_inconsistent",
+                "offset": offset,
+                "returned": returned,
+                "hit_count": len(page_hits),
+                "total": total,
+            }
+            gap_result["truncated"] = True
+            return gap_result
         if offset + returned > total:
             gap_result = dict(result)
             gap_result["pagination_gap"] = {
