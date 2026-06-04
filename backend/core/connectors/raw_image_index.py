@@ -60,7 +60,7 @@ class RawImageIndexConnector(BaseConnector):
         return self._require_store().search(
             keyword=keyword,
             keywords=list(raw_keywords),
-            artifact_type=str(filters.get("artifact_type") or ""),
+            artifact_type=str(filters.get("artifact_type") or "").strip(),
             start_date=str(filters.get("start_date") or ""),
             end_date=str(filters.get("end_date") or ""),
             limit=limit,

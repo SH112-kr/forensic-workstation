@@ -81,6 +81,22 @@ def test_raw_image_index_connector_search_applies_date_filters(tmp_path):
     assert result["search_strategy"]["date_filter"] == "artifact_times"
 
 
+def test_raw_image_index_connector_search_strips_artifact_type_filter(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    result = conn.search(
+        keyword="a.tmp",
+        filters={"artifact_type": " File System Entry "},
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Temp/a.tmp"
+
+
 def test_raw_image_index_connector_timeline_is_exact(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)
