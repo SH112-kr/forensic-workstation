@@ -277,6 +277,45 @@ def test_raw_image_index_connector_timeline_page_uses_time_order_index(tmp_path)
     )
 
 
+def test_raw_image_index_connector_timeline_count_uses_time_range_index(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_timed_types(
+        db_path,
+        ["File System Entry", "Registry Entry", "File System Entry"],
+    )
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    raw_conn = conn._require_store()._conn()
+    statements: list[str] = []
+    raw_conn.set_trace_callback(statements.append)
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types=["File System Entry"],
+        limit=1,
+    )
+
+    count_queries = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT COUNT(*)")
+        and "FROM raw_index_artifact_times" in sql
+    ]
+    assert timeline["total_events"] == 2
+    assert count_queries
+    query_plan = [
+        row[3]
+        for row in raw_conn.execute(
+            "EXPLAIN QUERY PLAN " + count_queries[0]
+        ).fetchall()
+    ]
+    assert any(
+        "idx_raw_times_ms_artifact_field" in step
+        for step in query_plan
+    )
+
+
 def test_raw_image_index_connector_timeline_matching_untimed_artifact_is_not_evaluable(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed_untimed(db_path)

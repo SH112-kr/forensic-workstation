@@ -218,10 +218,16 @@ class RawImageIndexConnector(BaseConnector):
             }
         join_sql = "\n            ".join(joins)
         where_sql = " AND ".join(where)
+        time_table = (
+            "raw_index_artifact_times AS t "
+            "INDEXED BY idx_raw_times_ms_artifact_field"
+            if start_date or end_date
+            else "raw_index_artifact_times t"
+        )
         total = conn.execute(
             f"""
             SELECT COUNT(*)
-            FROM raw_index_artifact_times t
+            FROM {time_table}
             JOIN raw_index_artifacts a ON t.artifact_id = a.artifact_id
             {join_sql}
             WHERE {where_sql}
