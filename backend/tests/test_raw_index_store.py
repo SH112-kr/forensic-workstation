@@ -643,6 +643,27 @@ def test_coverage_summary_cache_miss_reuses_connection(tmp_path):
     assert conn_calls == 1
 
 
+def test_fts_count_current_cache_miss_reuses_connection(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    store._invalidate_fts_current_cache()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    is_current = store._fts_count_current()
+
+    assert isinstance(is_current, bool)
+    assert conn_calls == 1
+
+
 def test_repeated_keyword_searches_cache_fts_freshness_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

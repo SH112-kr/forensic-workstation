@@ -968,17 +968,14 @@ class RawIndexStore:
         *,
         conn: sqlite3.Connection | None = None,
     ) -> bool:
-        if conn is None:
-            current_data_version = self._sqlite_data_version()
-        else:
-            current_data_version = self._sqlite_data_version_for_conn(conn)
+        conn = conn or self._conn()
+        current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._fts_current_cache is not None
             and self._fts_current_cache_version == current_data_version
         ):
             return self._fts_current_cache
-        conn = conn or self._conn()
         try:
             fts_count = int(
                 conn.execute(
