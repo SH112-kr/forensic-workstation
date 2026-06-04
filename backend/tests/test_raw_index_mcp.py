@@ -79,6 +79,45 @@ def _seed_multi_keyword_raw_connector(db_path):
     return connector
 
 
+def _seed_multi_timed_raw_connector(db_path):
+    from core.connectors.raw_image_index import RawImageIndexConnector
+    from core.raw_index.store import RawIndexStore
+
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "seed",
+        "unit",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for index, name in enumerate(("alpha-one.exe", "alpha-two.exe", "alpha-three.exe")):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="unit",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    1791072000000 + index,
+                    f"2026-10-04T00:00:00.00{index}Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+    connector = RawImageIndexConnector()
+    connector.connect(str(db_path))
+    return connector
+
+
 def _seed_failed_raw_connector(db_path):
     from core.connectors.raw_image_index import RawImageIndexConnector
     from core.raw_index.store import RawIndexStore
@@ -250,6 +289,24 @@ def test_search_artifacts_all_cases_includes_active_raw_index(monkeypatch, tmp_p
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
+def test_search_artifacts_all_cases_fetches_enough_for_offset(monkeypatch, tmp_path):
+    raw = _seed_multi_keyword_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keyword="alpha",
+        artifact_type="File System Entry",
+        limit=1,
+        offset=1,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["returned"] == 1
+    assert result["hits"][0]["fields"]["Name"] == "alpha-two.exe"
+
+
 def test_search_artifacts_all_cases_preserves_raw_not_evaluable(monkeypatch, tmp_path):
     raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
@@ -359,6 +416,25 @@ def test_build_timeline_all_cases_includes_active_raw_index(monkeypatch, tmp_pat
     assert result["entries"][0]["case_id"] == "raw_index"
     assert result["entries"][0]["source_type"] == "raw_image_sidecar"
     assert result["entries"][0]["artifact_type"] == "File System Entry"
+
+
+def test_build_timeline_all_cases_fetches_enough_for_offset(monkeypatch, tmp_path):
+    raw = _seed_multi_timed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        limit=1,
+        offset=1,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["returned"] == 1
+    assert result["entries"][0]["description"].endswith("alpha-two.exe")
 
 
 def test_build_timeline_all_cases_preserves_raw_not_evaluable(monkeypatch, tmp_path):
