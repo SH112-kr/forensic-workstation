@@ -511,6 +511,73 @@ def _parsed_case_loaded() -> bool:
     )
 
 
+def _raw_find_suspicious_not_evaluable(
+    raw,
+    rules: str,
+    rule_category_map: dict[str, str],
+) -> dict:
+    requested_rules = [
+        value.strip().lower()
+        for value in str(rules or "").split(",")
+        if value.strip()
+    ] or sorted(rule_category_map.keys())
+    raw_coverage = raw.get_coverage()
+    unevaluable = [
+        {
+            "rule_name": rule_name,
+            "coverage_status": "not_evaluable",
+            "reason": "raw_find_suspicious_unsupported",
+            "category": rule_category_map.get(rule_name, "uncategorized"),
+        }
+        for rule_name in requested_rules
+    ]
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "rules_requested": requested_rules,
+        "rules_executed": 0,
+        "rules_with_hits": 0,
+        "total_findings": 0,
+        "findings": [],
+        "zero_result_rules": [],
+        "unevaluable_rules": unevaluable,
+        "coverage_manifest": {
+            "queries_executed": [],
+            "queries_with_hits": [],
+            "queries_zero_hits": [],
+            "queries_not_in_scope": [],
+            "queries_not_implemented": {
+                "raw_sidecar_detection_rules": (
+                    "Raw sidecar detection rules have not been "
+                    "implemented for the indexed artifact families yet."
+                ),
+            },
+            "note": (
+                "No find_suspicious rules were executed in raw-sidecar "
+                "mode. This is not evidence of no suspicious activity."
+            ),
+        },
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": "raw_find_suspicious_unsupported",
+            "detail": (
+                "find_suspicious currently depends on parsed-case "
+                "artifact-query families such as EVTX, Prefetch, "
+                "Services, AmCache, and WER. The active raw sidecar "
+                "does not yet expose those detection substrates."
+            ),
+        },
+        "raw_index_coverage": raw_coverage,
+        "notes": [
+            (
+                "AXIOM/KAPE find_suspicious output remains a parity "
+                "reference until raw detection rules are implemented."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3254,8 +3321,17 @@ async def assess_evidence_strength(findings_json: str = "") -> dict:
             except Exception:
                 return {"error": f"findings_json must be valid JSON"}
         else:
-            from core.analysis.suspicious import find_suspicious as _find
-            payload = _find(_get_axiom().artifact_queries, rules="")
+            raw = _get_raw_index()
+            if raw and not _parsed_case_loaded():
+                from core.analysis.suspicious import RULE_CATEGORY_MAP
+                payload = _raw_find_suspicious_not_evaluable(
+                    raw,
+                    "",
+                    RULE_CATEGORY_MAP,
+                )
+            else:
+                from core.analysis.suspicious import find_suspicious as _find
+                payload = _find(_get_axiom().artifact_queries, rules="")
         return _mask(score_findings(payload))
     return await _traced(
         "assess_evidence_strength",
@@ -3596,66 +3672,11 @@ async def find_suspicious(
         )
         raw = _get_raw_index()
         if raw and not _parsed_case_loaded():
-            requested_rules = [
-                value.strip().lower()
-                for value in str(rules or "").split(",")
-                if value.strip()
-            ] or sorted(RULE_CATEGORY_MAP.keys())
-            raw_coverage = raw.get_coverage()
-            unevaluable = [
-                {
-                    "rule_name": rule_name,
-                    "coverage_status": "not_evaluable",
-                    "reason": "raw_find_suspicious_unsupported",
-                    "category": RULE_CATEGORY_MAP.get(rule_name, "uncategorized"),
-                }
-                for rule_name in requested_rules
-            ]
-            return _mask({
-                "ok": False,
-                "status": "not_evaluable",
-                "source_type": "raw_image_sidecar",
-                "rules_requested": requested_rules,
-                "rules_executed": 0,
-                "rules_with_hits": 0,
-                "total_findings": 0,
-                "findings": [],
-                "zero_result_rules": [],
-                "unevaluable_rules": unevaluable,
-                "coverage_manifest": {
-                    "queries_executed": [],
-                    "queries_with_hits": [],
-                    "queries_zero_hits": [],
-                    "queries_not_in_scope": [],
-                    "queries_not_implemented": {
-                        "raw_sidecar_detection_rules": (
-                            "Raw sidecar detection rules have not been "
-                            "implemented for the indexed artifact families yet."
-                        ),
-                    },
-                    "note": (
-                        "No find_suspicious rules were executed in raw-sidecar "
-                        "mode. This is not evidence of no suspicious activity."
-                    ),
-                },
-                "coverage_gap": {
-                    "status": "not_evaluable",
-                    "reason": "raw_find_suspicious_unsupported",
-                    "detail": (
-                        "find_suspicious currently depends on parsed-case "
-                        "artifact-query families such as EVTX, Prefetch, "
-                        "Services, AmCache, and WER. The active raw sidecar "
-                        "does not yet expose those detection substrates."
-                    ),
-                },
-                "raw_index_coverage": raw_coverage,
-                "notes": [
-                    (
-                        "AXIOM/KAPE find_suspicious output remains a parity "
-                        "reference until raw detection rules are implemented."
-                    ),
-                ],
-            })
+            return _mask(_raw_find_suspicious_not_evaluable(
+                raw,
+                rules,
+                RULE_CATEGORY_MAP,
+            ))
         payload = _find(_get_axiom().artifact_queries, rules=rules)
         if score_strength:
             from core.analysis.evidence_strength import score_findings
