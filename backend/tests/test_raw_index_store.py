@@ -1892,6 +1892,87 @@ def test_search_uses_fts_join_when_fast_candidate_set_is_too_large(tmp_path):
     assert joined_queries
 
 
+def test_date_filtered_hot_keyword_untimed_probe_uses_fts_join(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    with store.batch():
+        for index in range(905):
+            name = f"agent-{index:04d}.exe"
+            store.insert_artifact(
+                artifact_type="File System Entry",
+                source_ref="/c:",
+                source_path=f"/c:/Tools/{name}",
+                primary_path=f"/c:/Tools/{name}",
+                description=f"File System Entry /c:/Tools/{name}",
+                strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+                times={
+                    "Modified": (
+                        _ms("2026-10-04T00:00:00Z"),
+                        "2026-10-04T00:00:00Z",
+                    )
+                },
+                parser_run_id=run_id,
+            )
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path="/c:/Tools/unmatched-untimed.exe",
+            primary_path="/c:/Tools/unmatched-untimed.exe",
+            description="File System Entry /c:/Tools/unmatched-untimed.exe",
+            strings={
+                "Name": "unmatched-untimed.exe",
+                "Path": "/c:/Tools/unmatched-untimed.exe",
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(
+        keyword="agent",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=5,
+    )
+
+    untimed_probe_fts_joins = [
+        sql
+        for sql in statements
+        if "NOT EXISTS" in sql
+        and "FROM raw_index_artifact_times t" in sql
+        and "JOIN raw_index_search_fts fts" in sql
+        and "st.search_text LIKE" in sql
+    ]
+    assert result["total"] == 905
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["index"] == "fts5_trigram_join"
+    assert untimed_probe_fts_joins
+
+
 def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

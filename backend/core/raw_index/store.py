@@ -30,7 +30,7 @@ class RawIndexStore:
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
         self._untimed_candidate_cache_version: int | None = None
         self._untimed_candidate_cache: dict[
-            tuple[tuple[str, ...], tuple[str, ...]], bool
+            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]], bool
         ] = {}
 
     def open(self) -> None:
@@ -348,6 +348,7 @@ class RawIndexStore:
             strategy["date_filter"] = "artifact_times"
             if self._has_untimed_candidate(
                 artifact_type=artifact_type,
+                keyword_terms=keyword_terms,
                 keyword_likes=keyword_likes,
                 conn=conn,
             ):
@@ -1109,12 +1110,14 @@ class RawIndexStore:
         self,
         *,
         artifact_type: str = "",
+        keyword_terms: list[str] | tuple[str, ...] | None = None,
         keyword_likes: list[str] | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> bool:
         artifact_types = [artifact_type] if artifact_type else []
         return self._has_untimed_candidate_for_artifact_types(
             artifact_types=artifact_types,
+            keyword_terms=keyword_terms,
             keyword_likes=keyword_likes,
             conn=conn,
         )
@@ -1123,6 +1126,7 @@ class RawIndexStore:
         self,
         *,
         artifact_types: list[str] | tuple[str, ...] | None = None,
+        keyword_terms: list[str] | tuple[str, ...] | None = None,
         keyword_likes: list[str] | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> bool:
@@ -1131,14 +1135,13 @@ class RawIndexStore:
         where = []
         params: list[Any] = []
         keyword_likes = keyword_likes or []
-        if keyword_likes:
-            self._ensure_search_text_current(conn=conn)
-            joins.append(
-                "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
+        keyword_term_values = tuple(
+            dict.fromkeys(
+                str(keyword).strip()
+                for keyword in (keyword_terms or [])
+                if str(keyword).strip()
             )
-            keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
-            where.append(f"({keyword_sql})")
-            params.extend(keyword_likes)
+        )
         artifact_type_values = tuple(
             dict.fromkeys(
                 str(artifact_type).strip()
@@ -1146,11 +1149,7 @@ class RawIndexStore:
                 if str(artifact_type).strip()
             )
         )
-        if artifact_type_values:
-            placeholders = ",".join("?" * len(artifact_type_values))
-            where.append(f"a.artifact_type IN ({placeholders})")
-            params.extend(artifact_type_values)
-        cache_key = (artifact_type_values, tuple(keyword_likes))
+        cache_key = (artifact_type_values, tuple(keyword_likes), keyword_term_values)
         current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             if self._untimed_candidate_cache_version != current_data_version:
@@ -1158,6 +1157,42 @@ class RawIndexStore:
                 self._untimed_candidate_cache_version = current_data_version
             if cache_key in self._untimed_candidate_cache:
                 return self._untimed_candidate_cache[cache_key]
+        if keyword_likes:
+            self._ensure_search_text_current(conn=conn)
+            joins.append(
+                "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
+            )
+            if len(keyword_term_values) == len(keyword_likes):
+                candidate_ids, gap = self._fast_candidate_ids_for_keywords(
+                    list(keyword_term_values),
+                    keyword_likes,
+                    conn=conn,
+                )
+                if candidate_ids is not None:
+                    if not candidate_ids:
+                        if current_data_version is not None:
+                            self._untimed_candidate_cache[cache_key] = False
+                        return False
+                    placeholders = ",".join("?" * len(candidate_ids))
+                    where.append(f"a.artifact_id IN ({placeholders})")
+                    params.extend(candidate_ids)
+                elif gap == "fast_candidate_too_large":
+                    joins.append(
+                        "JOIN raw_index_search_fts fts "
+                        "ON fts.rowid = a.artifact_id"
+                    )
+                    fts_keyword_sql = " OR ".join(
+                        "fts.search_text LIKE ?" for _ in keyword_likes
+                    )
+                    where.append(f"({fts_keyword_sql})")
+                    params.extend(keyword_likes)
+            keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
+            where.append(f"({keyword_sql})")
+            params.extend(keyword_likes)
+        if artifact_type_values:
+            placeholders = ",".join("?" * len(artifact_type_values))
+            where.append(f"a.artifact_type IN ({placeholders})")
+            params.extend(artifact_type_values)
         where.append(
             """
             NOT EXISTS (

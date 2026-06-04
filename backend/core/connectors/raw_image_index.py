@@ -188,6 +188,7 @@ class RawImageIndexConnector(BaseConnector):
         if _has_untimed_timeline_candidate(
             store,
             artifact_type_list=artifact_type_list,
+            keyword_terms=keyword_list,
             keyword_likes=keyword_likes,
             conn=conn,
         ):
@@ -339,11 +340,13 @@ def _has_untimed_timeline_candidate(
     store: RawIndexStore,
     *,
     artifact_type_list: list[str],
+    keyword_terms: list[str],
     keyword_likes: list[str],
     conn: Any,
 ) -> bool:
     return store._has_untimed_candidate_for_artifact_types(
         artifact_types=artifact_type_list,
+        keyword_terms=keyword_terms,
         keyword_likes=keyword_likes,
         conn=conn,
     )
