@@ -248,6 +248,50 @@ def test_rebuild_search_text_pages_large_artifact_sets(tmp_path):
     assert rebuilt_count == 901
 
 
+def test_rebuild_search_text_reuses_connection_for_chunk_work(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute("DELETE FROM raw_index_search_text")
+    store._conn().commit()
+    store._fts_available()
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    store.rebuild_search_text()
+
+    assert conn_calls <= 2
+
+
 def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

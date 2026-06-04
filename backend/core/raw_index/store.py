@@ -625,17 +625,24 @@ class RawIndexStore:
                 break
             search_texts = self._search_text_for_artifact_rows(
                 rows,
+                conn=conn,
             )
             for artifact_id, search_text in search_texts.items():
-                if not self._write_search_text(artifact_id, search_text):
+                if not self._write_search_text(
+                    artifact_id,
+                    search_text,
+                    conn=conn,
+                    fts_available=fts_available,
+                    invalidate_fts_cache=False,
+                ):
                     fts_updated_all = False
             last_artifact_id = int(rows[-1]["artifact_id"])
             if len(rows) < 900:
                 break
         self._commit()
-        self._mark_search_text_current()
+        self._mark_search_text_current(conn)
         if fts_updated_all:
-            self._cache_fts_current(True)
+            self._cache_fts_current(True, conn=conn)
 
     def _ensure_search_text_current(self) -> bool:
         current_data_version = self._sqlite_data_version()
@@ -663,12 +670,23 @@ class RawIndexStore:
         self.rebuild_search_text()
         return True
 
-    def _mark_search_text_current(self) -> None:
-        self._search_text_current_cache_version = self._sqlite_data_version()
+    def _mark_search_text_current(
+        self,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is None:
+            self._search_text_current_cache_version = self._sqlite_data_version()
+            return
+        self._search_text_current_cache_version = (
+            self._sqlite_data_version_for_conn(conn)
+        )
 
     def _sqlite_data_version(self) -> int | None:
+        return self._sqlite_data_version_for_conn(self._conn())
+
+    def _sqlite_data_version_for_conn(self, conn: sqlite3.Connection) -> int | None:
         try:
-            return int(self._conn().execute("PRAGMA data_version").fetchone()[0])
+            return int(conn.execute("PRAGMA data_version").fetchone()[0])
         except sqlite3.Error:
             return None
 
@@ -706,6 +724,8 @@ class RawIndexStore:
     def _search_text_for_artifact_rows(
         self,
         artifact_rows: list[sqlite3.Row],
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> dict[int, str]:
         if not artifact_rows:
             return {}
@@ -721,7 +741,7 @@ class RawIndexStore:
             for row in artifact_rows
         }
         placeholders = ",".join("?" * len(artifact_ids))
-        conn = self._conn()
+        conn = conn or self._conn()
         for row in conn.execute(
             f"""
             SELECT artifact_id, value
@@ -757,8 +777,11 @@ class RawIndexStore:
         search_text: str,
         *,
         replace_fts: bool = True,
+        conn: sqlite3.Connection | None = None,
+        fts_available: bool | None = None,
+        invalidate_fts_cache: bool = True,
     ) -> bool:
-        conn = self._conn()
+        conn = conn or self._conn()
         conn.execute(
             """
             INSERT OR REPLACE INTO raw_index_search_text(
@@ -768,7 +791,9 @@ class RawIndexStore:
             (artifact_id, search_text),
         )
         fts_updated = False
-        if self._fts_available():
+        if fts_available is None:
+            fts_available = self._fts_available()
+        if fts_available:
             try:
                 if replace_fts:
                     conn.execute(
@@ -785,7 +810,8 @@ class RawIndexStore:
                 fts_updated = True
             except sqlite3.Error:
                 pass
-        self._invalidate_fts_current_cache()
+        if invalidate_fts_cache:
+            self._invalidate_fts_current_cache()
         return fts_updated
 
     def _search_text_for_artifact(self, artifact_id: int) -> str:
@@ -911,8 +937,16 @@ class RawIndexStore:
             return self._cache_fts_current(False)
         return self._cache_fts_current(not self._has_fts_id_mismatch())
 
-    def _cache_fts_current(self, is_current: bool) -> bool:
-        current_data_version = self._sqlite_data_version()
+    def _cache_fts_current(
+        self,
+        is_current: bool,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             self._fts_current_cache_version = current_data_version
             self._fts_current_cache = is_current
