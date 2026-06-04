@@ -318,7 +318,8 @@ class RawIndexStore:
             """,
             params + [limit, offset],
         ).fetchall()
-        hits = self._get_hit_details([int(row["artifact_id"]) for row in rows])
+        artifact_ids = [int(row["artifact_id"]) for row in rows]
+        hits = self._hydrate_hit_details(artifact_ids, rows)
         return {
             "total": int(total),
             "total_estimated": int(total),
@@ -342,7 +343,32 @@ class RawIndexStore:
     def _get_hit_details(self, artifact_ids: list[int]) -> list[dict[str, Any]]:
         if not artifact_ids:
             return []
-        artifact_rows: dict[int, sqlite3.Row] = {}
+        rows: list[sqlite3.Row] = []
+        for chunk in _id_chunks(artifact_ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows.extend(
+                self._conn().execute(
+                    f"""
+                    SELECT artifact_id, artifact_type, source_path, primary_path,
+                           description
+                    FROM raw_index_artifacts
+                    WHERE artifact_id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+            )
+        return self._hydrate_hit_details(artifact_ids, rows)
+
+    def _hydrate_hit_details(
+        self,
+        artifact_ids: list[int],
+        artifact_rows: list[sqlite3.Row],
+    ) -> list[dict[str, Any]]:
+        if not artifact_ids:
+            return []
+        artifact_row_map = {
+            int(row["artifact_id"]): row for row in artifact_rows
+        }
         fields: dict[int, dict[str, str]] = {
             artifact_id: {} for artifact_id in artifact_ids
         }
@@ -351,16 +377,6 @@ class RawIndexStore:
         }
         for chunk in _id_chunks(artifact_ids):
             placeholders = ",".join("?" * len(chunk))
-            for row in self._conn().execute(
-                f"""
-                SELECT artifact_id, artifact_type, source_path, primary_path,
-                       description
-                FROM raw_index_artifacts
-                WHERE artifact_id IN ({placeholders})
-                """,
-                chunk,
-            ).fetchall():
-                artifact_rows[int(row["artifact_id"])] = row
             for row in self._conn().execute(
                 f"""
                 SELECT artifact_id, field_name, value
@@ -387,7 +403,7 @@ class RawIndexStore:
                 ] = row["formatted_value"]
         details = []
         for artifact_id in artifact_ids:
-            row = artifact_rows.get(artifact_id)
+            row = artifact_row_map.get(artifact_id)
             if row is None:
                 continue
             details.append({
