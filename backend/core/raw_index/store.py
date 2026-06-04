@@ -375,16 +375,17 @@ class RawIndexStore:
             """,
             params,
         ).fetchone()[0]
-        if limit <= 0:
+        total = int(total)
+        if limit <= 0 or offset >= total:
             return {
-                "total": int(total),
-                "total_estimated": int(total),
+                "total": total,
+                "total_estimated": total,
                 "total_is_estimated": False,
                 "count_accuracy": "exact",
                 "returned": 0,
                 "offset": offset,
                 "limit": limit,
-                "truncated": int(total) > offset,
+                "truncated": total > offset,
                 "coverage": self._coverage_summary(conn=conn),
                 "search_strategy": strategy,
                 "hits": [],
