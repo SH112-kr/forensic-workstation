@@ -37,6 +37,7 @@ def _index_file_listing(
     )
     queue = deque(roots)
     visited: set[str] = set()
+    indexed_paths: set[str] = set()
     indexed_files = 0
     coverage_gaps: list[dict[str, str]] = []
 
@@ -68,6 +69,9 @@ def _index_file_listing(
             if entry.get("is_dir"):
                 queue.append(entry_path)
                 continue
+            if entry_path in indexed_paths:
+                continue
+            indexed_paths.add(entry_path)
             name = str(entry.get("name") or entry_path.rsplit("/", 1)[-1])
             size = str(entry.get("size", ""))
             store.insert_artifact(

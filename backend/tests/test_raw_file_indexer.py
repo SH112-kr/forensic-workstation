@@ -62,6 +62,26 @@ class _ManyFilesImage:
         return []
 
 
+class _DuplicateFilesImage:
+    def list_directory(self, path="/"):
+        if path == "/c:":
+            return [
+                {
+                    "name": "agent.exe",
+                    "path": "/c:/Tools/agent.exe",
+                    "is_dir": False,
+                    "size": 10,
+                },
+                {
+                    "name": "agent.exe",
+                    "path": "/c:/Tools/agent.exe",
+                    "is_dir": False,
+                    "size": 10,
+                },
+            ]
+        return []
+
+
 def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -132,6 +152,29 @@ def test_index_file_listing_batches_database_commits(tmp_path):
 
     assert result["indexed_files"] == 3
     assert commit_count == 1
+
+
+def test_index_file_listing_deduplicates_exact_file_paths(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    result = index_file_listing(
+        _DuplicateFilesImage(),
+        store,
+        roots=["/c:"],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    search = store.search(
+        keyword="agent.exe",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["status"] == "completed"
+    assert result["indexed_files"] == 1
+    assert search["total"] == 1
+    assert search["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
 def test_index_file_listing_records_listing_exceptions_as_coverage_gaps(tmp_path):
