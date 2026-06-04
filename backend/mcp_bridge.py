@@ -2104,6 +2104,35 @@ async def date_anchor_triage(
     }
 
     def fn():
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "period": {"start": start_date, "end": end_date},
+                "limit_per_query": max(1, min(limit_per_query, 50)),
+                "sections": [],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_date_anchor_triage_unsupported",
+                    "detail": (
+                        "date_anchor_triage queries parsed artifact families "
+                        "such as services, autoruns, ShimCache, Prefetch, WER, "
+                        "and browser downloads. The active raw sidecar does "
+                        "not yet expose those substrates, so returning empty "
+                        "sections would be misleading."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "Do not interpret empty sections as no high-value "
+                        "anchors. Use AXIOM/KAPE parity sources or implement "
+                        "raw artifact-family indexing first."
+                    ),
+                ],
+            })
         from core.analysis.date_anchor_triage import date_anchor_triage as _date_anchor_triage
 
         return _mask(_date_anchor_triage(
