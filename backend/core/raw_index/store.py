@@ -162,6 +162,7 @@ class RawIndexStore:
                 strings=strings or {},
                 locations=[primary_path] if primary_path else [],
             ),
+            replace_fts=False,
         )
         self._commit()
         return artifact_id
@@ -553,7 +554,13 @@ class RawIndexStore:
             self._search_text_for_artifact(artifact_id),
         )
 
-    def _write_search_text(self, artifact_id: int, search_text: str) -> None:
+    def _write_search_text(
+        self,
+        artifact_id: int,
+        search_text: str,
+        *,
+        replace_fts: bool = True,
+    ) -> None:
         self._conn().execute(
             """
             INSERT OR REPLACE INTO raw_index_search_text(
@@ -564,10 +571,11 @@ class RawIndexStore:
         )
         if self._fts_available():
             try:
-                self._conn().execute(
-                    "DELETE FROM raw_index_search_fts WHERE rowid = ?",
-                    (artifact_id,),
-                )
+                if replace_fts:
+                    self._conn().execute(
+                        "DELETE FROM raw_index_search_fts WHERE rowid = ?",
+                        (artifact_id,),
+                    )
                 self._conn().execute(
                     """
                     INSERT INTO raw_index_search_fts(rowid, search_text)
