@@ -12,17 +12,17 @@ def compare_search_parity(
     limit: int = 1000,
 ) -> dict[str, Any]:
     filters = {"artifact_type": artifact_type} if artifact_type else {}
-    reference = reference_connector.search(
+    reference = _collect_complete_search(
+        reference_connector,
         keyword=keyword,
         filters=filters,
         limit=limit,
-        offset=0,
     )
-    raw = raw_connector.search(
+    raw = _collect_complete_search(
+        raw_connector,
         keyword=keyword,
         filters=filters,
         limit=limit,
-        offset=0,
     )
     gap = _input_gap(reference, "reference") or _input_gap(raw, "raw")
     if gap:
@@ -63,7 +63,51 @@ def compare_search_parity(
     }
 
 
+def _collect_complete_search(
+    connector: Any,
+    *,
+    keyword: str,
+    filters: dict[str, Any],
+    limit: int,
+) -> dict[str, Any]:
+    safe_limit = max(1, int(limit))
+    offset = 0
+    collected_hits: list[dict[str, Any]] = []
+    merged: dict[str, Any] | None = None
+    total = 0
+    while True:
+        result = connector.search(
+            keyword=keyword,
+            filters=filters,
+            limit=safe_limit,
+            offset=offset,
+        )
+        if _blocking_input_gap(result):
+            return result
+        if merged is None:
+            merged = dict(result)
+            total = _result_total(result)
+        page_hits = list(result.get("hits", []))
+        collected_hits.extend(page_hits)
+        returned = int(result.get("returned", len(page_hits)) or 0)
+        if result.get("truncated") and returned < safe_limit:
+            return result
+        offset += returned
+        if returned <= 0 or offset >= total or not result.get("truncated"):
+            break
+    if merged is None:
+        return {"total": 0, "hits": [], "returned": 0, "truncated": False}
+    merged["hits"] = collected_hits
+    merged["returned"] = len(collected_hits)
+    merged["truncated"] = total > len(collected_hits)
+    return merged
+
+
 def _input_gap(result: dict[str, Any], side: str) -> dict[str, Any] | None:
+    blocking_gap = _blocking_input_gap(result)
+    if blocking_gap:
+        blocking_gap["side"] = side
+        return blocking_gap
     total = _result_total(result)
     returned = int(result.get("returned", len(result.get("hits", []))) or 0)
     if result.get("truncated") or total > returned:
@@ -87,6 +131,27 @@ def _input_gap(result: dict[str, Any], side: str) -> dict[str, Any] | None:
     }:
         return {
             "side": side,
+            "reason": "coverage_gap",
+            "coverage": coverage,
+        }
+    return None
+
+
+def _blocking_input_gap(result: dict[str, Any]) -> dict[str, Any] | None:
+    total = _result_total(result)
+    returned = int(result.get("returned", len(result.get("hits", []))) or 0)
+    if result.get("total_is_estimated") is True:
+        return {
+            "reason": "estimated_count",
+            "total": total,
+            "returned": returned,
+        }
+    coverage = result.get("coverage")
+    if isinstance(coverage, dict) and coverage.get("status") in {
+        "coverage_gap",
+        "not_evaluable",
+    }:
+        return {
             "reason": "coverage_gap",
             "coverage": coverage,
         }
