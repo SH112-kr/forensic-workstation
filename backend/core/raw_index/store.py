@@ -684,22 +684,20 @@ class RawIndexStore:
         *,
         conn: sqlite3.Connection | None = None,
     ) -> bool:
-        if conn is None:
-            current_data_version = self._sqlite_data_version()
-        else:
-            current_data_version = self._sqlite_data_version_for_conn(conn)
+        conn = conn or self._conn()
+        current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._search_text_current_cache_version == current_data_version
         ):
             return False
         artifact_count = int(
-            (conn or self._conn()).execute(
+            conn.execute(
                 "SELECT COUNT(*) FROM raw_index_artifacts"
             ).fetchone()[0]
         )
         search_count = int(
-            (conn or self._conn()).execute(
+            conn.execute(
                 "SELECT COUNT(*) FROM raw_index_search_text"
             ).fetchone()[0]
         )
