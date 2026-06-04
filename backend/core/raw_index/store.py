@@ -986,7 +986,7 @@ class RawIndexStore:
             where_sql = " OR ".join("search_text LIKE ?" for _ in like_patterns)
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT rowid
+                SELECT rowid
                 FROM raw_index_search_fts
                 WHERE {where_sql}
                 ORDER BY rowid

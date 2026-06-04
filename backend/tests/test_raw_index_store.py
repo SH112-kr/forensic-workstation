@@ -1763,6 +1763,64 @@ def test_search_keywords_uses_fast_candidate_index_when_available(tmp_path):
     assert result["search_strategy"]["revalidated"] is True
 
 
+def test_fast_candidate_probe_does_not_pay_distinct_cost(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha-one.exe", "alpha-two.exe", "beta-one.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    fast_candidate_probes = [
+        sql
+        for sql in statements
+        if "FROM raw_index_search_fts" in sql
+        and "ORDER BY rowid" in sql
+        and "LIMIT 901" in sql
+    ]
+    assert result["total"] == 3
+    assert result["search_strategy"]["index"] == "fts5_trigram_or"
+    assert fast_candidate_probes
+    assert all("DISTINCT" not in sql.upper() for sql in fast_candidate_probes)
+
+
 def test_search_falls_back_when_fast_candidate_index_is_stale(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
