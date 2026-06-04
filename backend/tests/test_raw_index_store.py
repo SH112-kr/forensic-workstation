@@ -129,6 +129,72 @@ def test_insert_artifact_builds_search_text_without_reselecting_inserted_rows(tm
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
 
 
+def test_rebuild_search_text_loads_source_rows_in_batches(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    beta_id = 0
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        artifact_id = store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+        if name == "beta.exe":
+            beta_id = artifact_id
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute("DELETE FROM raw_index_search_text")
+    store._conn().commit()
+    store._fts_available()
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    store.rebuild_search_text()
+
+    artifact_selects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and "FROM raw_index_artifacts" in sql
+    ]
+    string_selects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and "FROM raw_index_artifact_strings" in sql
+    ]
+    location_selects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and "FROM raw_index_locations" in sql
+    ]
+    rebuilt_text = store._conn().execute(
+        "SELECT search_text FROM raw_index_search_text WHERE artifact_id = ?",
+        (beta_id,),
+    ).fetchone()[0]
+
+    assert len(artifact_selects) == 1
+    assert len(string_selects) == 1
+    assert len(location_selects) == 1
+    assert "/c:/Tools/beta.exe" in rebuilt_text
+
+
 def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

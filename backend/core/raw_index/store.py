@@ -608,12 +608,21 @@ class RawIndexStore:
                 pass
         self._invalidate_fts_current_cache()
         rows = conn.execute(
-            "SELECT artifact_id FROM raw_index_artifacts ORDER BY artifact_id"
+            """
+            SELECT artifact_id, artifact_type, source_ref, source_path,
+                   primary_path, description
+            FROM raw_index_artifacts
+            ORDER BY artifact_id
+            """
         ).fetchall()
         fts_updated_all = fts_available and fts_reset
-        for row in rows:
-            if not self._refresh_search_text(int(row["artifact_id"])):
-                fts_updated_all = False
+        for start in range(0, len(rows), 900):
+            search_texts = self._search_text_for_artifact_rows(
+                rows[start:start + 900],
+            )
+            for artifact_id, search_text in search_texts.items():
+                if not self._write_search_text(artifact_id, search_text):
+                    fts_updated_all = False
         self._commit()
         self._mark_search_text_current()
         if fts_updated_all:
@@ -684,6 +693,54 @@ class RawIndexStore:
             artifact_id,
             self._search_text_for_artifact(artifact_id),
         )
+
+    def _search_text_for_artifact_rows(
+        self,
+        artifact_rows: list[sqlite3.Row],
+    ) -> dict[int, str]:
+        if not artifact_rows:
+            return {}
+        artifact_ids = [int(row["artifact_id"]) for row in artifact_rows]
+        parts_by_id = {
+            int(row["artifact_id"]): [
+                str(row["artifact_type"] or ""),
+                str(row["source_ref"] or ""),
+                str(row["source_path"] or ""),
+                str(row["primary_path"] or ""),
+                str(row["description"] or ""),
+            ]
+            for row in artifact_rows
+        }
+        placeholders = ",".join("?" * len(artifact_ids))
+        conn = self._conn()
+        for row in conn.execute(
+            f"""
+            SELECT artifact_id, value
+            FROM raw_index_artifact_strings
+            WHERE artifact_id IN ({placeholders})
+            ORDER BY artifact_id, field_name, value
+            """,
+            artifact_ids,
+        ).fetchall():
+            parts_by_id.setdefault(int(row["artifact_id"]), []).append(
+                str(row["value"] or "")
+            )
+        for row in conn.execute(
+            f"""
+            SELECT artifact_id, location_value
+            FROM raw_index_locations
+            WHERE artifact_id IN ({placeholders})
+            ORDER BY artifact_id, location_value
+            """,
+            artifact_ids,
+        ).fetchall():
+            parts_by_id.setdefault(int(row["artifact_id"]), []).append(
+                str(row["location_value"] or "")
+            )
+        return {
+            artifact_id: "\n".join(part for part in parts if part)
+            for artifact_id, parts in parts_by_id.items()
+        }
 
     def _write_search_text(
         self,
