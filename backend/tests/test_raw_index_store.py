@@ -153,6 +153,60 @@ def test_search_reuses_page_rows_when_hydrating_hit_details(tmp_path):
     assert len(artifact_selects) == 2
 
 
+def test_search_limit_zero_skips_page_hydration_queries(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(
+        artifact_type="File System Entry",
+        limit=0,
+    )
+
+    page_selects = [
+        sql
+        for sql in statements
+        if "SELECT DISTINCT" in sql
+        and "FROM raw_index_artifacts a" in sql
+    ]
+    detail_selects = [
+        sql
+        for sql in statements
+        if "FROM raw_index_artifact_strings" in sql
+        or "FROM raw_index_artifact_times" in sql
+    ]
+    assert result["total"] == 3
+    assert result["returned"] == 0
+    assert result["total_is_estimated"] is False
+    assert result["truncated"] is True
+    assert page_selects == []
+    assert detail_selects == []
+
+
 def test_search_reports_parser_failures_as_not_evaluable(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

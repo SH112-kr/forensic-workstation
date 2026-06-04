@@ -305,6 +305,20 @@ class RawIndexStore:
             """,
             params,
         ).fetchone()[0]
+        if limit <= 0:
+            return {
+                "total": int(total),
+                "total_estimated": int(total),
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 0,
+                "offset": offset,
+                "limit": limit,
+                "truncated": int(total) > offset,
+                "coverage": self._coverage_summary(),
+                "search_strategy": strategy,
+                "hits": [],
+            }
         rows = self._conn().execute(
             f"""
             SELECT DISTINCT
