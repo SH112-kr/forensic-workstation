@@ -35,7 +35,7 @@ class RawIndexStore:
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
         self._untimed_candidate_cache_version: int | None = None
         self._untimed_candidate_cache: dict[
-            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]], bool
+            tuple[tuple[str, ...], tuple[str, ...]], bool
         ] = {}
 
     def open(self) -> None:
@@ -1164,7 +1164,10 @@ class RawIndexStore:
                 if str(artifact_type).strip()
             )
         )
-        cache_key = (artifact_type_values, tuple(keyword_likes), keyword_term_values)
+        cache_key = (
+            tuple(sorted(set(artifact_type_values))),
+            tuple(sorted(set(str(pattern or "") for pattern in keyword_likes))),
+        )
         current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             if self._untimed_candidate_cache_version != current_data_version:

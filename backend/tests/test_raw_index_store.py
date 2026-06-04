@@ -2430,3 +2430,64 @@ def test_repeated_date_filtered_searches_cache_untimed_candidate_probe(tmp_path)
 
     assert changed["status"] == "not_evaluable"
     assert post_change_probes
+
+
+def test_date_filtered_or_search_reuses_untimed_probe_for_reordered_keywords(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    _ms("2026-10-04T00:00:00Z"),
+                    "2026-10-04T00:00:00Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    first = store.search(
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+    second = store.search(
+        keywords=["beta", "alpha"],
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    untimed_probes = [
+        sql
+        for sql in statements
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
+    ]
+    assert first["total"] == 2
+    assert second["total"] == 2
+    assert len(untimed_probes) == 1
