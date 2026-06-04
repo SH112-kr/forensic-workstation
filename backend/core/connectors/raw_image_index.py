@@ -96,7 +96,7 @@ class RawImageIndexConnector(BaseConnector):
             "count_accuracy": "exact",
         }
         raw_artifact_types = (
-            [artifact_types]
+            [t.strip() for t in artifact_types.split(",") if t.strip()]
             if isinstance(artifact_types, str)
             else artifact_types or []
         )

@@ -510,6 +510,26 @@ def test_raw_image_index_connector_timeline_accepts_artifact_type_string(tmp_pat
     assert timeline["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_raw_image_index_connector_timeline_splits_artifact_type_string_list(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_timed_types(db_path, ["File System Entry", "Registry Entry"])
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry,Registry Entry",
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 2
+    assert {entry["artifact_type"] for entry in timeline["entries"]} == {
+        "File System Entry",
+        "Registry Entry",
+    }
+
+
 def test_raw_image_index_connector_timeline_accepts_keyword_string(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)
