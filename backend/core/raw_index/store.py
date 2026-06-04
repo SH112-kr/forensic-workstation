@@ -675,7 +675,7 @@ class RawIndexStore:
             last_artifact_id = int(rows[-1]["artifact_id"])
             if len(rows) < 900:
                 break
-        self._commit()
+        self._commit(conn)
         self._mark_search_text_current(conn)
         if fts_updated_all:
             self._cache_fts_current(True, conn=conn)

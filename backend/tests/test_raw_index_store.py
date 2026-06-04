@@ -289,7 +289,7 @@ def test_rebuild_search_text_reuses_connection_for_chunk_work(tmp_path):
 
     store.rebuild_search_text()
 
-    assert conn_calls <= 2
+    assert conn_calls == 1
 
 
 def test_refresh_search_text_reuses_connection_for_single_artifact(tmp_path):
