@@ -73,22 +73,44 @@ class RawImageIndexConnector(BaseConnector):
         artifact_types: list[str] | None = None,
         limit: int = 200,
         offset: int = 0,
+        keywords: list[str] | None = None,
     ) -> dict:
-        conn = self._require_store()._conn()
+        store = self._require_store()
+        conn = store._conn()
         start_ms = _iso_date_to_ms(start_date, is_end=False) if start_date else 0
         end_ms = _iso_date_to_ms(end_date, is_end=True) if end_date else 9999999999999
         params: list[Any] = [start_ms, end_ms]
-        type_sql = ""
+        joins: list[str] = []
+        where = ["t.unix_timestamp_ms BETWEEN ? AND ?"]
+        strategy: dict[str, Any] = {
+            "date_filter": "artifact_times",
+            "keyword_filter": "none",
+            "rebuilt_search_text": False,
+            "count_accuracy": "exact",
+        }
         if artifact_types:
             placeholders = ",".join("?" * len(artifact_types))
-            type_sql = f"AND a.artifact_type IN ({placeholders})"
+            where.append(f"a.artifact_type IN ({placeholders})")
             params.extend(artifact_types)
+        keyword_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+        if keyword_list:
+            strategy["keyword_filter"] = "search_text"
+            strategy["rebuilt_search_text"] = store._ensure_search_text_current()
+            joins.append(
+                "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
+            )
+            keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_list)
+            where.append(f"({keyword_sql})")
+            params.extend(f"%{keyword}%" for keyword in keyword_list)
+        join_sql = "\n            ".join(joins)
+        where_sql = " AND ".join(where)
         total = conn.execute(
             f"""
             SELECT COUNT(*)
             FROM raw_index_artifact_times t
             JOIN raw_index_artifacts a ON t.artifact_id = a.artifact_id
-            WHERE t.unix_timestamp_ms BETWEEN ? AND ? {type_sql}
+            {join_sql}
+            WHERE {where_sql}
             """,
             params,
         ).fetchone()[0]
@@ -98,7 +120,8 @@ class RawImageIndexConnector(BaseConnector):
                    t.field_name, a.artifact_type, a.description
             FROM raw_index_artifact_times t
             JOIN raw_index_artifacts a ON t.artifact_id = a.artifact_id
-            WHERE t.unix_timestamp_ms BETWEEN ? AND ? {type_sql}
+            {join_sql}
+            WHERE {where_sql}
             ORDER BY t.unix_timestamp_ms, t.artifact_id, t.field_name
             LIMIT ? OFFSET ?
             """,
@@ -124,6 +147,7 @@ class RawImageIndexConnector(BaseConnector):
             "limit": limit,
             "truncated": int(total) > offset + len(entries),
             "coverage": self._require_store()._coverage_summary(),
+            "timeline_strategy": strategy,
             "entries": entries,
         }
 

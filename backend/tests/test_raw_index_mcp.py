@@ -138,6 +138,26 @@ def test_build_timeline_uses_active_raw_index(monkeypatch, tmp_path):
     assert result["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_build_timeline_uses_raw_index_keyword_filter(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        keywords="agent.exe",
+        limit=10,
+    ))
+
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["total_events"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["timeline_strategy"]["keyword_filter"] == "search_text"
+    assert result["entries"][0]["artifact_type"] == "File System Entry"
+
+
 def test_get_hit_detail_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)

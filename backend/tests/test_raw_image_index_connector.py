@@ -99,6 +99,26 @@ def test_raw_image_index_connector_timeline_is_exact(tmp_path):
     assert timeline["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_raw_image_index_connector_timeline_applies_keyword_filter(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types=["File System Entry"],
+        keywords=["a.tmp"],
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 1
+    assert timeline["total_is_estimated"] is False
+    assert timeline["timeline_strategy"]["keyword_filter"] == "search_text"
+    assert timeline["entries"][0]["hit_id"] == 1
+
+
 def test_raw_image_index_connector_rejects_schema_mismatch(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

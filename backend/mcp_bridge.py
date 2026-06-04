@@ -1289,18 +1289,14 @@ async def build_timeline(
 
         raw = _get_raw_index()
         if raw:
-            if kw_list:
-                return _mask({
-                    "ok": False,
-                    "source_type": "raw_image_sidecar",
-                    "status": "not_evaluable",
-                    "error": "Keyword-filtered raw timelines are not implemented for this sidecar connector.",
-                    "coverage_gap": {
-                        "status": "not_evaluable",
-                        "reason": "raw_timeline_keyword_filter_not_supported",
-                    },
-                })
-            result = raw.get_timeline(start_date, end_date, type_list, cap, offset)
+            result = raw.get_timeline(
+                start_date,
+                end_date,
+                type_list,
+                cap,
+                offset,
+                keywords=kw_list,
+            )
             result = dict(result)
             result["source_type"] = "raw_image_sidecar"
             return _mask(result)
