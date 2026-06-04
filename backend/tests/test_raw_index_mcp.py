@@ -1553,6 +1553,61 @@ def test_entity_story_pack_event_id_seed_reports_raw_index_unsupported(
     assert result["timeline_excerpt"] == []
 
 
+def test_auto_seed_entities_pack_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.auto_seed_entities_pack(
+        start_date="2026-10-01",
+        end_date="2026-10-04",
+        window_minutes=5,
+        limit_per_seed=10,
+        max_seeds=4,
+        match_mode="exact",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_auto_seed_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["summary"]["selected_seed_count"] == 0
+    assert result["summary"]["available_seed_count"] == 0
+    assert result["seed_catalog"] == []
+    assert result["priority_seed_catalog"] == []
+    assert result["co_occurrence_clusters"] == []
+
+
+def test_auto_seed_entities_pack_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.auto_seed_entities_pack())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_auto_seed_unsupported"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["seed_catalog"] == []
+
+
 class _State:
     def __init__(self):
         self.captured = {}

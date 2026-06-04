@@ -762,6 +762,71 @@ def _raw_entity_story_not_evaluable(
     }
 
 
+def _raw_auto_seed_not_evaluable(
+    raw,
+    *,
+    start_date: str,
+    end_date: str,
+    match_mode: str,
+) -> dict:
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "period": {"start": start_date, "end": end_date},
+        "match_semantics": {
+            "mode": match_mode,
+            "seed_kinds": {
+                "event_id": "requires parsed EVTX event id seed support",
+                "keyword": "requires supported raw seed-source extraction",
+            },
+        },
+        "seed_catalog": [],
+        "priority_seed_catalog": [],
+        "context_seed_catalog": [],
+        "entity_adjacent_context": [],
+        "baseline_common_context": [],
+        "other_context_catalog": [],
+        "recommended": {
+            "entity_value": "",
+            "recommended_entities": [],
+            "priority_seed_keywords": [],
+            "priority_seed_keywords_csv": "",
+        },
+        "co_occurrence_clusters": [],
+        "summary": {
+            "selected_seed_count": 0,
+            "available_seed_count": 0,
+            "cluster_count": 0,
+            "priority_seed_count": 0,
+            "context_seed_count": 0,
+            "entity_adjacent_context_count": 0,
+            "baseline_common_context_count": 0,
+            "other_context_count": 0,
+        },
+        "recommendation_warnings": [],
+        "truncation_warnings": [],
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": "raw_auto_seed_unsupported",
+            "detail": (
+                "auto_seed_entities_pack derives seeds from parsed "
+                "find_suspicious output and baseline_diff. Those seed-source "
+                "substrates are not available in raw-sidecar mode yet, so an "
+                "empty seed catalog would be misleading."
+            ),
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this as no seed entities. AXIOM/KAPE "
+                "remain parity references until raw seed extraction sources "
+                "are implemented."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3898,6 +3963,14 @@ async def auto_seed_entities_pack(
     """
     def fn():
         from core.analysis.auto_seed_entities import auto_seed_entities
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask(_raw_auto_seed_not_evaluable(
+                raw,
+                start_date=start_date,
+                end_date=end_date,
+                match_mode=match_mode,
+            ))
         axiom = _get_axiom()
         return _mask(auto_seed_entities(
             axiom,
