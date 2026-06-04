@@ -89,3 +89,25 @@ def test_initialize_schema_indexes_timeline_range_order(tmp_path):
         "artifact_id",
         "field_name",
     ]
+
+
+def test_initialize_schema_indexes_hot_search_order_paths(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    conn = sqlite3.connect(db_path)
+
+    initialize_schema(conn)
+
+    artifact_type_columns = [
+        row[2]
+        for row in conn.execute(
+            "PRAGMA index_info(idx_raw_artifact_type_id)"
+        ).fetchall()
+    ]
+    location_columns = [
+        row[2]
+        for row in conn.execute(
+            "PRAGMA index_info(idx_raw_locations_artifact_value)"
+        ).fetchall()
+    ]
+    assert artifact_type_columns == ["artifact_type", "artifact_id"]
+    assert location_columns == ["artifact_id", "location_value"]
