@@ -119,6 +119,60 @@ def test_raw_image_index_connector_timeline_applies_keyword_filter(tmp_path):
     assert timeline["entries"][0]["hit_id"] == 1
 
 
+def test_raw_image_index_connector_timeline_uses_fast_candidate_index(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+    run_id = store.start_parser_run(
+        "seed",
+        "unit",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha-one.exe", "alpha-two.exe", "beta-one.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="unit",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={"Modified": (1791072000000, "2026-10-04T00:00:00Z")},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types=["File System Entry"],
+        keywords=["alpha", "beta"],
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 3
+    assert timeline["total_is_estimated"] is False
+    assert timeline["timeline_strategy"]["keyword_filter"] == "search_text"
+    assert timeline["timeline_strategy"]["index"] == "fts5_trigram_or"
+    assert timeline["timeline_strategy"]["revalidated"] is True
+
+
 def test_raw_image_index_connector_rejects_schema_mismatch(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

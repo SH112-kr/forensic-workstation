@@ -89,7 +89,10 @@ class RawImageIndexConnector(BaseConnector):
         strategy: dict[str, Any] = {
             "date_filter": "artifact_times",
             "keyword_filter": "none",
+            "index": "none",
+            "revalidated": False,
             "rebuilt_search_text": False,
+            "fast_candidate_gap": "",
             "count_accuracy": "exact",
         }
         if artifact_types:
@@ -103,9 +106,36 @@ class RawImageIndexConnector(BaseConnector):
             joins.append(
                 "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
             )
+            keyword_likes = [f"%{keyword}%" for keyword in keyword_list]
+            candidate_ids, gap = store._fast_candidate_ids_for_keywords(
+                keyword_list,
+                keyword_likes,
+            )
+            if candidate_ids is not None:
+                strategy["index"] = "fts5_trigram_or"
+                if not candidate_ids:
+                    return {
+                        "total_events": 0,
+                        "total_is_estimated": False,
+                        "count_accuracy": "exact",
+                        "returned": 0,
+                        "offset": offset,
+                        "limit": limit,
+                        "truncated": False,
+                        "coverage": store._coverage_summary(),
+                        "timeline_strategy": strategy,
+                        "entries": [],
+                    }
+                placeholders = ",".join("?" * len(candidate_ids))
+                where.append(f"a.artifact_id IN ({placeholders})")
+                params.extend(candidate_ids)
+            else:
+                strategy["index"] = "materialized_like_or"
+                strategy["fast_candidate_gap"] = gap
             keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_list)
             where.append(f"({keyword_sql})")
-            params.extend(f"%{keyword}%" for keyword in keyword_list)
+            params.extend(keyword_likes)
+            strategy["revalidated"] = True
         join_sql = "\n            ".join(joins)
         where_sql = " AND ".join(where)
         total = conn.execute(
