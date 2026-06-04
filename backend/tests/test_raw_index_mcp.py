@@ -1200,6 +1200,58 @@ def test_generate_report_preserves_raw_index_not_evaluable_coverage(
     assert not report_path.exists()
 
 
+def test_srum_by_process_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.srum_by_process(
+        process_name="agent.exe",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+        offset=2,
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["processes"] == ["agent.exe"]
+    assert result["results"] == {}
+    assert result["coverage_gap"]["reason"] == "raw_srum_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_srum_by_process_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.srum_by_process(process_names="agent.exe,helper.exe"))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["processes"] == ["agent.exe", "helper.exe"]
+    assert result["coverage_gap"]["reason"] == "raw_srum_unsupported"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["results"] == {}
+
+
 def test_assess_evidence_strength_auto_findings_reports_raw_index_not_evaluable(
     monkeypatch,
     tmp_path,

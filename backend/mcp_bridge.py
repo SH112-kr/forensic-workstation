@@ -7435,13 +7435,45 @@ async def srum_by_process(
     params = {"process_name": process_name, "process_names": process_names,
               "start_date": start_date, "end_date": end_date, "limit": limit, "offset": offset}
     def fn():
-        axiom = _get_axiom()
         cap = min(limit, config.srum_max_limit)
         names = [n.strip() for n in process_names.split(",") if n.strip()] if process_names.strip() else []
         if process_name.strip() and process_name.strip() not in names:
             names.insert(0, process_name.strip())
         if not names:
             return {"error": "Provide process_name or process_names"}
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "processes": names,
+                "results": {},
+                "query": {
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "limit": cap,
+                    "offset": offset,
+                },
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_srum_unsupported",
+                    "detail": (
+                        "srum_by_process requires parsed SRUM Application "
+                        "Resource Usage and SRUM Network Usage artifacts. The "
+                        "active raw sidecar does not index SRUM records yet."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "Do not interpret empty SRUM results as no process "
+                        "CPU, IO, or network activity. Use AXIOM/KAPE SRUM "
+                        "parity sources until raw SRUM indexing is implemented."
+                    ),
+                ],
+            })
+        axiom = _get_axiom()
 
         def _match_hit(hit, pn_lower):
             """Partial match against hit fields AND nested fields dict."""
