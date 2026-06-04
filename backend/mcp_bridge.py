@@ -681,6 +681,45 @@ def _raw_correlate_not_evaluable(
     }
 
 
+def _raw_behavioral_delta_not_evaluable(
+    raw,
+    *,
+    entity_value: str,
+    seed_keywords: list[str],
+    baseline_start: str,
+    baseline_end: str,
+    incident_start: str,
+    incident_end: str,
+    reason: str,
+    detail: str,
+) -> dict:
+    seeds = [entity_value] + [s for s in seed_keywords if s != entity_value]
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "entity": {"value": entity_value, "seed_keywords": seeds},
+        "periods": {
+            "baseline": {"start": baseline_start, "end": baseline_end},
+            "incident": {"start": incident_start, "end": incident_end},
+        },
+        "claims": [],
+        "truncation_warnings": [],
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": reason,
+            "detail": detail,
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this as no behavioural change. The raw "
+                "sidecar could not evaluate the requested delta substrate."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3594,8 +3633,61 @@ async def behavioral_delta_pack(
     """
     def fn():
         from core.analysis.behavioral_delta import behavioral_delta as _delta
-        axiom = _get_axiom()
         seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            raw_coverage = raw.get_coverage()
+            if str(raw_coverage.get("status") or "") == "not_evaluable":
+                return _mask(_raw_behavioral_delta_not_evaluable(
+                    raw,
+                    entity_value=entity_value,
+                    seed_keywords=seeds,
+                    baseline_start=baseline_start,
+                    baseline_end=baseline_end,
+                    incident_start=incident_start,
+                    incident_end=incident_end,
+                    reason="raw_behavioral_delta_not_evaluable",
+                    detail=(
+                        "The active raw sidecar reports not_evaluable "
+                        "coverage, so behavioural delta cannot be computed "
+                        "without risking a silent miss."
+                    ),
+                ))
+            all_seeds = [entity_value] + seeds
+            if any(seed.lower().startswith("event_id:") for seed in all_seeds):
+                return _mask(_raw_behavioral_delta_not_evaluable(
+                    raw,
+                    entity_value=entity_value,
+                    seed_keywords=seeds,
+                    baseline_start=baseline_start,
+                    baseline_end=baseline_end,
+                    incident_start=incident_start,
+                    incident_end=incident_end,
+                    reason="raw_behavioral_delta_event_id_unsupported",
+                    detail=(
+                        "event_id seeds require parsed EVTX event fields. "
+                        "The active raw sidecar does not yet expose EVTX "
+                        "event-id records, so returning zero would be a "
+                        "silent miss risk."
+                    ),
+                ))
+            result = _delta(
+                raw,
+                entity_value=entity_value,
+                baseline_start=baseline_start,
+                baseline_end=baseline_end,
+                incident_start=incident_start,
+                incident_end=incident_end,
+                seed_keywords=seeds,
+                window_minutes=window_minutes,
+                limit_per_keyword=limit_per_keyword,
+                match_mode=match_mode,
+            )
+            result["source_type"] = "raw_image_sidecar"
+            result["count_accuracy"] = "exact"
+            result["raw_index_coverage"] = raw_coverage
+            return _mask(result)
+        axiom = _get_axiom()
         return _mask(_delta(
             axiom,
             entity_value=entity_value,

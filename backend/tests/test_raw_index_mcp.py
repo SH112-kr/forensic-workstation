@@ -1373,6 +1373,99 @@ def test_correlate_pivot_reports_raw_index_unsupported_as_not_evaluable(
     assert result["raw_index_coverage"]["status"] == "searched"
 
 
+def test_behavioral_delta_pack_uses_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_multi_timed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.behavioral_delta_pack(
+        entity_value="alpha-one.exe",
+        baseline_start="2026-10-01",
+        baseline_end="2026-10-02",
+        incident_start="2026-10-04",
+        incident_end="2026-10-04",
+        seed_keywords="alpha-two.exe",
+        window_minutes=5,
+        limit_per_keyword=10,
+    ))
+
+    assert result["ok"] is True
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["count_accuracy"] == "exact"
+    assert result["entity"]["seed_keywords"] == ["alpha-one.exe", "alpha-two.exe"]
+    assert result["baseline"]["per_keyword_totals"]["alpha-one.exe"] == 0
+    assert result["incident"]["per_keyword_totals"]["alpha-one.exe"] == 1
+    assert result["incident"]["co_occurrence_windows"] >= 1
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert any(
+        claim["kind"] == "entity_net_new_in_incident"
+        for claim in result["claims"]
+    )
+
+
+def test_behavioral_delta_pack_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.behavioral_delta_pack(
+        entity_value="alpha-one.exe",
+        baseline_start="2026-10-01",
+        baseline_end="2026-10-02",
+        incident_start="2026-10-04",
+        incident_end="2026-10-04",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_behavioral_delta_not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["claims"] == []
+
+
+def test_behavioral_delta_pack_event_id_seed_reports_raw_index_unsupported(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.behavioral_delta_pack(
+        entity_value="agent.exe",
+        baseline_start="2026-10-01",
+        baseline_end="2026-10-02",
+        incident_start="2026-10-04",
+        incident_end="2026-10-04",
+        seed_keywords="event_id:4648",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_behavioral_delta_event_id_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["claims"] == []
+
+
 class _State:
     def __init__(self):
         self.captured = {}
