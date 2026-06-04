@@ -190,9 +190,62 @@ def test_rebuild_search_text_loads_source_rows_in_batches(tmp_path):
     ).fetchone()[0]
 
     assert len(artifact_selects) == 1
+    assert "LIMIT" in artifact_selects[0].upper()
     assert len(string_selects) == 1
     assert len(location_selects) == 1
     assert "/c:/Tools/beta.exe" in rebuilt_text
+
+
+def test_rebuild_search_text_pages_large_artifact_sets(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    with store.batch():
+        for index in range(901):
+            name = f"tool-{index:04d}.exe"
+            store.insert_artifact(
+                artifact_type="File System Entry",
+                source_ref="/c:",
+                source_path=f"/c:/Tools/{name}",
+                primary_path=f"/c:/Tools/{name}",
+                description=f"File System Entry /c:/Tools/{name}",
+                strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+                parser_run_id=run_id,
+            )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute("DELETE FROM raw_index_search_text")
+    store._conn().commit()
+    store._fts_available()
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    store.rebuild_search_text()
+
+    artifact_selects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and "FROM raw_index_artifacts" in sql
+    ]
+    rebuilt_count = store._conn().execute(
+        "SELECT COUNT(*) FROM raw_index_search_text"
+    ).fetchone()[0]
+
+    assert len(artifact_selects) == 2
+    assert all("LIMIT" in sql.upper() for sql in artifact_selects)
+    assert all("OFFSET" not in sql.upper() for sql in artifact_selects)
+    assert rebuilt_count == 901
 
 
 def test_insert_artifact_skips_fts_delete_for_new_rows(tmp_path):

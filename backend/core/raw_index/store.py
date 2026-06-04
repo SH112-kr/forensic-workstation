@@ -607,22 +607,31 @@ class RawIndexStore:
             except sqlite3.Error:
                 pass
         self._invalidate_fts_current_cache()
-        rows = conn.execute(
-            """
-            SELECT artifact_id, artifact_type, source_ref, source_path,
-                   primary_path, description
-            FROM raw_index_artifacts
-            ORDER BY artifact_id
-            """
-        ).fetchall()
         fts_updated_all = fts_available and fts_reset
-        for start in range(0, len(rows), 900):
+        last_artifact_id = 0
+        while True:
+            rows = conn.execute(
+                """
+                SELECT artifact_id, artifact_type, source_ref, source_path,
+                       primary_path, description
+                FROM raw_index_artifacts
+                WHERE artifact_id > ?
+                ORDER BY artifact_id
+                LIMIT ?
+                """,
+                (last_artifact_id, 900),
+            ).fetchall()
+            if not rows:
+                break
             search_texts = self._search_text_for_artifact_rows(
-                rows[start:start + 900],
+                rows,
             )
             for artifact_id, search_text in search_texts.items():
                 if not self._write_search_text(artifact_id, search_text):
                     fts_updated_all = False
+            last_artifact_id = int(rows[-1]["artifact_id"])
+            if len(rows) < 900:
+                break
         self._commit()
         self._mark_search_text_current()
         if fts_updated_all:
