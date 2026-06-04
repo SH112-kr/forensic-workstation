@@ -839,6 +839,59 @@ def test_search_rebuilds_missing_materialized_search_text(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Windows/System32/calc.exe"
 
 
+def test_rebuilt_search_text_marks_fts_fresh_without_recount(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute("DELETE FROM raw_index_search_text")
+    store._conn().commit()
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(keyword="alpha", limit=10)
+
+    fts_count_checks = [
+        sql
+        for sql in statements
+        if "SELECT COUNT(*) FROM raw_index_search_fts" in sql
+    ]
+    assert result["total"] == 1
+    assert result["search_strategy"]["index"] == "fts5_trigram"
+    assert result["search_strategy"]["rebuilt_search_text"] is True
+    assert fts_count_checks == []
+
+
 def test_search_rebuilds_materialized_search_text_with_mismatched_ids(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

@@ -596,20 +596,28 @@ class RawIndexStore:
         self._coverage_summary_cache = None
 
     def rebuild_search_text(self) -> None:
-        self._conn().execute("DELETE FROM raw_index_search_text")
-        if self._fts_available():
+        conn = self._conn()
+        conn.execute("DELETE FROM raw_index_search_text")
+        fts_available = self._fts_available()
+        fts_reset = False
+        if fts_available:
             try:
-                self._conn().execute("DELETE FROM raw_index_search_fts")
+                conn.execute("DELETE FROM raw_index_search_fts")
+                fts_reset = True
             except sqlite3.Error:
                 pass
         self._invalidate_fts_current_cache()
-        rows = self._conn().execute(
+        rows = conn.execute(
             "SELECT artifact_id FROM raw_index_artifacts ORDER BY artifact_id"
         ).fetchall()
+        fts_updated_all = fts_available and fts_reset
         for row in rows:
-            self._refresh_search_text(int(row["artifact_id"]))
+            if not self._refresh_search_text(int(row["artifact_id"])):
+                fts_updated_all = False
         self._commit()
         self._mark_search_text_current()
+        if fts_updated_all:
+            self._cache_fts_current(True)
 
     def _ensure_search_text_current(self) -> bool:
         current_data_version = self._sqlite_data_version()
@@ -671,8 +679,8 @@ class RawIndexStore:
         ).fetchone()
         return orphan is not None
 
-    def _refresh_search_text(self, artifact_id: int) -> None:
-        self._write_search_text(
+    def _refresh_search_text(self, artifact_id: int) -> bool:
+        return self._write_search_text(
             artifact_id,
             self._search_text_for_artifact(artifact_id),
         )
