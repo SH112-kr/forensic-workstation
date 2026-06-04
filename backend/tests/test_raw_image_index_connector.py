@@ -361,6 +361,51 @@ def test_raw_image_index_connector_timeline_deduplicates_artifact_types(tmp_path
     )
 
 
+def test_raw_image_index_connector_timeline_accepts_artifact_type_string(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 1
+    assert timeline["entries"][0]["artifact_type"] == "File System Entry"
+
+
+def test_raw_image_index_connector_timeline_accepts_keyword_string(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    statements: list[str] = []
+    conn._require_store()._conn().set_trace_callback(statements.append)
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        keywords="a.tmp",
+        limit=10,
+    )
+
+    timeline_like_queries = [
+        sql
+        for sql in statements
+        if "st.search_text LIKE" in sql
+    ]
+    assert timeline["total_events"] == 1
+    assert timeline_like_queries
+    assert all(
+        sql.count("st.search_text LIKE") == 1
+        for sql in timeline_like_queries
+    )
+
+
 def test_raw_image_index_connector_caches_artifact_type_counts_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

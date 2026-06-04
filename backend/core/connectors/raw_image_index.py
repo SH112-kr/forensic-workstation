@@ -95,10 +95,15 @@ class RawImageIndexConnector(BaseConnector):
             "fast_candidate_gap": "",
             "count_accuracy": "exact",
         }
+        raw_artifact_types = (
+            [artifact_types]
+            if isinstance(artifact_types, str)
+            else artifact_types or []
+        )
         artifact_type_list = list(
             dict.fromkeys(
                 str(artifact_type).strip()
-                for artifact_type in (artifact_types or [])
+                for artifact_type in raw_artifact_types
                 if str(artifact_type).strip()
             )
         )
@@ -106,8 +111,9 @@ class RawImageIndexConnector(BaseConnector):
             placeholders = ",".join("?" * len(artifact_type_list))
             where.append(f"a.artifact_type IN ({placeholders})")
             params.extend(artifact_type_list)
+        raw_keywords = [keywords] if isinstance(keywords, str) else keywords or []
         keyword_list = list(
-            dict.fromkeys(str(k).strip() for k in (keywords or []) if str(k).strip())
+            dict.fromkeys(str(k).strip() for k in raw_keywords if str(k).strip())
         )
         if keyword_list:
             strategy["keyword_filter"] = "search_text"
