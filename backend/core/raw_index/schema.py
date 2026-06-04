@@ -70,7 +70,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_locations_value
 def initialize_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     conn.execute(
-        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO raw_index_metadata(key, value) VALUES (?, ?)",
         ("schema_version", str(RAW_INDEX_SCHEMA_VERSION)),
     )
     conn.commit()

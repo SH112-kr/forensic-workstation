@@ -30,3 +30,23 @@ def test_initialize_schema_creates_required_tables(tmp_path):
         "SELECT value FROM raw_index_metadata WHERE key = 'schema_version'"
     ).fetchone()[0]
     assert version == str(RAW_INDEX_SCHEMA_VERSION)
+
+
+def test_initialize_schema_does_not_overwrite_existing_version(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE raw_index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+
+    initialize_schema(conn)
+
+    version = conn.execute(
+        "SELECT value FROM raw_index_metadata WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "999"
