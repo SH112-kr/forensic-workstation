@@ -26,6 +26,10 @@ class RawIndexStore:
         self._coverage_summary_cache: dict[str, Any] | None = None
         self._fts_current_cache_version: int | None = None
         self._fts_current_cache: bool | None = None
+        self._fast_candidate_cache_version: int | None = None
+        self._fast_candidate_cache: dict[
+            tuple[tuple[str, ...], tuple[str, ...]], tuple[list[int] | None, str]
+        ] = {}
         self._artifact_type_counts_cache_version: int | None = None
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
         self._untimed_candidate_cache_version: int | None = None
@@ -943,30 +947,11 @@ class RawIndexStore:
         *,
         conn: sqlite3.Connection | None = None,
     ) -> tuple[list[int] | None, str]:
-        if len(str(keyword or "")) < 3:
-            return None, "keyword_too_short_for_trigram"
-        conn = conn or self._conn()
-        if not self._fts_available(conn=conn):
-            return None, "fts_unavailable"
-        if not self._fts_count_current(conn=conn):
-            return None, "stale_fts"
-        try:
-            rows = conn.execute(
-                """
-                SELECT rowid
-                FROM raw_index_search_fts
-                WHERE search_text LIKE ?
-                ORDER BY rowid
-                LIMIT ?
-                """,
-                (like_pattern, MAX_FAST_CANDIDATE_IDS + 1),
-            ).fetchall()
-        except sqlite3.Error:
-            return None, "fts_query_failed"
-        candidate_ids = [int(row["rowid"]) for row in rows]
-        if len(candidate_ids) > MAX_FAST_CANDIDATE_IDS:
-            return None, "fast_candidate_too_large"
-        return candidate_ids, ""
+        return self._fast_candidate_ids_for_keywords(
+            [keyword],
+            [like_pattern],
+            conn=conn,
+        )
 
     def _fast_candidate_ids_for_keywords(
         self,
@@ -982,6 +967,22 @@ class RawIndexStore:
             return None, "fts_unavailable"
         if not self._fts_count_current(conn=conn):
             return None, "stale_fts"
+        cache_key = (
+            tuple(str(keyword or "") for keyword in keywords),
+            tuple(str(pattern or "") for pattern in like_patterns),
+        )
+        current_data_version = self._sqlite_data_version_for_conn(conn)
+        if current_data_version is not None:
+            if self._fast_candidate_cache_version != current_data_version:
+                self._fast_candidate_cache = {}
+                self._fast_candidate_cache_version = current_data_version
+            cached = self._fast_candidate_cache.get(cache_key)
+            if cached is not None:
+                cached_ids, cached_gap = cached
+                return (
+                    list(cached_ids) if cached_ids is not None else None,
+                    cached_gap,
+                )
         try:
             where_sql = " OR ".join("search_text LIKE ?" for _ in like_patterns)
             rows = conn.execute(
@@ -998,7 +999,14 @@ class RawIndexStore:
             return None, "fts_query_failed"
         candidate_ids = [int(row["rowid"]) for row in rows]
         if len(candidate_ids) > MAX_FAST_CANDIDATE_IDS:
+            if current_data_version is not None:
+                self._fast_candidate_cache[cache_key] = (
+                    None,
+                    "fast_candidate_too_large",
+                )
             return None, "fast_candidate_too_large"
+        if current_data_version is not None:
+            self._fast_candidate_cache[cache_key] = (list(candidate_ids), "")
         return candidate_ids, ""
 
     def _fts_count_current(
@@ -1052,6 +1060,11 @@ class RawIndexStore:
     def _invalidate_fts_current_cache(self) -> None:
         self._fts_current_cache_version = None
         self._fts_current_cache = None
+        self._invalidate_fast_candidate_cache()
+
+    def _invalidate_fast_candidate_cache(self) -> None:
+        self._fast_candidate_cache_version = None
+        self._fast_candidate_cache = {}
 
     def _has_fts_id_mismatch(
         self,
