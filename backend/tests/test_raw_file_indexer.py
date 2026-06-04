@@ -219,6 +219,33 @@ def test_index_file_listing_strips_and_deduplicates_roots(tmp_path):
     assert search["total"] == 1
 
 
+def test_index_file_listing_blank_roots_are_not_evaluable(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    image = _CountingRootImage()
+
+    result = index_file_listing(
+        image,
+        store,
+        roots=[" ", ""],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    search = store.search(
+        keyword="agent.exe",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["indexed_files"] == 0
+    assert result["coverage_gaps"][0]["reason"] == "raw_file_index_no_roots"
+    assert image.calls == []
+    assert search["total"] == 0
+    assert search["coverage"]["status"] == "not_evaluable"
+
+
 def test_index_file_listing_records_listing_exceptions_as_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

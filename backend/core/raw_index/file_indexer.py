@@ -18,12 +18,44 @@ def index_file_listing(
         dict.fromkeys(str(root).strip() for root in roots if str(root).strip())
     )
     with store.batch():
+        if not normalized_roots:
+            return _empty_roots_result(store, started_at=started_at)
         return _index_file_listing(
             image,
             store,
             roots=normalized_roots,
             started_at=started_at,
         )
+
+
+def _empty_roots_result(
+    store: RawIndexStore,
+    *,
+    started_at: str,
+) -> dict[str, Any]:
+    error = "no roots supplied"
+    run_id = store.start_parser_run("file_indexer", "", started_at=started_at)
+    store.finish_parser_run(
+        run_id,
+        status="not_evaluable",
+        coverage_status="not_evaluable",
+        finished_at=started_at,
+        error=error,
+    )
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "indexed_files": 0,
+        "coverage_gaps": [
+            {
+                "path": "",
+                "status": "not_evaluable",
+                "reason": "raw_file_index_no_roots",
+                "error": error,
+            }
+        ],
+        "parser_run_id": run_id,
+    }
 
 
 def _index_file_listing(
