@@ -634,7 +634,7 @@ class RawIndexStore:
     def rebuild_search_text(self) -> None:
         conn = self._conn()
         conn.execute("DELETE FROM raw_index_search_text")
-        fts_available = self._fts_available()
+        fts_available = self._fts_available(conn=conn)
         fts_reset = False
         if fts_available:
             try:
