@@ -4363,6 +4363,33 @@ async def search_by_hash(hash_value: str, limit: int = 50, offset: int = 0) -> d
 async def generate_report(output_path: str = "") -> dict:
     """Generate HTML investigation report."""
     def fn():
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "output_path": output_path,
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_report_generation_unsupported",
+                    "detail": (
+                        "HTML report generation currently composes parsed-case "
+                        "summary, suspicious findings, IOCs, ATT&CK mapping, "
+                        "timeline, anti-forensics, and coverage sections. The "
+                        "active raw sidecar does not yet expose all of those "
+                        "report substrates."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "No report file was written. Do not interpret this as "
+                        "a clean report; AXIOM/KAPE remain report-generation "
+                        "references until raw report parity is implemented."
+                    ),
+                ],
+            })
         from core.analysis.report_generator import generate_report as _gen
         target_path = output_path
         if not target_path:
