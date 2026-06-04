@@ -905,6 +905,47 @@ def test_get_hit_detail_reuses_connection_for_single_detail(tmp_path):
     assert conn_calls == 1
 
 
+def test_artifact_type_counts_cache_miss_reuses_connection(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    counts = store.get_artifact_type_counts()
+
+    assert counts == [
+        {
+            "artifact_name": "File System Entry",
+            "hit_count": 1,
+            "count_accuracy": "exact",
+        }
+    ]
+    assert conn_calls <= 2
+
+
 def test_search_reuses_page_rows_when_hydrating_hit_details(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

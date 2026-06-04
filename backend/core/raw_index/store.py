@@ -421,14 +421,15 @@ class RawIndexStore:
         return details[0]
 
     def get_artifact_type_counts(self) -> list[dict[str, Any]]:
-        current_data_version = self._sqlite_data_version()
+        conn = self._conn()
+        current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._artifact_type_counts_cache is not None
             and self._artifact_type_counts_cache_version == current_data_version
         ):
             return copy.deepcopy(self._artifact_type_counts_cache)
-        rows = self._conn().execute(
+        rows = conn.execute(
             """
             SELECT artifact_type, COUNT(*) AS hit_count
             FROM raw_index_artifacts
@@ -444,13 +445,18 @@ class RawIndexStore:
             }
             for row in rows
         ]
-        return self._cache_artifact_type_counts(counts)
+        return self._cache_artifact_type_counts(counts, conn=conn)
 
     def _cache_artifact_type_counts(
         self,
         counts: list[dict[str, Any]],
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> list[dict[str, Any]]:
-        current_data_version = self._sqlite_data_version()
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             self._artifact_type_counts_cache_version = current_data_version
             self._artifact_type_counts_cache = copy.deepcopy(counts)
