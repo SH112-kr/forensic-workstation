@@ -99,6 +99,31 @@ def test_raw_image_index_connector_timeline_is_exact(tmp_path):
     assert timeline["entries"][0]["artifact_type"] == "File System Entry"
 
 
+def test_raw_image_index_connector_timeline_reuses_required_store(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    original_require_store = conn._require_store
+    require_store_calls = 0
+
+    def counted_require_store():
+        nonlocal require_store_calls
+        require_store_calls += 1
+        return original_require_store()
+
+    conn._require_store = counted_require_store
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 1
+    assert require_store_calls == 1
+
+
 def test_raw_image_index_connector_timeline_limit_zero_skips_page_query(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

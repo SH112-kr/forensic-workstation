@@ -193,7 +193,7 @@ class RawImageIndexConnector(BaseConnector):
             "offset": offset,
             "limit": limit,
             "truncated": int(total) > offset + len(entries),
-            "coverage": self._require_store()._coverage_summary(),
+            "coverage": store._coverage_summary(),
             "timeline_strategy": strategy,
             "entries": entries,
         }
