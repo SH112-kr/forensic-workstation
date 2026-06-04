@@ -220,6 +220,7 @@ class RawIndexStore:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
+        conn = self._conn()
         params: list[Any] = []
         where: list[str] = []
         join_sql = ""
@@ -239,7 +240,9 @@ class RawIndexStore:
         keyword_terms = list(dict.fromkeys(keyword_terms))
         keyword_likes: list[str] = []
         if keyword_terms:
-            strategy["rebuilt_search_text"] = self._ensure_search_text_current()
+            strategy["rebuilt_search_text"] = self._ensure_search_text_current(
+                conn=conn,
+            )
             join_sql = (
                 "JOIN raw_index_search_text st "
                 "ON st.artifact_id = a.artifact_id"
@@ -248,7 +251,11 @@ class RawIndexStore:
             if len(keyword_terms) == 1:
                 strategy["keyword_mode"] = "single"
                 like = keyword_likes[0]
-                candidate_ids, gap = self._fast_candidate_ids(keyword_terms[0], like)
+                candidate_ids, gap = self._fast_candidate_ids(
+                    keyword_terms[0],
+                    like,
+                    conn=conn,
+                )
                 if candidate_ids is not None:
                     strategy["index"] = "fts5_trigram"
                     if not candidate_ids:
@@ -263,7 +270,7 @@ class RawIndexStore:
                             "offset": offset,
                             "limit": limit,
                             "truncated": False,
-                            "coverage": self._coverage_summary(),
+                            "coverage": self._coverage_summary(conn=conn),
                             "search_strategy": strategy,
                             "hits": [],
                         }
@@ -280,6 +287,7 @@ class RawIndexStore:
                 candidate_ids, gap = self._fast_candidate_ids_for_keywords(
                     keyword_terms,
                     keyword_likes,
+                    conn=conn,
                 )
                 if candidate_ids is not None:
                     strategy["index"] = "fts5_trigram_or"
@@ -295,7 +303,7 @@ class RawIndexStore:
                             "offset": offset,
                             "limit": limit,
                             "truncated": False,
-                            "coverage": self._coverage_summary(),
+                            "coverage": self._coverage_summary(conn=conn),
                             "search_strategy": strategy,
                             "hits": [],
                         }
@@ -314,8 +322,9 @@ class RawIndexStore:
             if self._has_untimed_candidate(
                 artifact_type=artifact_type,
                 keyword_likes=keyword_likes,
+                conn=conn,
             ):
-                coverage = self._coverage_summary()
+                coverage = self._coverage_summary(conn=conn)
                 coverage = dict(coverage)
                 gaps = list(coverage.get("gaps", []))
                 gaps.append({
@@ -353,7 +362,7 @@ class RawIndexStore:
             )
             params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
-        total = self._conn().execute(
+        total = conn.execute(
             f"""
             SELECT COUNT(DISTINCT a.artifact_id)
             FROM raw_index_artifacts a
@@ -372,11 +381,11 @@ class RawIndexStore:
                 "offset": offset,
                 "limit": limit,
                 "truncated": int(total) > offset,
-                "coverage": self._coverage_summary(),
+                "coverage": self._coverage_summary(conn=conn),
                 "search_strategy": strategy,
                 "hits": [],
             }
-        rows = self._conn().execute(
+        rows = conn.execute(
             f"""
             SELECT DISTINCT
                 a.artifact_id, a.artifact_type, a.source_path,
@@ -390,7 +399,7 @@ class RawIndexStore:
             params + [limit, offset],
         ).fetchall()
         artifact_ids = [int(row["artifact_id"]) for row in rows]
-        hits = self._hydrate_hit_details(artifact_ids, rows)
+        hits = self._hydrate_hit_details(artifact_ids, rows, conn=conn)
         return {
             "total": int(total),
             "total_estimated": int(total),
@@ -400,7 +409,7 @@ class RawIndexStore:
             "offset": offset,
             "limit": limit,
             "truncated": int(total) > offset + len(hits),
-            "coverage": self._coverage_summary(),
+            "coverage": self._coverage_summary(conn=conn),
             "search_strategy": strategy,
             "hits": hits,
         }
@@ -478,6 +487,8 @@ class RawIndexStore:
         self,
         artifact_ids: list[int],
         artifact_rows: list[sqlite3.Row],
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> list[dict[str, Any]]:
         if not artifact_ids:
             return []
@@ -490,7 +501,7 @@ class RawIndexStore:
         timestamps: dict[int, dict[str, str]] = {
             artifact_id: {} for artifact_id in artifact_ids
         }
-        conn = self._conn()
+        conn = conn or self._conn()
         for chunk in _id_chunks(artifact_ids):
             placeholders = ",".join("?" * len(chunk))
             for row in conn.execute(
@@ -533,15 +544,23 @@ class RawIndexStore:
             })
         return details
 
-    def _coverage_summary(self) -> dict[str, Any]:
-        current_data_version = self._sqlite_data_version()
+    def _coverage_summary(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._coverage_summary_cache is not None
             and self._coverage_summary_cache_version == current_data_version
         ):
             return copy.deepcopy(self._coverage_summary_cache)
-        rows = self._conn().execute(
+        conn = conn or self._conn()
+        rows = conn.execute(
             """
             SELECT parser_name, source_ref, status, coverage_status, error
             FROM raw_index_parser_runs
@@ -557,7 +576,7 @@ class RawIndexStore:
                     "error": "No parser runs are recorded in this raw index.",
                 }],
                 "parser_runs": 0,
-            })
+            }, conn=conn)
         gaps = []
         for row in rows:
             coverage_status = str(row["coverage_status"] or "")
@@ -582,10 +601,18 @@ class RawIndexStore:
             "status": summary_status,
             "gaps": gaps,
             "parser_runs": len(rows),
-        })
+        }, conn=conn)
 
-    def _cache_coverage_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
-        current_data_version = self._sqlite_data_version()
+    def _cache_coverage_summary(
+        self,
+        summary: dict[str, Any],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             self._coverage_summary_cache_version = current_data_version
             self._coverage_summary_cache = copy.deepcopy(summary)
@@ -644,28 +671,35 @@ class RawIndexStore:
         if fts_updated_all:
             self._cache_fts_current(True, conn=conn)
 
-    def _ensure_search_text_current(self) -> bool:
-        current_data_version = self._sqlite_data_version()
+    def _ensure_search_text_current(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._search_text_current_cache_version == current_data_version
         ):
             return False
         artifact_count = int(
-            self._conn().execute(
+            (conn or self._conn()).execute(
                 "SELECT COUNT(*) FROM raw_index_artifacts"
             ).fetchone()[0]
         )
         search_count = int(
-            self._conn().execute(
+            (conn or self._conn()).execute(
                 "SELECT COUNT(*) FROM raw_index_search_text"
             ).fetchone()[0]
         )
         if (
             artifact_count == search_count
-            and not self._has_search_text_id_mismatch()
+            and not self._has_search_text_id_mismatch(conn=conn)
         ):
-            self._mark_search_text_current()
+            self._mark_search_text_current(conn)
             return False
         self.rebuild_search_text()
         return True
@@ -690,8 +724,13 @@ class RawIndexStore:
         except sqlite3.Error:
             return None
 
-    def _has_search_text_id_mismatch(self) -> bool:
-        missing = self._conn().execute(
+    def _has_search_text_id_mismatch(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        conn = conn or self._conn()
+        missing = conn.execute(
             """
             SELECT 1
             FROM raw_index_artifacts a
@@ -703,7 +742,7 @@ class RawIndexStore:
         ).fetchone()
         if missing is not None:
             return True
-        orphan = self._conn().execute(
+        orphan = conn.execute(
             """
             SELECT 1
             FROM raw_index_search_text st
@@ -857,15 +896,18 @@ class RawIndexStore:
         self,
         keyword: str,
         like_pattern: str,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> tuple[list[int] | None, str]:
         if len(str(keyword or "")) < 3:
             return None, "keyword_too_short_for_trigram"
-        if not self._fts_available():
+        conn = conn or self._conn()
+        if not self._fts_available(conn=conn):
             return None, "fts_unavailable"
-        if not self._fts_count_current():
+        if not self._fts_count_current(conn=conn):
             return None, "stale_fts"
         try:
-            rows = self._conn().execute(
+            rows = conn.execute(
                 """
                 SELECT rowid
                 FROM raw_index_search_fts
@@ -886,16 +928,19 @@ class RawIndexStore:
         self,
         keywords: list[str],
         like_patterns: list[str],
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> tuple[list[int] | None, str]:
         if any(len(str(keyword or "")) < 3 for keyword in keywords):
             return None, "keyword_too_short_for_trigram"
-        if not self._fts_available():
+        conn = conn or self._conn()
+        if not self._fts_available(conn=conn):
             return None, "fts_unavailable"
-        if not self._fts_count_current():
+        if not self._fts_count_current(conn=conn):
             return None, "stale_fts"
         try:
             where_sql = " OR ".join("search_text LIKE ?" for _ in like_patterns)
-            rows = self._conn().execute(
+            rows = conn.execute(
                 f"""
                 SELECT DISTINCT rowid
                 FROM raw_index_search_fts
@@ -912,30 +957,41 @@ class RawIndexStore:
             return None, "fast_candidate_too_large"
         return candidate_ids, ""
 
-    def _fts_count_current(self) -> bool:
-        current_data_version = self._sqlite_data_version()
+    def _fts_count_current(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        if conn is None:
+            current_data_version = self._sqlite_data_version()
+        else:
+            current_data_version = self._sqlite_data_version_for_conn(conn)
         if (
             current_data_version is not None
             and self._fts_current_cache is not None
             and self._fts_current_cache_version == current_data_version
         ):
             return self._fts_current_cache
+        conn = conn or self._conn()
         try:
             fts_count = int(
-                self._conn().execute(
+                conn.execute(
                     "SELECT COUNT(*) FROM raw_index_search_fts"
                 ).fetchone()[0]
             )
             search_count = int(
-                self._conn().execute(
+                conn.execute(
                     "SELECT COUNT(*) FROM raw_index_search_text"
                 ).fetchone()[0]
             )
         except sqlite3.Error:
-            return self._cache_fts_current(False)
+            return self._cache_fts_current(False, conn=conn)
         if fts_count != search_count:
-            return self._cache_fts_current(False)
-        return self._cache_fts_current(not self._has_fts_id_mismatch())
+            return self._cache_fts_current(False, conn=conn)
+        return self._cache_fts_current(
+            not self._has_fts_id_mismatch(conn=conn),
+            conn=conn,
+        )
 
     def _cache_fts_current(
         self,
@@ -956,9 +1012,14 @@ class RawIndexStore:
         self._fts_current_cache_version = None
         self._fts_current_cache = None
 
-    def _has_fts_id_mismatch(self) -> bool:
+    def _has_fts_id_mismatch(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        conn = conn or self._conn()
         try:
-            missing = self._conn().execute(
+            missing = conn.execute(
                 """
                 SELECT 1
                 FROM raw_index_search_text st
@@ -970,7 +1031,7 @@ class RawIndexStore:
             ).fetchone()
             if missing is not None:
                 return True
-            orphan = self._conn().execute(
+            orphan = conn.execute(
                 """
                 SELECT 1
                 FROM raw_index_search_fts fts
@@ -984,11 +1045,16 @@ class RawIndexStore:
         except sqlite3.Error:
             return True
 
-    def _fts_available(self) -> bool:
+    def _fts_available(
+        self,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
         if self._fts_available_cache is not None:
             return self._fts_available_cache
+        conn = conn or self._conn()
         try:
-            self._fts_available_cache = self._conn().execute(
+            self._fts_available_cache = conn.execute(
                 """
                 SELECT 1
                 FROM sqlite_master
@@ -1004,13 +1070,15 @@ class RawIndexStore:
         *,
         artifact_type: str = "",
         keyword_likes: list[str] | None = None,
+        conn: sqlite3.Connection | None = None,
     ) -> bool:
+        conn = conn or self._conn()
         joins = []
         where = []
         params: list[Any] = []
         keyword_likes = keyword_likes or []
         if keyword_likes:
-            self._ensure_search_text_current()
+            self._ensure_search_text_current(conn=conn)
             joins.append(
                 "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
             )
@@ -1021,7 +1089,7 @@ class RawIndexStore:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)
         cache_key = (artifact_type, tuple(keyword_likes))
-        current_data_version = self._sqlite_data_version()
+        current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             if self._untimed_candidate_cache_version != current_data_version:
                 self._untimed_candidate_cache = {}
@@ -1038,7 +1106,7 @@ class RawIndexStore:
             """
         )
         where_sql = "WHERE " + " AND ".join(where)
-        row = self._conn().execute(
+        row = conn.execute(
             f"""
             SELECT 1
             FROM raw_index_artifacts a

@@ -462,6 +462,50 @@ def test_repeated_keyword_searches_cache_search_text_freshness_until_external_ch
     assert post_change_count_checks
 
 
+def test_hot_keyword_search_reuses_connection_handle(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.search(keyword="alpha", limit=10)
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    result = store.search(keyword="beta", limit=10)
+
+    assert result["total"] == 1
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/beta.exe"
+    assert conn_calls <= 2
+
+
 def test_repeated_searches_cache_coverage_summary_until_external_parser_run_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
