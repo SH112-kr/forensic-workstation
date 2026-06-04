@@ -334,6 +334,64 @@ def test_search_falls_back_when_fast_candidate_index_is_stale(tmp_path):
     assert result["search_strategy"]["fast_candidate_gap"] == "stale_fts"
 
 
+def test_search_falls_back_when_fast_candidate_index_ids_mismatch(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    missing_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/beta.exe",
+        primary_path="/c:/Tools/beta.exe",
+        description="File System Entry /c:/Tools/beta.exe",
+        strings={"Name": "beta.exe", "Path": "/c:/Tools/beta.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store._conn().execute(
+        "DELETE FROM raw_index_search_fts WHERE rowid = ?",
+        (missing_id,),
+    )
+    store._conn().execute(
+        "INSERT INTO raw_index_search_fts(rowid, search_text) VALUES (?, ?)",
+        (9999, "orphan-cache-row"),
+    )
+    store._conn().commit()
+
+    result = store.search(
+        keyword="beta",
+        artifact_type="File System Entry",
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["index"] == "materialized_like"
+    assert result["search_strategy"]["fast_candidate_gap"] == "stale_fts"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/beta.exe"
+
+
 def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

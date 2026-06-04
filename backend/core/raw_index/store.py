@@ -582,7 +582,37 @@ class RawIndexStore:
             )
         except sqlite3.Error:
             return False
-        return fts_count == search_count
+        if fts_count != search_count:
+            return False
+        return not self._has_fts_id_mismatch()
+
+    def _has_fts_id_mismatch(self) -> bool:
+        try:
+            missing = self._conn().execute(
+                """
+                SELECT 1
+                FROM raw_index_search_text st
+                LEFT JOIN raw_index_search_fts fts
+                    ON fts.rowid = st.artifact_id
+                WHERE fts.rowid IS NULL
+                LIMIT 1
+                """
+            ).fetchone()
+            if missing is not None:
+                return True
+            orphan = self._conn().execute(
+                """
+                SELECT 1
+                FROM raw_index_search_fts fts
+                LEFT JOIN raw_index_search_text st
+                    ON st.artifact_id = fts.rowid
+                WHERE st.artifact_id IS NULL
+                LIMIT 1
+                """
+            ).fetchone()
+            return orphan is not None
+        except sqlite3.Error:
+            return True
 
     def _fts_available(self) -> bool:
         try:
