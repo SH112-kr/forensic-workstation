@@ -611,6 +611,38 @@ def test_repeated_searches_cache_coverage_summary_until_external_parser_run_chan
     assert post_change_selects
 
 
+def test_coverage_summary_cache_miss_reuses_connection(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    coverage = store._coverage_summary()
+
+    assert coverage["status"] == "searched"
+    assert conn_calls == 1
+
+
 def test_repeated_keyword_searches_cache_fts_freshness_until_external_change(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
