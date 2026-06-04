@@ -62,28 +62,20 @@ CREATE TABLE IF NOT EXISTS raw_index_search_text (
     FOREIGN KEY(artifact_id) REFERENCES raw_index_artifacts(artifact_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_raw_artifact_type
-    ON raw_index_artifacts(artifact_type);
 CREATE INDEX IF NOT EXISTS idx_raw_artifact_type_id
     ON raw_index_artifacts(artifact_type, artifact_id);
 CREATE INDEX IF NOT EXISTS idx_raw_strings_value
     ON raw_index_artifact_strings(value);
 CREATE INDEX IF NOT EXISTS idx_raw_strings_artifact_field
     ON raw_index_artifact_strings(artifact_id, field_name);
-CREATE INDEX IF NOT EXISTS idx_raw_times_ms
-    ON raw_index_artifact_times(unix_timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_raw_times_ms_artifact_field
     ON raw_index_artifact_times(unix_timestamp_ms, artifact_id, field_name);
 CREATE INDEX IF NOT EXISTS idx_raw_times_artifact_field
     ON raw_index_artifact_times(artifact_id, field_name);
 CREATE INDEX IF NOT EXISTS idx_raw_locations_value
     ON raw_index_locations(location_value);
-CREATE INDEX IF NOT EXISTS idx_raw_locations_artifact
-    ON raw_index_locations(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_raw_locations_artifact_value
     ON raw_index_locations(artifact_id, location_value);
-CREATE INDEX IF NOT EXISTS idx_raw_search_text_artifact
-    ON raw_index_search_text(artifact_id);
 """
 
 

@@ -68,7 +68,7 @@ def test_initialize_schema_indexes_artifact_id_lookup_tables(tmp_path):
     assert {
         "idx_raw_strings_artifact_field",
         "idx_raw_times_artifact_field",
-        "idx_raw_locations_artifact",
+        "idx_raw_locations_artifact_value",
     } <= indexes
 
 
@@ -111,3 +111,23 @@ def test_initialize_schema_indexes_hot_search_order_paths(tmp_path):
     ]
     assert artifact_type_columns == ["artifact_type", "artifact_id"]
     assert location_columns == ["artifact_id", "location_value"]
+
+
+def test_initialize_schema_avoids_redundant_prefix_indexes_on_hot_paths(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    conn = sqlite3.connect(db_path)
+
+    initialize_schema(conn)
+
+    indexes = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert {
+        "idx_raw_artifact_type",
+        "idx_raw_times_ms",
+        "idx_raw_locations_artifact",
+        "idx_raw_search_text_artifact",
+    }.isdisjoint(indexes)
