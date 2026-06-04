@@ -467,11 +467,12 @@ class RawIndexStore:
     def _get_hit_details(self, artifact_ids: list[int]) -> list[dict[str, Any]]:
         if not artifact_ids:
             return []
+        conn = self._conn()
         rows: list[sqlite3.Row] = []
         for chunk in _id_chunks(artifact_ids):
             placeholders = ",".join("?" * len(chunk))
             rows.extend(
-                self._conn().execute(
+                conn.execute(
                     f"""
                     SELECT artifact_id, artifact_type, source_path, primary_path,
                            description
@@ -481,7 +482,7 @@ class RawIndexStore:
                     chunk,
                 ).fetchall()
             )
-        return self._hydrate_hit_details(artifact_ids, rows)
+        return self._hydrate_hit_details(artifact_ids, rows, conn=conn)
 
     def _hydrate_hit_details(
         self,

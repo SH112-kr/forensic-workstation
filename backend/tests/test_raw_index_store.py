@@ -868,6 +868,43 @@ def test_hydrate_hit_details_reuses_connection_per_page(tmp_path):
     assert details[0]["timestamps"]["Modified"] == "2026-10-04T00:00:00Z"
 
 
+def test_get_hit_detail_reuses_connection_for_single_detail(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    artifact_id = store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        times={"Modified": (_ms("2026-10-04T00:00:00Z"), "2026-10-04T00:00:00Z")},
+        parser_run_id=run_id,
+    )
+    original_conn = store._conn
+    conn_calls = 0
+
+    def counted_conn():
+        nonlocal conn_calls
+        conn_calls += 1
+        return original_conn()
+
+    store._conn = counted_conn
+
+    detail = store.get_hit_detail(artifact_id)
+
+    assert detail["fields"]["Path"] == "/c:/Tools/alpha.exe"
+    assert detail["timestamps"]["Modified"] == "2026-10-04T00:00:00Z"
+    assert conn_calls == 1
+
+
 def test_search_reuses_page_rows_when_hydrating_hit_details(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
