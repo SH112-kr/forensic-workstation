@@ -372,6 +372,44 @@ def test_build_raw_file_index_reuses_existing_sidecar(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_reuse_checks_coverage_without_search(monkeypatch, tmp_path):
+    from core.connectors import raw_image_index as raw_index_connector
+
+    class _CountingConnector(raw_index_connector.RawImageIndexConnector):
+        search_calls = 0
+
+        def search(self, *args, **kwargs):
+            type(self).search_calls += 1
+            return super().search(*args, **kwargs)
+
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(
+        raw_index_connector,
+        "RawImageIndexConnector",
+        _CountingConnector,
+    )
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    _CountingConnector.search_calls = 0
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert result["status"] == "opened_existing"
+    assert _CountingConnector.search_calls == 0
+
+
 def test_build_raw_file_index_rebuilds_empty_existing_sidecar(monkeypatch, tmp_path):
     from core.raw_index.store import RawIndexStore
 

@@ -204,6 +204,10 @@ class RawImageIndexConnector(BaseConnector):
     def get_artifact_type_counts(self) -> list[dict]:
         return self._require_store().get_artifact_type_counts()
 
+    def get_coverage(self) -> dict:
+        store = self._require_store()
+        return store._coverage_summary(conn=store._conn())
+
     def _load_metadata(self, *, expected_fingerprint: str = "") -> dict[str, Any]:
         rows = self._require_store()._conn().execute(
             "SELECT key, value FROM raw_index_metadata"

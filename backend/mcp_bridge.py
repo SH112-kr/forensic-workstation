@@ -768,7 +768,7 @@ async def build_raw_file_index(
             try:
                 connector = RawImageIndexConnector()
                 meta = connector.connect(db_path, expected_fingerprint=fingerprint)
-                coverage = connector.search(limit=0).get("coverage", {})
+                coverage = connector.get_coverage()
                 if (
                     coverage.get("status") == "not_evaluable"
                     or int(coverage.get("parser_runs", 0) or 0) == 0
