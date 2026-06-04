@@ -246,7 +246,8 @@ class RawImageIndexConnector(BaseConnector):
             f"""
             SELECT t.artifact_id, t.unix_timestamp_ms, t.formatted_value,
                    t.field_name, a.artifact_type, a.description
-            FROM raw_index_artifact_times t
+            FROM raw_index_artifact_times AS t
+            INDEXED BY idx_raw_times_ms_artifact_field
             JOIN raw_index_artifacts a ON t.artifact_id = a.artifact_id
             {join_sql}
             WHERE {where_sql}
