@@ -88,6 +88,46 @@ def test_insert_artifacts_caches_fts_availability_lookup(tmp_path):
     assert len(fts_catalog_lookups) == 1
 
 
+def test_insert_artifact_builds_search_text_without_reselecting_inserted_rows(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+
+    search_text_reselects = [
+        sql
+        for sql in statements
+        if sql.lstrip().upper().startswith("SELECT")
+        and (
+            "FROM raw_index_artifacts" in sql
+            or "FROM raw_index_artifact_strings" in sql
+            or "FROM raw_index_locations" in sql
+        )
+    ]
+    result = store.search(keyword="alpha.exe", limit=10)
+
+    assert search_text_reselects == []
+    assert result["total"] == 1
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/alpha.exe"
+
+
 def test_search_loads_page_hit_details_in_batches(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

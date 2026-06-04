@@ -151,7 +151,18 @@ class RawIndexStore:
                 """,
                 (artifact_id, primary_path, source_path),
             )
-        self._refresh_search_text(artifact_id)
+        self._write_search_text(
+            artifact_id,
+            _search_text_from_values(
+                artifact_type=artifact_type,
+                source_ref=source_ref,
+                source_path=source_path,
+                primary_path=primary_path,
+                description=description,
+                strings=strings or {},
+                locations=[primary_path] if primary_path else [],
+            ),
+        )
         self._commit()
         return artifact_id
 
@@ -537,7 +548,12 @@ class RawIndexStore:
         return orphan is not None
 
     def _refresh_search_text(self, artifact_id: int) -> None:
-        search_text = self._search_text_for_artifact(artifact_id)
+        self._write_search_text(
+            artifact_id,
+            self._search_text_for_artifact(artifact_id),
+        )
+
+    def _write_search_text(self, artifact_id: int, search_text: str) -> None:
         self._conn().execute(
             """
             INSERT OR REPLACE INTO raw_index_search_text(
@@ -768,6 +784,34 @@ class RawIndexStore:
 def _id_chunks(values: list[int], size: int = 900) -> Iterator[list[int]]:
     for start in range(0, len(values), size):
         yield values[start:start + size]
+
+
+def _search_text_from_values(
+    *,
+    artifact_type: str,
+    source_ref: str,
+    source_path: str,
+    primary_path: str,
+    description: str,
+    strings: dict[str, str],
+    locations: list[str],
+) -> str:
+    parts = [
+        artifact_type,
+        source_ref,
+        source_path,
+        primary_path,
+        description,
+    ]
+    parts.extend(
+        str(value or "")
+        for _, value in sorted(
+            strings.items(),
+            key=lambda item: (str(item[0]), str(item[1])),
+        )
+    )
+    parts.extend(str(value or "") for value in sorted(locations))
+    return "\n".join(str(part) for part in parts if str(part))
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
