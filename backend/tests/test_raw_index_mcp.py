@@ -1466,6 +1466,93 @@ def test_behavioral_delta_pack_event_id_seed_reports_raw_index_unsupported(
     assert result["claims"] == []
 
 
+def test_entity_story_pack_uses_active_raw_index(monkeypatch, tmp_path):
+    raw = _seed_multi_timed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.entity_story_pack(
+        entity_value="alpha-one.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+        seed_keywords="alpha-two.exe",
+        window_minutes=5,
+        limit_per_keyword=10,
+    ))
+
+    assert result["ok"] is True
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["count_accuracy"] == "exact"
+    assert result["entity"]["seed_keywords"] == ["alpha-one.exe", "alpha-two.exe"]
+    assert result["summary"]["event_count"] == 1
+    assert result["summary"]["entity_hit_count"] == 1
+    assert result["summary"]["co_occurrence_windows"] >= 1
+    assert result["phases"][0]["kind"] == "first_seen"
+    assert result["timeline_excerpt"][0]["keyword"] == "alpha-one.exe"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_entity_story_pack_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.entity_story_pack(
+        entity_value="alpha-one.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_entity_story_not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+    assert result["phases"] == []
+    assert result["timeline_excerpt"] == []
+
+
+def test_entity_story_pack_event_id_seed_reports_raw_index_unsupported(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.entity_story_pack(
+        entity_value="agent.exe",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+        seed_keywords="event_id:4648",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_entity_story_event_id_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["phases"] == []
+    assert result["timeline_excerpt"] == []
+
+
 class _State:
     def __init__(self):
         self.captured = {}

@@ -720,6 +720,48 @@ def _raw_behavioral_delta_not_evaluable(
     }
 
 
+def _raw_entity_story_not_evaluable(
+    raw,
+    *,
+    entity_value: str,
+    seed_keywords: list[str],
+    start_date: str,
+    end_date: str,
+    reason: str,
+    detail: str,
+) -> dict:
+    seeds = [entity_value] + [s for s in seed_keywords if s != entity_value]
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "entity": {"value": entity_value, "seed_keywords": seeds},
+        "period": {"start": start_date, "end": end_date},
+        "summary": {
+            "event_count": 0,
+            "co_occurrence_windows": 0,
+            "entity_hit_count": 0,
+        },
+        "phases": [],
+        "timeline_excerpt": [],
+        "nearby_entities": [],
+        "supporting_findings": [],
+        "truncation_warnings": [],
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": reason,
+            "detail": detail,
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this as no entity activity. The raw "
+                "sidecar could not evaluate the requested story substrate."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -3753,8 +3795,57 @@ async def entity_story_pack(
     """
     def fn():
         from core.analysis.entity_story import entity_story as _story
-        axiom = _get_axiom()
         seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            raw_coverage = raw.get_coverage()
+            if str(raw_coverage.get("status") or "") == "not_evaluable":
+                return _mask(_raw_entity_story_not_evaluable(
+                    raw,
+                    entity_value=entity_value,
+                    seed_keywords=seeds,
+                    start_date=start_date,
+                    end_date=end_date,
+                    reason="raw_entity_story_not_evaluable",
+                    detail=(
+                        "The active raw sidecar reports not_evaluable "
+                        "coverage, so entity story cannot be computed "
+                        "without risking a silent miss."
+                    ),
+                ))
+            all_seeds = [entity_value] + seeds
+            if any(seed.lower().startswith("event_id:") for seed in all_seeds):
+                return _mask(_raw_entity_story_not_evaluable(
+                    raw,
+                    entity_value=entity_value,
+                    seed_keywords=seeds,
+                    start_date=start_date,
+                    end_date=end_date,
+                    reason="raw_entity_story_event_id_unsupported",
+                    detail=(
+                        "event_id seeds require parsed EVTX event fields. "
+                        "The active raw sidecar does not yet expose EVTX "
+                        "event-id records, so returning zero would be a "
+                        "silent miss risk."
+                    ),
+                ))
+            result = _story(
+                raw,
+                entity_value=entity_value,
+                start_date=start_date,
+                end_date=end_date,
+                seed_keywords=seeds,
+                window_minutes=window_minutes,
+                limit_per_keyword=limit_per_keyword,
+                match_key=match_key,
+                graph_limit_per_node_type=graph_limit_per_node_type,
+                match_mode=match_mode,
+            )
+            result["source_type"] = "raw_image_sidecar"
+            result["count_accuracy"] = "exact"
+            result["raw_index_coverage"] = raw_coverage
+            return _mask(result)
+        axiom = _get_axiom()
         return _mask(_story(
             axiom,
             entity_value=entity_value,
