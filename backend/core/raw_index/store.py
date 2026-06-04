@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -21,6 +22,8 @@ class RawIndexStore:
         self._pending_commit = False
         self._fts_available_cache: bool | None = None
         self._search_text_current_cache_version: int | None = None
+        self._coverage_summary_cache_version: int | None = None
+        self._coverage_summary_cache: dict[str, Any] | None = None
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -31,6 +34,7 @@ class RawIndexStore:
         initialize_schema(self.conn)
         self._fts_available_cache = None
         self._search_text_current_cache_version = None
+        self._invalidate_coverage_summary_cache()
 
     def close(self) -> None:
         if self.conn:
@@ -38,6 +42,7 @@ class RawIndexStore:
             self.conn = None
         self._fts_available_cache = None
         self._search_text_current_cache_version = None
+        self._invalidate_coverage_summary_cache()
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -76,6 +81,7 @@ class RawIndexStore:
             (parser_name, source_ref, "running", started_at),
         )
         self._commit()
+        self._invalidate_coverage_summary_cache()
         return int(cur.lastrowid)
 
     def finish_parser_run(
@@ -96,6 +102,7 @@ class RawIndexStore:
             (status, coverage_status, finished_at, error, run_id),
         )
         self._commit()
+        self._invalidate_coverage_summary_cache()
 
     def insert_artifact(
         self,
@@ -450,6 +457,13 @@ class RawIndexStore:
         return details
 
     def _coverage_summary(self) -> dict[str, Any]:
+        current_data_version = self._sqlite_data_version()
+        if (
+            current_data_version is not None
+            and self._coverage_summary_cache is not None
+            and self._coverage_summary_cache_version == current_data_version
+        ):
+            return copy.deepcopy(self._coverage_summary_cache)
         rows = self._conn().execute(
             """
             SELECT parser_name, source_ref, status, coverage_status, error
@@ -458,7 +472,7 @@ class RawIndexStore:
             """
         ).fetchall()
         if not rows:
-            return {
+            return self._cache_coverage_summary({
                 "status": "not_evaluable",
                 "gaps": [{
                     "status": "not_evaluable",
@@ -466,7 +480,7 @@ class RawIndexStore:
                     "error": "No parser runs are recorded in this raw index.",
                 }],
                 "parser_runs": 0,
-            }
+            })
         gaps = []
         for row in rows:
             coverage_status = str(row["coverage_status"] or "")
@@ -487,11 +501,22 @@ class RawIndexStore:
                 summary_status = "not_evaluable"
             else:
                 summary_status = "coverage_gap"
-        return {
+        return self._cache_coverage_summary({
             "status": summary_status,
             "gaps": gaps,
             "parser_runs": len(rows),
-        }
+        })
+
+    def _cache_coverage_summary(self, summary: dict[str, Any]) -> dict[str, Any]:
+        current_data_version = self._sqlite_data_version()
+        if current_data_version is not None:
+            self._coverage_summary_cache_version = current_data_version
+            self._coverage_summary_cache = copy.deepcopy(summary)
+        return summary
+
+    def _invalidate_coverage_summary_cache(self) -> None:
+        self._coverage_summary_cache_version = None
+        self._coverage_summary_cache = None
 
     def rebuild_search_text(self) -> None:
         self._conn().execute("DELETE FROM raw_index_search_text")

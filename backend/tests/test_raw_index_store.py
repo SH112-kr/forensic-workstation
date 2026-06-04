@@ -235,6 +235,76 @@ def test_repeated_keyword_searches_cache_search_text_freshness_until_external_ch
     assert post_change_count_checks
 
 
+def test_repeated_searches_cache_coverage_summary_until_external_parser_run_change(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/alpha.exe",
+        primary_path="/c:/Tools/alpha.exe",
+        description="File System Entry /c:/Tools/alpha.exe",
+        strings={"Name": "alpha.exe", "Path": "/c:/Tools/alpha.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    first = store.search(artifact_type="File System Entry", limit=10)
+    second = store.search(artifact_type="File System Entry", limit=10)
+
+    coverage_selects = [
+        sql for sql in statements if "FROM raw_index_parser_runs" in sql
+    ]
+    assert first["coverage"]["status"] == "searched"
+    assert second["coverage"]["status"] == "searched"
+    assert len(coverage_selects) == 1
+
+    with sqlite3.connect(db_path) as other_conn:
+        other_conn.execute(
+            """
+            INSERT INTO raw_index_parser_runs(
+                parser_name, source_ref, status, started_at, finished_at,
+                coverage_status, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "external_parser",
+                "/c:",
+                "failed",
+                "2026-06-04T00:00:02Z",
+                "2026-06-04T00:00:03Z",
+                "not_evaluable",
+                "simulated external parser failure",
+            ),
+        )
+
+    statements.clear()
+    changed = store.search(artifact_type="File System Entry", limit=10)
+    post_change_selects = [
+        sql for sql in statements if "FROM raw_index_parser_runs" in sql
+    ]
+
+    assert changed["coverage"]["status"] == "not_evaluable"
+    assert changed["coverage"]["gaps"][0]["error"] == (
+        "simulated external parser failure"
+    )
+    assert post_change_selects
+
+
 def test_search_loads_page_hit_details_in_batches(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
