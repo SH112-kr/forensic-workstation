@@ -885,13 +885,19 @@ async def build_raw_file_index(
 def _parse_raw_index_roots(roots: str) -> list[str]:
     values = sorted(
         dict.fromkeys(
-            item.strip()
+            _canonical_raw_index_root(item.strip())
             for item in str(roots or "").split(",")
             if item.strip()
         ),
         key=str.lower,
     )
     return values or ["/c:"]
+
+
+def _canonical_raw_index_root(root: str) -> str:
+    if len(root) == 3 and root[0] == "/" and root[2] == ":":
+        return f"/{root[1].lower()}:"
+    return root
 
 
 def _raw_image_index_fingerprint(image_meta: dict[str, Any]) -> str:
