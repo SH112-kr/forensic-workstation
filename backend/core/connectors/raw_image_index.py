@@ -199,22 +199,7 @@ class RawImageIndexConnector(BaseConnector):
         }
 
     def get_artifact_type_counts(self) -> list[dict]:
-        rows = self._require_store()._conn().execute(
-            """
-            SELECT artifact_type, COUNT(*) AS hit_count
-            FROM raw_index_artifacts
-            GROUP BY artifact_type
-            ORDER BY artifact_type
-            """
-        ).fetchall()
-        return [
-            {
-                "artifact_name": row["artifact_type"],
-                "hit_count": int(row["hit_count"]),
-                "count_accuracy": "exact",
-            }
-            for row in rows
-        ]
+        return self._require_store().get_artifact_type_counts()
 
     def _load_metadata(self, *, expected_fingerprint: str = "") -> dict[str, Any]:
         rows = self._require_store()._conn().execute(

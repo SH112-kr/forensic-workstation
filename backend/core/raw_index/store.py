@@ -26,6 +26,8 @@ class RawIndexStore:
         self._coverage_summary_cache: dict[str, Any] | None = None
         self._fts_current_cache_version: int | None = None
         self._fts_current_cache: bool | None = None
+        self._artifact_type_counts_cache_version: int | None = None
+        self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -38,6 +40,7 @@ class RawIndexStore:
         self._search_text_current_cache_version = None
         self._invalidate_coverage_summary_cache()
         self._invalidate_fts_current_cache()
+        self._invalidate_artifact_type_counts_cache()
 
     def close(self) -> None:
         if self.conn:
@@ -47,6 +50,7 @@ class RawIndexStore:
         self._search_text_current_cache_version = None
         self._invalidate_coverage_summary_cache()
         self._invalidate_fts_current_cache()
+        self._invalidate_artifact_type_counts_cache()
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -179,6 +183,7 @@ class RawIndexStore:
             replace_fts=False,
         )
         self._commit()
+        self._invalidate_artifact_type_counts_cache()
         return artifact_id
 
     def search(
@@ -382,6 +387,46 @@ class RawIndexStore:
         if not details:
             return {"error": f"artifact_id {artifact_id} not found"}
         return details[0]
+
+    def get_artifact_type_counts(self) -> list[dict[str, Any]]:
+        current_data_version = self._sqlite_data_version()
+        if (
+            current_data_version is not None
+            and self._artifact_type_counts_cache is not None
+            and self._artifact_type_counts_cache_version == current_data_version
+        ):
+            return copy.deepcopy(self._artifact_type_counts_cache)
+        rows = self._conn().execute(
+            """
+            SELECT artifact_type, COUNT(*) AS hit_count
+            FROM raw_index_artifacts
+            GROUP BY artifact_type
+            ORDER BY artifact_type
+            """
+        ).fetchall()
+        counts = [
+            {
+                "artifact_name": row["artifact_type"],
+                "hit_count": int(row["hit_count"]),
+                "count_accuracy": "exact",
+            }
+            for row in rows
+        ]
+        return self._cache_artifact_type_counts(counts)
+
+    def _cache_artifact_type_counts(
+        self,
+        counts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        current_data_version = self._sqlite_data_version()
+        if current_data_version is not None:
+            self._artifact_type_counts_cache_version = current_data_version
+            self._artifact_type_counts_cache = copy.deepcopy(counts)
+        return counts
+
+    def _invalidate_artifact_type_counts_cache(self) -> None:
+        self._artifact_type_counts_cache_version = None
+        self._artifact_type_counts_cache = None
 
     def _get_hit_details(self, artifact_ids: list[int]) -> list[dict[str, Any]]:
         if not artifact_ids:

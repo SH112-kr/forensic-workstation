@@ -201,6 +201,59 @@ def test_raw_image_index_connector_timeline_uses_fast_candidate_index(tmp_path):
     assert timeline["timeline_strategy"]["revalidated"] is True
 
 
+def test_raw_image_index_connector_caches_artifact_type_counts_until_external_change(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    statements: list[str] = []
+    conn._require_store()._conn().set_trace_callback(statements.append)
+
+    first = conn.get_artifact_type_counts()
+    second = conn.get_artifact_type_counts()
+
+    count_selects = [
+        sql
+        for sql in statements
+        if "SELECT artifact_type, COUNT(*) AS hit_count" in sql
+    ]
+    assert first == second
+    assert first[0]["artifact_name"] == "File System Entry"
+    assert first[0]["count_accuracy"] == "exact"
+    assert len(count_selects) == 1
+
+    with sqlite3.connect(db_path) as other_conn:
+        other_conn.execute(
+            """
+            INSERT INTO raw_index_artifacts(
+                artifact_type, source_ref, source_path, primary_path,
+                description
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "Registry Entry",
+                "external",
+                "/c:/Windows/System32/config/SOFTWARE",
+                "HKLM/Software/Example",
+                "Registry Entry HKLM/Software/Example",
+            ),
+        )
+
+    statements.clear()
+    changed = conn.get_artifact_type_counts()
+    post_change_selects = [
+        sql
+        for sql in statements
+        if "SELECT artifact_type, COUNT(*) AS hit_count" in sql
+    ]
+
+    assert [row["artifact_name"] for row in changed] == [
+        "File System Entry",
+        "Registry Entry",
+    ]
+    assert post_change_selects
+
+
 def test_raw_image_index_connector_rejects_schema_mismatch(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)
