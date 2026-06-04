@@ -3330,8 +3330,35 @@ async def get_tagged_hits(tag_name: str = "") -> dict:
 @mcp.tool()
 async def search_by_hash(hash_value: str, limit: int = 50, offset: int = 0) -> dict:
     """Find artifacts by hash."""
-    return await _traced("search_by_hash", {"hash": hash_value, "limit": limit, "offset": offset},
-                   lambda: _mask(_get_axiom().search_by_hash(hash_value, limit, offset)))
+    def fn():
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "query": {"hash": hash_value},
+                "total": 0,
+                "returned": 0,
+                "offset": offset,
+                "limit": limit,
+                "hits": [],
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_hash_search_unsupported",
+                    "message": (
+                        "Raw image sidecar indexes do not support "
+                        "cryptographic hash lookup yet."
+                    ),
+                },
+            })
+        return _mask(_get_axiom().search_by_hash(hash_value, limit, offset))
+
+    return await _traced(
+        "search_by_hash",
+        {"hash": hash_value, "limit": limit, "offset": offset},
+        fn,
+    )
 
 
 @mcp.tool()

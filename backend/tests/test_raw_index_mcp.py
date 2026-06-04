@@ -493,6 +493,28 @@ def test_get_hit_detail_uses_active_raw_index(monkeypatch, tmp_path):
     assert result["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
+def test_search_by_hash_reports_raw_index_unsupported_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_by_hash("deadbeef", limit=10, offset=2))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["query"] == {"hash": "deadbeef"}
+    assert result["total"] == 0
+    assert result["returned"] == 0
+    assert result["offset"] == 2
+    assert result["limit"] == 10
+    assert result["hits"] == []
+    assert result["coverage_gap"]["reason"] == "raw_hash_search_unsupported"
+
+
 class _State:
     def __init__(self):
         self.captured = {}
