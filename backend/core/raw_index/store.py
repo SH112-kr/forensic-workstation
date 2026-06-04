@@ -28,6 +28,8 @@ class RawIndexStore:
         self._fts_current_cache: bool | None = None
         self._artifact_type_counts_cache_version: int | None = None
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
+        self._untimed_candidate_cache_version: int | None = None
+        self._untimed_candidate_cache: dict[tuple[str, tuple[str, ...]], bool] = {}
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -41,6 +43,7 @@ class RawIndexStore:
         self._invalidate_coverage_summary_cache()
         self._invalidate_fts_current_cache()
         self._invalidate_artifact_type_counts_cache()
+        self._invalidate_untimed_candidate_cache()
 
     def close(self) -> None:
         if self.conn:
@@ -51,6 +54,7 @@ class RawIndexStore:
         self._invalidate_coverage_summary_cache()
         self._invalidate_fts_current_cache()
         self._invalidate_artifact_type_counts_cache()
+        self._invalidate_untimed_candidate_cache()
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -185,6 +189,7 @@ class RawIndexStore:
         )
         self._commit()
         self._invalidate_artifact_type_counts_cache()
+        self._invalidate_untimed_candidate_cache()
         return artifact_id
 
     def search(
@@ -428,6 +433,10 @@ class RawIndexStore:
     def _invalidate_artifact_type_counts_cache(self) -> None:
         self._artifact_type_counts_cache_version = None
         self._artifact_type_counts_cache = None
+
+    def _invalidate_untimed_candidate_cache(self) -> None:
+        self._untimed_candidate_cache_version = None
+        self._untimed_candidate_cache = {}
 
     def _get_hit_details(self, artifact_ids: list[int]) -> list[dict[str, Any]]:
         if not artifact_ids:
@@ -883,6 +892,14 @@ class RawIndexStore:
         if artifact_type:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)
+        cache_key = (artifact_type, tuple(keyword_likes))
+        current_data_version = self._sqlite_data_version()
+        if current_data_version is not None:
+            if self._untimed_candidate_cache_version != current_data_version:
+                self._untimed_candidate_cache = {}
+                self._untimed_candidate_cache_version = current_data_version
+            if cache_key in self._untimed_candidate_cache:
+                return self._untimed_candidate_cache[cache_key]
         where.append(
             """
             NOT EXISTS (
@@ -903,7 +920,10 @@ class RawIndexStore:
             """,
             params,
         ).fetchone()
-        return row is not None
+        result = row is not None
+        if current_data_version is not None:
+            self._untimed_candidate_cache[cache_key] = result
+        return result
 
 
 def _id_chunks(values: list[int], size: int = 900) -> Iterator[list[int]]:

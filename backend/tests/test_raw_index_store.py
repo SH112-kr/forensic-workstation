@@ -1147,3 +1147,97 @@ def test_date_filtered_search_without_indexed_times_is_not_evaluable(tmp_path):
     assert result["status"] == "not_evaluable"
     assert result["coverage"]["status"] == "not_evaluable"
     assert result["coverage"]["gaps"][0]["reason"] == "raw_search_date_filter_without_indexed_times"
+
+
+def test_repeated_date_filtered_searches_cache_untimed_candidate_probe(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    _ms("2026-10-04T00:00:00Z"),
+                    "2026-10-04T00:00:00Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    first = store.search(
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+    second = store.search(
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    untimed_probes = [
+        sql
+        for sql in statements
+        if "NOT EXISTS" in sql
+        and "FROM raw_index_artifact_times t" in sql
+    ]
+    assert first["total"] == 2
+    assert second["total"] == 2
+    assert len(untimed_probes) == 1
+
+    with sqlite3.connect(db_path) as other_conn:
+        other_conn.execute(
+            """
+            INSERT INTO raw_index_artifacts(
+                artifact_type, source_ref, source_path, primary_path,
+                description, parser_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "File System Entry",
+                "/c:",
+                "/c:/Tools/notimed.exe",
+                "/c:/Tools/notimed.exe",
+                "File System Entry /c:/Tools/notimed.exe",
+                run_id,
+            ),
+        )
+
+    statements.clear()
+    changed = store.search(
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+    post_change_probes = [
+        sql
+        for sql in statements
+        if "NOT EXISTS" in sql
+        and "FROM raw_index_artifact_times t" in sql
+    ]
+
+    assert changed["status"] == "not_evaluable"
+    assert post_change_probes
