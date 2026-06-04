@@ -895,8 +895,11 @@ def _parse_raw_index_roots(roots: str) -> list[str]:
 
 
 def _canonical_raw_index_root(root: str) -> str:
-    if len(root) == 3 and root[0] == "/" and root[2] == ":":
-        return f"/{root[1].lower()}:"
+    value = root.rstrip("/")
+    if len(value) == 2 and value[1] == ":":
+        return f"/{value[0].lower()}:"
+    if len(value) == 3 and value[0] == "/" and value[2] == ":":
+        return f"/{value[1].lower()}:"
     return root
 
 
