@@ -827,6 +827,65 @@ def _raw_auto_seed_not_evaluable(
     }
 
 
+def _normalize_custom_mitre_findings(custom_findings: str) -> tuple[list[dict], str]:
+    if not custom_findings.strip():
+        return [], ""
+    try:
+        custom = json.loads(custom_findings)
+    except json.JSONDecodeError as exc:
+        return [], f"Invalid JSON in custom_findings: {exc}"
+    findings: list[dict] = []
+    if not isinstance(custom, list):
+        return findings, ""
+    for finding in custom:
+        if not isinstance(finding, dict):
+            continue
+        normalized = dict(finding)
+        if "technique_id" in normalized and "mitre_techniques" not in normalized:
+            normalized["mitre_techniques"] = [normalized["technique_id"]]
+        if "matching_count" not in normalized:
+            normalized["matching_count"] = 1
+        if "rule_name" not in normalized:
+            normalized["rule_name"] = "llm_analysis"
+        findings.append(normalized)
+    return findings, ""
+
+
+def _raw_mitre_mapping_result(raw, custom_findings: str) -> dict:
+    from core.analysis.mitre_mapper import get_attack_narrative
+
+    custom, error = _normalize_custom_mitre_findings(custom_findings)
+    if error:
+        return {"error": error}
+    result = get_attack_narrative(custom)
+    result.update({
+        "ok": bool(custom),
+        "status": "partial" if custom else "not_evaluable",
+        "source_type": "raw_image_sidecar",
+        "auto_findings_evaluated": False,
+        "custom_findings_mapped": len(custom),
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": "raw_mitre_auto_detection_unsupported",
+            "detail": (
+                "map_to_mitre can map supplied custom findings in raw-sidecar "
+                "mode, but automatic finding discovery still depends on "
+                "find_suspicious parsed-case substrates that raw sidecars do "
+                "not expose yet."
+            ),
+        },
+        "raw_index_coverage": raw.get_coverage(),
+        "notes": [
+            (
+                "Do not interpret this as a complete ATT&CK map. AXIOM/KAPE "
+                "remain parity references for auto-detected findings until "
+                "raw detection substrates are implemented."
+            ),
+        ],
+    })
+    return result
+
+
 @mcp.tool()
 async def enable_masking(hostnames: str = "", usernames: str = "", custom_values: str = "") -> dict:
     """Enable data masking for sensitive values."""
@@ -4206,26 +4265,19 @@ async def map_to_mitre(custom_findings: str = "") -> dict:
         from core.analysis.suspicious import find_suspicious as _find
         from core.analysis.mitre_mapper import get_attack_narrative
 
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask(_raw_mitre_mapping_result(raw, custom_findings))
+
         # Auto-detected findings
         sus = _find(_get_axiom().artifact_queries)
         findings = sus.get("findings", [])
 
         # Merge LLM-provided custom findings
-        if custom_findings.strip():
-            try:
-                custom = json.loads(custom_findings)
-                if isinstance(custom, list):
-                    for cf in custom:
-                        # Normalize: ensure mitre_techniques field exists
-                        if "technique_id" in cf and "mitre_techniques" not in cf:
-                            cf["mitre_techniques"] = [cf["technique_id"]]
-                        if "matching_count" not in cf:
-                            cf["matching_count"] = 1
-                        if "rule_name" not in cf:
-                            cf["rule_name"] = "llm_analysis"
-                        findings.append(cf)
-            except json.JSONDecodeError as e:
-                return {"error": f"Invalid JSON in custom_findings: {e}"}
+        custom, error = _normalize_custom_mitre_findings(custom_findings)
+        if error:
+            return {"error": error}
+        findings.extend(custom)
 
         return _mask(get_attack_narrative(findings))
     return await _traced("map_to_mitre", {"custom_findings": custom_findings[:200] + "..." if len(custom_findings) > 200 else custom_findings}, fn)

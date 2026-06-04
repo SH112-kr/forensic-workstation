@@ -987,6 +987,71 @@ def test_find_suspicious_preserves_raw_index_not_evaluable_coverage(
     )
 
 
+def test_map_to_mitre_maps_custom_findings_without_axiom_in_raw_only(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    custom = json.dumps([
+        {
+            "technique_id": "T1572",
+            "rule_name": "ssh_tunnel",
+            "severity": "critical",
+            "description": "Synthetic tunnel finding",
+            "matching_count": 1,
+        }
+    ])
+
+    result = _run(mcp_bridge.map_to_mitre(custom_findings=custom))
+
+    assert result.get("ok") is True
+    assert result["status"] == "partial"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["auto_findings_evaluated"] is False
+    assert result["custom_findings_mapped"] == 1
+    assert result["coverage_gap"]["reason"] == (
+        "raw_mitre_auto_detection_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["attack_phases"] == 1
+    assert result["narrative"][0]["techniques"][0]["id"] == "T1572"
+
+
+def test_map_to_mitre_reports_raw_auto_detection_unsupported_without_custom(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.map_to_mitre())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["auto_findings_evaluated"] is False
+    assert result["custom_findings_mapped"] == 0
+    assert result["attack_phases"] == 0
+    assert result["narrative"] == []
+    assert result["summary"] == {}
+    assert result["coverage_gap"]["reason"] == (
+        "raw_mitre_auto_detection_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
 def test_assess_evidence_strength_auto_findings_reports_raw_index_not_evaluable(
     monkeypatch,
     tmp_path,
