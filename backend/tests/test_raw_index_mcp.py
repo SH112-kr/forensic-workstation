@@ -294,6 +294,57 @@ def test_coverage_explainer_preserves_raw_index_not_evaluable_coverage(
     )
 
 
+def test_explain_zero_results_uses_active_raw_index_coverage(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.explain_zero_results(
+        "search_artifacts",
+        '{"artifact_type": "Prefetch", "keyword": "prefetch"}',
+    ))
+
+    causes = [cause["cause"] for cause in result["likely_causes"]]
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["case_context"]["case_format"] == "raw_image_sidecar"
+    assert "raw_artifact_family_not_indexed" in causes
+    assert "no_cases_loaded" not in causes
+    assert result["coverage"][0]["artifact_type"] == "Prefetch"
+    assert result["coverage"][0]["status"] == "not_evaluable"
+    assert any(
+        suggestion["tool_name"] == "coverage_explainer"
+        and suggestion["params"] == {"artifact_types": "Prefetch"}
+        for suggestion in result["suggested_queries"]
+    )
+
+
+def test_explain_zero_results_preserves_raw_index_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.explain_zero_results(
+        "search_artifacts",
+        '{"keyword": "agent.exe"}',
+    ))
+
+    causes = [cause["cause"] for cause in result["likely_causes"]]
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert "raw_index_not_evaluable" in causes
+    assert "no_cases_loaded" not in causes
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
 def test_search_artifacts_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)

@@ -1186,6 +1186,210 @@ async def compare_cases() -> dict:
     return await _traced("compare_cases", {}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
+def _raw_index_coverage_report(
+    raw: Any,
+    artifact_types: list[str] | None = None,
+) -> dict[str, Any]:
+    raw_counts = raw.get_artifact_type_counts()
+    counts_by_type = {
+        str(
+            row.get("artifact_name")
+            or row.get("artifact_type")
+            or row.get("name")
+            or ""
+        ): int(row.get("hit_count") or row.get("count") or 0)
+        for row in raw_counts or []
+        if row.get("artifact_name") or row.get("artifact_type") or row.get("name")
+    }
+    families = artifact_types or sorted(counts_by_type.keys())
+    coverage: list[dict[str, Any]] = []
+    count_searched = 0
+    count_not_evaluable = 0
+    for family in families:
+        if family in counts_by_type and counts_by_type[family] > 0:
+            coverage.append({
+                "artifact_type": family,
+                "status": "searched",
+                "record_count": counts_by_type[family],
+                "cases": ["raw_index"],
+                "reason": None,
+            })
+            count_searched += 1
+            continue
+        coverage.append({
+            "artifact_type": family,
+            "status": "not_evaluable",
+            "record_count": 0,
+            "cases": [],
+            "reason": "raw_artifact_family_not_indexed",
+            "detail": (
+                "The active raw sidecar has not indexed this artifact family. "
+                "Do not treat this as zero activity."
+            ),
+        })
+        count_not_evaluable += 1
+    raw_coverage = raw.get_coverage()
+    raw_coverage_status = str(raw_coverage.get("status") or "")
+    result_status = ""
+    if count_not_evaluable or raw_coverage_status == "not_evaluable":
+        result_status = "not_evaluable"
+    elif raw_coverage_status == "coverage_gap":
+        result_status = "coverage_gap"
+    return {
+        "ok": result_status != "not_evaluable",
+        **({"status": result_status} if result_status else {}),
+        "tool": "coverage_explainer",
+        "source_type": "raw_image_sidecar",
+        "case_context": {
+            "case_format": "raw_image_sidecar",
+            "kinds": ["raw_image_sidecar"],
+            "cases": ["raw_index"],
+            "has_mfdb": False,
+            "has_kape": False,
+        },
+        "coverage": coverage,
+        "summary": {
+            "total_reported": len(coverage),
+            "searched": count_searched,
+            "available_not_loaded": 0,
+            "structurally_unavailable": 0,
+            "not_evaluable": count_not_evaluable,
+            "axiom_only_family_count": 0,
+        },
+        "raw_index_coverage": raw_coverage,
+        "notes": [
+            (
+                "Coverage is from the raw image sidecar only; AXIOM/KAPE parity "
+                "remains required before treating it as a full replacement."
+            ),
+        ],
+    }
+
+
+def _explain_raw_zero_results(
+    raw: Any,
+    *,
+    tool_name: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    artifact_type = str(params.get("artifact_type") or "").strip()
+    keyword = str(params.get("keyword") or "").strip()
+    keywords = str(params.get("keywords") or "").strip()
+    start_date = str(params.get("start_date") or "").strip()
+    end_date = str(params.get("end_date") or "").strip()
+    coverage_report = _raw_index_coverage_report(
+        raw,
+        [artifact_type] if artifact_type else None,
+    )
+    causes: list[dict[str, Any]] = []
+    suggestions: list[dict[str, Any]] = []
+
+    for item in coverage_report.get("coverage", []):
+        if (
+            item.get("artifact_type") == artifact_type
+            and item.get("status") == "not_evaluable"
+            and item.get("reason") == "raw_artifact_family_not_indexed"
+        ):
+            causes.append({
+                "cause": "raw_artifact_family_not_indexed",
+                "confidence": "high",
+                "detail": (
+                    f"Artifact family '{artifact_type}' is not indexed in the "
+                    "active raw sidecar. This is not evidence of zero activity."
+                ),
+                "reason": item.get("reason"),
+            })
+            suggestions.append({
+                "tool_name": "coverage_explainer",
+                "params": {"artifact_types": artifact_type},
+                "why": "Confirm the raw sidecar coverage gap for this family.",
+            })
+
+    raw_coverage = coverage_report.get("raw_index_coverage", {})
+    raw_coverage_status = str(raw_coverage.get("status") or "")
+    if raw_coverage_status == "not_evaluable":
+        causes.append({
+            "cause": "raw_index_not_evaluable",
+            "confidence": "high",
+            "detail": (
+                "The active raw sidecar has parser-run coverage gaps, so this "
+                "zero-result query cannot be interpreted as absence."
+            ),
+            "coverage_gaps": raw_coverage.get("gaps", []),
+        })
+
+    combined_kw = keyword or keywords
+    if combined_kw and (artifact_type or start_date or end_date):
+        causes.append({
+            "cause": "filters_stacked",
+            "confidence": "low",
+            "detail": (
+                "Multiple filters are stacked (keyword + artifact_type/date). "
+                "Any one of them could be excluding results."
+            ),
+        })
+        suggestions.append({
+            "tool_name": tool_name,
+            "params": {
+                **params,
+                "artifact_type": "",
+                "start_date": "",
+                "end_date": "",
+            },
+            "why": "Retry with only the keyword to see if the filter stack is over-constrained.",
+        })
+        if artifact_type:
+            suggestions.append({
+                "tool_name": tool_name,
+                "params": {**params, "keyword": "", "keywords": ""},
+                "why": "Retry with only the artifact_type to see if the keyword was the limiting filter.",
+            })
+
+    if not causes:
+        causes.append({
+            "cause": "unexplained",
+            "confidence": "low",
+            "detail": (
+                "No obvious raw-sidecar coverage reason was detected. Re-check "
+                "the keyword spelling or broaden the query."
+            ),
+        })
+
+    if not any(s.get("tool_name") == "coverage_explainer" for s in suggestions):
+        suggestions.append({
+            "tool_name": "coverage_explainer",
+            "params": {"artifact_types": artifact_type} if artifact_type else {},
+            "why": "Inspect raw sidecar coverage before interpreting the zero result.",
+        })
+
+    not_evaluable = any(
+        cause.get("cause") in {
+            "raw_artifact_family_not_indexed",
+            "raw_index_not_evaluable",
+        }
+        for cause in causes
+    )
+    return {
+        "ok": not not_evaluable,
+        **({"status": "not_evaluable"} if not_evaluable else {}),
+        "tool": "explain_zero_results",
+        "source_type": "raw_image_sidecar",
+        "input": {"tool_name": tool_name, "params": params},
+        "case_context": coverage_report.get("case_context", {}),
+        "coverage": coverage_report.get("coverage", []),
+        "raw_index_coverage": raw_coverage,
+        "likely_causes": causes,
+        "suggested_queries": suggestions,
+        "notes": [
+            (
+                "0 results does not mean 'no activity'. In raw-sidecar mode, "
+                "coverage gaps and unsupported families must be resolved before "
+                "interpreting absence."
+            ),
+        ],
+    }
+
+
 @mcp.tool()
 async def explain_zero_results(
     tool_name: str,
@@ -1214,6 +1418,13 @@ async def explain_zero_results(
         from state import app_state
         from core.analysis.zero_results import explain_zero_results as _explain
         _ensure_cases_hydrated()
+        raw = _get_raw_index()
+        if raw and not _parsed_case_loaded():
+            return _mask(_explain_raw_zero_results(
+                raw,
+                tool_name=tool_name,
+                params=params,
+            ))
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
         return _mask(_explain(axiom_conns, tool_name=tool_name, params=params))
     return await _traced(
@@ -1251,77 +1462,7 @@ async def coverage_explainer(artifact_types: str = "") -> dict:
         requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
         raw = _get_raw_index()
         if raw and not _parsed_case_loaded():
-            raw_counts = raw.get_artifact_type_counts()
-            counts_by_type = {
-                str(
-                    row.get("artifact_name")
-                    or row.get("artifact_type")
-                    or row.get("name")
-                    or ""
-                ): int(row.get("hit_count") or row.get("count") or 0)
-                for row in raw_counts or []
-                if row.get("artifact_name") or row.get("artifact_type") or row.get("name")
-            }
-            families = requested or sorted(counts_by_type.keys())
-            coverage = []
-            count_searched = 0
-            count_not_evaluable = 0
-            for family in families:
-                if family in counts_by_type and counts_by_type[family] > 0:
-                    coverage.append({
-                        "artifact_type": family,
-                        "status": "searched",
-                        "record_count": counts_by_type[family],
-                        "cases": ["raw_index"],
-                        "reason": None,
-                    })
-                    count_searched += 1
-                    continue
-                coverage.append({
-                    "artifact_type": family,
-                    "status": "not_evaluable",
-                    "record_count": 0,
-                    "cases": [],
-                    "reason": "raw_artifact_family_not_indexed",
-                    "detail": (
-                        "The active raw sidecar has not indexed this artifact "
-                        "family. Do not treat this as zero activity."
-                    ),
-                })
-                count_not_evaluable += 1
-            raw_coverage = raw.get_coverage()
-            raw_coverage_status = str(raw_coverage.get("status") or "")
-            result_status = ""
-            if count_not_evaluable or raw_coverage_status == "not_evaluable":
-                result_status = "not_evaluable"
-            elif raw_coverage_status == "coverage_gap":
-                result_status = "coverage_gap"
-            return _mask({
-                "ok": result_status != "not_evaluable",
-                **({"status": result_status} if result_status else {}),
-                "tool": "coverage_explainer",
-                "source_type": "raw_image_sidecar",
-                "case_context": {
-                    "case_format": "raw_image_sidecar",
-                    "kinds": ["raw_image_sidecar"],
-                    "cases": ["raw_index"],
-                    "has_mfdb": False,
-                    "has_kape": False,
-                },
-                "coverage": coverage,
-                "summary": {
-                    "total_reported": len(coverage),
-                    "searched": count_searched,
-                    "available_not_loaded": 0,
-                    "structurally_unavailable": 0,
-                    "not_evaluable": count_not_evaluable,
-                    "axiom_only_family_count": 0,
-                },
-                "raw_index_coverage": raw_coverage,
-                "notes": [
-                    "Coverage is from the raw image sidecar only; AXIOM/KAPE parity remains required before treating it as a full replacement.",
-                ],
-            })
+            return _mask(_raw_index_coverage_report(raw, requested))
         # Pass only the axiom:* connectors — coverage never touches E01/Vol/Ghidra.
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
         report = build_coverage_report(axiom_conns, artifact_types=requested)
