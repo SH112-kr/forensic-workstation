@@ -99,7 +99,9 @@ class RawImageIndexConnector(BaseConnector):
             placeholders = ",".join("?" * len(artifact_types))
             where.append(f"a.artifact_type IN ({placeholders})")
             params.extend(artifact_types)
-        keyword_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+        keyword_list = list(
+            dict.fromkeys(str(k).strip() for k in (keywords or []) if str(k).strip())
+        )
         if keyword_list:
             strategy["keyword_filter"] = "search_text"
             strategy["rebuilt_search_text"] = store._ensure_search_text_current(
