@@ -19,6 +19,7 @@ class RawIndexStore:
         self.conn: sqlite3.Connection | None = None
         self._batch_depth = 0
         self._pending_commit = False
+        self._fts_available_cache: bool | None = None
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -27,11 +28,13 @@ class RawIndexStore:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         initialize_schema(self.conn)
+        self._fts_available_cache = None
 
     def close(self) -> None:
         if self.conn:
             self.conn.close()
             self.conn = None
+        self._fts_available_cache = None
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -704,8 +707,10 @@ class RawIndexStore:
             return True
 
     def _fts_available(self) -> bool:
+        if self._fts_available_cache is not None:
+            return self._fts_available_cache
         try:
-            return self._conn().execute(
+            self._fts_available_cache = self._conn().execute(
                 """
                 SELECT 1
                 FROM sqlite_master
@@ -713,7 +718,8 @@ class RawIndexStore:
                 """
             ).fetchone() is not None
         except sqlite3.Error:
-            return False
+            self._fts_available_cache = False
+        return self._fts_available_cache
 
     def _has_untimed_candidate(
         self,

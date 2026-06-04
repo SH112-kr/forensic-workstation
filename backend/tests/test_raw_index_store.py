@@ -54,6 +54,40 @@ def test_store_inserts_artifact_and_returns_exact_count(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Windows/notepad.exe"
 
 
+def test_insert_artifacts_caches_fts_availability_lookup(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            parser_run_id=run_id,
+        )
+
+    fts_catalog_lookups = [
+        sql
+        for sql in statements
+        if "FROM sqlite_master" in sql
+        and "raw_index_search_fts" in sql
+    ]
+    assert fts_catalog_lookups
+    assert len(fts_catalog_lookups) == 1
+
+
 def test_search_loads_page_hit_details_in_batches(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
