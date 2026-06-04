@@ -377,6 +377,37 @@ def test_build_raw_file_index_rebuilds_empty_existing_sidecar(monkeypatch, tmp_p
     assert search["total"] == 1
 
 
+def test_build_raw_file_index_force_rebuild_replaces_existing_sidecar(monkeypatch, tmp_path):
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    first = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    monkeypatch.setitem(
+        mcp_bridge._connectors,
+        "raw_index",
+        state.captured["raw_index"],
+    )
+    second = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        force_rebuild=True,
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    search = state.captured["raw_index"].search(keyword="agent.exe")
+
+    assert first["status"] == "indexed"
+    assert second["status"] == "indexed"
+    assert first["db_path"] == second["db_path"]
+    assert search["total"] == 1
+
+
 def test_build_raw_file_index_uses_root_scoped_sidecars(monkeypatch, tmp_path):
     state = _State()
     image = _MultiRootImage()

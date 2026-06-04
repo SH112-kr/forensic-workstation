@@ -686,6 +686,26 @@ async def open_raw_index(path: str) -> dict:
     )
 
 
+def _disconnect_raw_index_for_path(db_path: str) -> None:
+    raw = _connectors.get("raw_index")
+    if not raw:
+        return
+    try:
+        source_path = str(raw.get_metadata().get("source_path") or "")
+    except Exception:
+        source_path = ""
+    if os.path.normcase(os.path.abspath(source_path)) != os.path.normcase(
+        os.path.abspath(db_path)
+    ):
+        return
+    try:
+        raw.disconnect()
+    except Exception:
+        pass
+    if _connectors.get("raw_index") is raw:
+        _connectors.pop("raw_index", None)
+
+
 @mcp.tool()
 async def build_raw_file_index(
     roots: str = "/c:",
@@ -728,6 +748,21 @@ async def build_raw_file_index(
         root_values = _parse_raw_index_roots(roots)
         db_path = _raw_index_db_path(fingerprint, root_values, cache_root)
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+        if os.path.exists(db_path) and force_rebuild:
+            _disconnect_raw_index_for_path(db_path)
+            try:
+                os.remove(db_path)
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "status": "coverage_gap",
+                    "error": f"Existing raw index could not be removed for force rebuild: {exc}",
+                    "coverage_gap": {
+                        "status": "coverage_gap",
+                        "reason": "force_rebuild_sidecar_unremovable",
+                    },
+                }
 
         if os.path.exists(db_path) and not force_rebuild:
             try:
