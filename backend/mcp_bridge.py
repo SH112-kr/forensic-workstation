@@ -733,6 +733,15 @@ async def build_raw_file_index(
             try:
                 connector = RawImageIndexConnector()
                 meta = connector.connect(db_path, expected_fingerprint=fingerprint)
+                coverage = connector.search(limit=0).get("coverage", {})
+                if (
+                    coverage.get("status") == "not_evaluable"
+                    or int(coverage.get("parser_runs", 0) or 0) == 0
+                ):
+                    connector.disconnect()
+                    raise RuntimeError(
+                        "Existing raw index has no evaluable parser run."
+                    )
                 app_state.set("raw_index", connector)
                 return {
                     "ok": True,
@@ -741,7 +750,7 @@ async def build_raw_file_index(
                     "db_path": db_path,
                     "fingerprint": fingerprint,
                     "artifact_type_counts": connector.get_artifact_type_counts(),
-                    "coverage": connector.search(limit=0).get("coverage", {}),
+                    "coverage": coverage,
                     "performance": {
                         "sidecar_reused": True,
                         "reindexed": False,

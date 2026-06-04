@@ -339,6 +339,44 @@ def test_build_raw_file_index_reuses_existing_sidecar(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_rebuilds_empty_existing_sidecar(monkeypatch, tmp_path):
+    from core.raw_index.store import RawIndexStore
+
+    state = _State()
+    image = _StubImage()
+    cache_root = tmp_path / "cache"
+    fingerprint = mcp_bridge._raw_image_index_fingerprint(image.get_metadata())
+    db_path = mcp_bridge._raw_index_db_path(fingerprint, ["/c:"], str(cache_root))
+    store = RawIndexStore(db_path)
+    store.open()
+    store._conn().execute(
+        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("raw_image_fingerprint", fingerprint),
+    )
+    store._conn().execute(
+        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+        ("index_roots", "/c:"),
+    )
+    store._conn().commit()
+    store.close()
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(cache_root),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    search = state.captured["raw_index"].search(keyword="agent.exe")
+
+    assert result["status"] == "indexed"
+    assert result["indexed_files"] == 1
+    assert image.list_calls > 0
+    assert search["total"] == 1
+
+
 def test_build_raw_file_index_uses_root_scoped_sidecars(monkeypatch, tmp_path):
     state = _State()
     image = _MultiRootImage()
