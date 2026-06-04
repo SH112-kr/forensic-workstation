@@ -73,7 +73,12 @@ def safe_collect(
         try:
             data = fn(case_id, connector)
         except Exception as e:  # noqa: BLE001 — translate any failure into envelope
-            results.append({**provenance, "ok": False, "error": str(e)})
+            results.append({
+                **provenance,
+                "ok": False,
+                "status": "not_evaluable",
+                "error": str(e),
+            })
             warnings.append(f"{case_id}: {e}")
             continue
         if isinstance(data, dict) and data.get("ok") is False:
@@ -344,9 +349,11 @@ def hash_across_cases(
         merged.extend(_tag_hits_with_provenance(hits, provenance))
 
     merged.sort(key=_hit_sort_key)
+    result_status = _aggregate_status(per_case)
 
     return {
-        "ok": True,
+        "ok": result_status == "searched",
+        **({"status": result_status} if result_status != "searched" else {}),
         "query": {"hash": hash_value},
         "case_count": len(cases),
         "per_case": per_case,
@@ -446,9 +453,11 @@ def pivot_across_cases(
         match_notes["warnings"] = match_warnings
 
     return {
-        "ok": True,
+        "ok": bool(base.get("ok", True)),
+        **({"status": base["status"]} if base.get("status") else {}),
         "entity": {"type": etype, "value": evalue},
         "case_count": base.get("case_count", 0),
+        "per_case": base.get("per_case", []),
         "per_case_counts": per_case_counts,
         "total": len(merged),
         "first_seen": first_seen,

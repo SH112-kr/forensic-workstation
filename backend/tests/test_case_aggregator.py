@@ -119,6 +119,51 @@ def test_hash_across_cases_finds_only_matching(mfdb_case, kape_case):
     assert r["hits"][0]["case_id"] == "a"
 
 
+def test_hash_across_cases_surfaces_raw_unsupported_as_not_evaluable():
+    class _RawWithoutHash:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+    r = hash_across_cases({"raw_index": _RawWithoutHash()}, "deadbeef")
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["total"] == 0
+    assert r["per_case"][0]["ok"] is False
+    assert r["per_case"][0]["status"] == "not_evaluable"
+    assert "raw_index:" in r["warnings"][0]
+
+
+def test_hash_pivot_surfaces_raw_unsupported_as_not_evaluable():
+    class _RawWithoutHash:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+    r = pivot_across_cases(
+        {"raw_index": _RawWithoutHash()},
+        entity_type="hash",
+        entity_value="deadbeef",
+    )
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["total"] == 0
+    assert r["case_count"] == 1
+    assert r["per_case"][0]["ok"] is False
+
+
 def test_pivot_first_last_seen(mfdb_case, kape_case):
     r = pivot_across_cases(
         {"axiom:a": mfdb_case, "axiom:b": kape_case},
