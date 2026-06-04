@@ -54,6 +54,59 @@ def test_store_inserts_artifact_and_returns_exact_count(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Windows/notepad.exe"
 
 
+def test_search_loads_page_hit_details_in_batches(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in ("alpha.exe", "beta.exe", "gamma.exe"):
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="/c:",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+            times={
+                "Modified": (
+                    _ms("2026-10-04T00:00:00Z"),
+                    "2026-10-04T00:00:00Z",
+                )
+            },
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    statements: list[str] = []
+    store._conn().set_trace_callback(statements.append)
+
+    result = store.search(
+        artifact_type="File System Entry",
+        limit=3,
+    )
+
+    string_detail_selects = [
+        sql for sql in statements if "FROM raw_index_artifact_strings" in sql
+    ]
+    time_detail_selects = [
+        sql for sql in statements if "FROM raw_index_artifact_times" in sql
+    ]
+    assert result["total"] == 3
+    assert result["returned"] == 3
+    assert result["total_is_estimated"] is False
+    assert len(string_detail_selects) == 1
+    assert len(time_detail_selects) == 1
+
+
 def test_search_reports_parser_failures_as_not_evaluable(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))

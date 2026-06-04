@@ -315,7 +315,7 @@ class RawIndexStore:
             """,
             params + [limit, offset],
         ).fetchall()
-        hits = [self.get_hit_detail(int(row["artifact_id"])) for row in rows]
+        hits = self._get_hit_details([int(row["artifact_id"]) for row in rows])
         return {
             "total": int(total),
             "total_estimated": int(total),
@@ -331,50 +331,72 @@ class RawIndexStore:
         }
 
     def get_hit_detail(self, artifact_id: int) -> dict[str, Any]:
-        row = self._conn().execute(
-            """
-            SELECT artifact_id, artifact_type, source_path, primary_path,
-                   description
-            FROM raw_index_artifacts
-            WHERE artifact_id = ?
-            """,
-            (artifact_id,),
-        ).fetchone()
-        if row is None:
+        details = self._get_hit_details([artifact_id])
+        if not details:
             return {"error": f"artifact_id {artifact_id} not found"}
-        fields = {
-            r["field_name"]: r["value"]
-            for r in self._conn().execute(
-                """
-                SELECT field_name, value
+        return details[0]
+
+    def _get_hit_details(self, artifact_ids: list[int]) -> list[dict[str, Any]]:
+        if not artifact_ids:
+            return []
+        artifact_rows: dict[int, sqlite3.Row] = {}
+        fields: dict[int, dict[str, str]] = {
+            artifact_id: {} for artifact_id in artifact_ids
+        }
+        timestamps: dict[int, dict[str, str]] = {
+            artifact_id: {} for artifact_id in artifact_ids
+        }
+        for chunk in _id_chunks(artifact_ids):
+            placeholders = ",".join("?" * len(chunk))
+            for row in self._conn().execute(
+                f"""
+                SELECT artifact_id, artifact_type, source_path, primary_path,
+                       description
+                FROM raw_index_artifacts
+                WHERE artifact_id IN ({placeholders})
+                """,
+                chunk,
+            ).fetchall():
+                artifact_rows[int(row["artifact_id"])] = row
+            for row in self._conn().execute(
+                f"""
+                SELECT artifact_id, field_name, value
                 FROM raw_index_artifact_strings
-                WHERE artifact_id = ?
-                ORDER BY field_name
+                WHERE artifact_id IN ({placeholders})
+                ORDER BY artifact_id, field_name
                 """,
-                (artifact_id,),
-            ).fetchall()
-        }
-        timestamps = {
-            r["field_name"]: r["formatted_value"]
-            for r in self._conn().execute(
-                """
-                SELECT field_name, formatted_value
+                chunk,
+            ).fetchall():
+                fields.setdefault(int(row["artifact_id"]), {})[
+                    row["field_name"]
+                ] = row["value"]
+            for row in self._conn().execute(
+                f"""
+                SELECT artifact_id, field_name, formatted_value
                 FROM raw_index_artifact_times
-                WHERE artifact_id = ?
-                ORDER BY field_name
+                WHERE artifact_id IN ({placeholders})
+                ORDER BY artifact_id, field_name
                 """,
-                (artifact_id,),
-            ).fetchall()
-        }
-        return {
-            "hit_id": int(row["artifact_id"]),
-            "artifact_type": row["artifact_type"],
-            "source_path": row["source_path"],
-            "location": row["primary_path"],
-            "description": row["description"],
-            "fields": fields,
-            "timestamps": timestamps,
-        }
+                chunk,
+            ).fetchall():
+                timestamps.setdefault(int(row["artifact_id"]), {})[
+                    row["field_name"]
+                ] = row["formatted_value"]
+        details = []
+        for artifact_id in artifact_ids:
+            row = artifact_rows.get(artifact_id)
+            if row is None:
+                continue
+            details.append({
+                "hit_id": int(row["artifact_id"]),
+                "artifact_type": row["artifact_type"],
+                "source_path": row["source_path"],
+                "location": row["primary_path"],
+                "description": row["description"],
+                "fields": fields.get(artifact_id, {}),
+                "timestamps": timestamps.get(artifact_id, {}),
+            })
+        return details
 
     def _coverage_summary(self) -> dict[str, Any]:
         rows = self._conn().execute(
@@ -694,6 +716,11 @@ class RawIndexStore:
             params,
         ).fetchone()
         return row is not None
+
+
+def _id_chunks(values: list[int], size: int = 900) -> Iterator[list[int]]:
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
