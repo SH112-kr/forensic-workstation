@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from core.raw_index.store import RawIndexStore
+
+
+def _ms(value: str) -> int:
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
 
 
 def test_store_inserts_artifact_and_returns_exact_count(tmp_path):
@@ -174,3 +180,95 @@ def test_search_falls_back_when_fast_candidate_index_is_stale(tmp_path):
     assert result["total"] == 1
     assert result["search_strategy"]["index"] == "materialized_like"
     assert result["search_strategy"]["fast_candidate_gap"] == "stale_fts"
+
+
+def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/old.exe",
+        primary_path="/c:/Tools/old.exe",
+        description="File System Entry /c:/Tools/old.exe",
+        strings={"Name": "old.exe", "Path": "/c:/Tools/old.exe"},
+        times={"Modified": (_ms("2026-09-01T00:00:00Z"), "2026-09-01T00:00:00Z")},
+        parser_run_id=run_id,
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/new.exe",
+        primary_path="/c:/Tools/new.exe",
+        description="File System Entry /c:/Tools/new.exe",
+        strings={"Name": "new.exe", "Path": "/c:/Tools/new.exe"},
+        times={"Modified": (_ms("2026-10-04T00:00:00Z"), "2026-10-04T00:00:00Z")},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+
+    result = store.search(
+        keyword=".exe",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["count_accuracy"] == "exact"
+    assert result["search_strategy"]["date_filter"] == "artifact_times"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/new.exe"
+
+
+def test_date_filtered_search_without_indexed_times_is_not_evaluable(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="File System Entry",
+        source_ref="/c:",
+        source_path="/c:/Tools/notimed.exe",
+        primary_path="/c:/Tools/notimed.exe",
+        description="File System Entry /c:/Tools/notimed.exe",
+        strings={"Name": "notimed.exe", "Path": "/c:/Tools/notimed.exe"},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+
+    result = store.search(
+        keyword=".exe",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage"]["status"] == "not_evaluable"
+    assert result["coverage"]["gaps"][0]["reason"] == "raw_search_date_filter_without_indexed_times"

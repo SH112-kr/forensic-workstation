@@ -87,6 +87,26 @@ def test_search_artifacts_uses_active_raw_index(monkeypatch, tmp_path):
     assert result["search_strategy"]["revalidated"] is True
 
 
+def test_search_artifacts_uses_raw_index_date_filters(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keyword="agent.exe",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    ))
+
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["date_filter"] == "artifact_times"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_get_artifact_types_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)

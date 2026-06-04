@@ -60,6 +60,27 @@ def test_raw_image_index_connector_search_and_detail(tmp_path):
     assert "search" in conn.get_capabilities()
 
 
+def test_raw_image_index_connector_search_applies_date_filters(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed(db_path)
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    result = conn.search(
+        keyword="a.tmp",
+        filters={
+            "artifact_type": "File System Entry",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-31",
+        },
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["search_strategy"]["date_filter"] == "artifact_times"
+
+
 def test_raw_image_index_connector_timeline_is_exact(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)

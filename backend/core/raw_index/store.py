@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 from core.raw_index.schema import initialize_schema
@@ -127,6 +128,8 @@ class RawIndexStore:
         *,
         keyword: str = "",
         artifact_type: str = "",
+        start_date: str = "",
+        end_date: str = "",
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -138,10 +141,12 @@ class RawIndexStore:
             "revalidated": False,
             "rebuilt_search_text": False,
             "fast_candidate_gap": "",
+            "date_filter": "none",
         }
         if artifact_type:
             where.append("a.artifact_type = ?")
             params.append(artifact_type)
+        like = ""
         if keyword:
             strategy["rebuilt_search_text"] = self._ensure_search_text_current()
             join_sql = (
@@ -153,6 +158,8 @@ class RawIndexStore:
             if candidate_ids is not None:
                 strategy["index"] = "fts5_trigram"
                 if not candidate_ids:
+                    if start_date or end_date:
+                        strategy["date_filter"] = "artifact_times"
                     return {
                         "total": 0,
                         "total_estimated": 0,
@@ -175,6 +182,49 @@ class RawIndexStore:
             where.append("st.search_text LIKE ?")
             params.append(like)
             strategy["revalidated"] = True
+        if start_date or end_date:
+            strategy["date_filter"] = "artifact_times"
+            if self._has_untimed_candidate(
+                artifact_type=artifact_type,
+                keyword_like=like,
+            ):
+                coverage = self._coverage_summary()
+                coverage = dict(coverage)
+                gaps = list(coverage.get("gaps", []))
+                gaps.append({
+                    "status": "not_evaluable",
+                    "reason": "raw_search_date_filter_without_indexed_times",
+                    "artifact_type": artifact_type,
+                })
+                coverage["status"] = "not_evaluable"
+                coverage["gaps"] = gaps
+                return {
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "total": 0,
+                    "total_estimated": 0,
+                    "total_is_estimated": False,
+                    "count_accuracy": "exact",
+                    "returned": 0,
+                    "offset": offset,
+                    "limit": limit,
+                    "truncated": False,
+                    "coverage": coverage,
+                    "search_strategy": strategy,
+                    "hits": [],
+                }
+            start_ms = _iso_date_to_ms(start_date, is_end=False) if start_date else 0
+            end_ms = _iso_date_to_ms(end_date, is_end=True) if end_date else 9999999999999
+            where.append(
+                """
+                a.artifact_id IN (
+                    SELECT artifact_id
+                    FROM raw_index_artifact_times
+                    WHERE unix_timestamp_ms BETWEEN ? AND ?
+                )
+                """
+            )
+            params.extend([start_ms, end_ms])
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         total = self._conn().execute(
             f"""
@@ -450,3 +500,55 @@ class RawIndexStore:
             ).fetchone() is not None
         except sqlite3.Error:
             return False
+
+    def _has_untimed_candidate(
+        self,
+        *,
+        artifact_type: str = "",
+        keyword_like: str = "",
+    ) -> bool:
+        joins = []
+        where = []
+        params: list[Any] = []
+        if keyword_like:
+            self._ensure_search_text_current()
+            joins.append(
+                "JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id"
+            )
+            where.append("st.search_text LIKE ?")
+            params.append(keyword_like)
+        if artifact_type:
+            where.append("a.artifact_type = ?")
+            params.append(artifact_type)
+        where.append(
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM raw_index_artifact_times t
+                WHERE t.artifact_id = a.artifact_id
+            )
+            """
+        )
+        where_sql = "WHERE " + " AND ".join(where)
+        row = self._conn().execute(
+            f"""
+            SELECT 1
+            FROM raw_index_artifacts a
+            {' '.join(joins)}
+            {where_sql}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        return row is not None
+
+
+def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
+    if "T" not in value:
+        suffix = "T23:59:59.999+00:00" if is_end else "T00:00:00+00:00"
+        value = value + suffix
+    value = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)

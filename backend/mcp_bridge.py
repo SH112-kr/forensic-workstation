@@ -1090,19 +1090,6 @@ async def search_artifacts(
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
         raw = _get_raw_index()
         if raw:
-            if start_date or end_date:
-                return _mask({
-                    "ok": False,
-                    "source_type": "raw_image_sidecar",
-                    "status": "not_evaluable",
-                    "error": "Date-filtered raw artifact search is not implemented for this sidecar connector.",
-                    "coverage_gap": {
-                        "status": "not_evaluable",
-                        "reason": "raw_search_date_filter_not_supported",
-                    },
-                    "suggested_tool": "build_timeline",
-                })
-
             field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []
             if kw_list:
                 all_hits = {}
@@ -1111,10 +1098,18 @@ async def search_artifacts(
                 for kw in kw_list:
                     result = raw.search(
                         keyword=kw,
-                        filters={"artifact_type": artifact_type},
+                        filters={
+                            "artifact_type": artifact_type,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                        },
                         limit=cap,
                         offset=0,
                     )
+                    if result.get("status") == "not_evaluable":
+                        result = dict(result)
+                        result["source_type"] = "raw_image_sidecar"
+                        return _mask(result)
                     per_keyword_totals[kw] = result.get("total", 0)
                     if result.get("truncated"):
                         truncated_keywords.append(kw)
@@ -1159,7 +1154,11 @@ async def search_artifacts(
 
             result = raw.search(
                 keyword=keyword,
-                filters={"artifact_type": artifact_type},
+                filters={
+                    "artifact_type": artifact_type,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
                 limit=cap,
                 offset=offset,
             )
