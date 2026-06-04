@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import mcp_bridge
 
@@ -2542,6 +2543,46 @@ def test_build_raw_file_index_force_rebuild_replaces_existing_sidecar(monkeypatc
     assert second["status"] == "indexed"
     assert first["db_path"] == second["db_path"]
     assert search["total"] == 1
+
+
+def test_build_raw_file_index_force_rebuild_removes_sqlite_aux_files(
+    monkeypatch,
+    tmp_path,
+):
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    first = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+    aux_paths = [
+        first["db_path"] + suffix
+        for suffix in ("-wal", "-shm", "-journal")
+    ]
+    for path in aux_paths:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("stale sqlite sidecar fragment")
+    monkeypatch.setitem(
+        mcp_bridge._connectors,
+        "raw_index",
+        state.captured["raw_index"],
+    )
+
+    second = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        force_rebuild=True,
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert second["status"] == "indexed"
+    assert first["db_path"] == second["db_path"]
+    assert not any(os.path.exists(path) for path in aux_paths)
 
 
 def test_build_raw_file_index_uses_root_scoped_sidecars(monkeypatch, tmp_path):

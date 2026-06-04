@@ -1110,6 +1110,17 @@ def _disconnect_raw_index_for_path(db_path: str) -> None:
         _connectors.pop("raw_index", None)
 
 
+def _remove_raw_index_sidecar_files(db_path: str) -> None:
+    for path in (
+        db_path,
+        f"{db_path}-wal",
+        f"{db_path}-shm",
+        f"{db_path}-journal",
+    ):
+        if os.path.exists(path):
+            os.remove(path)
+
+
 @mcp.tool()
 async def build_raw_file_index(
     roots: str = "/c:",
@@ -1182,7 +1193,7 @@ async def build_raw_file_index(
         if os.path.exists(db_path) and force_rebuild:
             _disconnect_raw_index_for_path(db_path)
             try:
-                os.remove(db_path)
+                _remove_raw_index_sidecar_files(db_path)
             except OSError as exc:
                 return {
                     "ok": False,
@@ -1227,7 +1238,7 @@ async def build_raw_file_index(
                 }
             except Exception as exc:
                 try:
-                    os.remove(db_path)
+                    _remove_raw_index_sidecar_files(db_path)
                 except OSError:
                     return {
                         "ok": False,
