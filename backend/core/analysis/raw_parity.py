@@ -116,8 +116,18 @@ def _collect_complete_search(
             merged = dict(result)
             total = _result_total(result)
         page_hits = list(result.get("hits", []))
-        collected_hits.extend(page_hits)
         returned = int(result.get("returned", len(page_hits)) or 0)
+        if offset + returned > total:
+            gap_result = dict(result)
+            gap_result["pagination_gap"] = {
+                "reason": "pagination_inconsistent",
+                "offset": offset,
+                "returned": returned,
+                "total": total,
+            }
+            gap_result["truncated"] = True
+            return gap_result
+        collected_hits.extend(page_hits)
         if result.get("truncated") and returned < safe_limit:
             return result
         offset += returned
@@ -166,6 +176,9 @@ def _input_gap(result: dict[str, Any], side: str) -> dict[str, Any] | None:
 
 
 def _blocking_input_gap(result: dict[str, Any]) -> dict[str, Any] | None:
+    pagination_gap = result.get("pagination_gap")
+    if isinstance(pagination_gap, dict):
+        return dict(pagination_gap)
     total = _result_total(result)
     returned = int(result.get("returned", len(result.get("hits", []))) or 0)
     if result.get("total_is_estimated") is True:
