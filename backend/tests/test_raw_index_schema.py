@@ -70,3 +70,22 @@ def test_initialize_schema_indexes_artifact_id_lookup_tables(tmp_path):
         "idx_raw_times_artifact_field",
         "idx_raw_locations_artifact",
     } <= indexes
+
+
+def test_initialize_schema_indexes_timeline_range_order(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    conn = sqlite3.connect(db_path)
+
+    initialize_schema(conn)
+
+    index_columns = [
+        row[2]
+        for row in conn.execute(
+            "PRAGMA index_info(idx_raw_times_ms_artifact_field)"
+        ).fetchall()
+    ]
+    assert index_columns == [
+        "unix_timestamp_ms",
+        "artifact_id",
+        "field_name",
+    ]

@@ -70,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_raw_strings_artifact_field
     ON raw_index_artifact_strings(artifact_id, field_name);
 CREATE INDEX IF NOT EXISTS idx_raw_times_ms
     ON raw_index_artifact_times(unix_timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_raw_times_ms_artifact_field
+    ON raw_index_artifact_times(unix_timestamp_ms, artifact_id, field_name);
 CREATE INDEX IF NOT EXISTS idx_raw_times_artifact_field
     ON raw_index_artifact_times(artifact_id, field_name);
 CREATE INDEX IF NOT EXISTS idx_raw_locations_value
