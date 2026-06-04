@@ -284,7 +284,7 @@ class RawImageIndexConnector(BaseConnector):
                 "stale raw index fingerprint mismatch: expected "
                 f"{expected_fingerprint}, found {fingerprint or 'missing'}"
             )
-        index_roots = str(meta.get("index_roots") or "")
+        index_roots = _normalize_index_roots(meta.get("index_roots"))
         if expected_index_roots and index_roots != expected_index_roots:
             raise RuntimeError(
                 "stale raw index roots mismatch: expected "
@@ -322,19 +322,26 @@ def _normalize_index_roots(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return ",".join(
+        roots = [
             str(root).strip()
             for root in value.split(",")
             if str(root).strip()
+        ]
+    else:
+        try:
+            roots = [
+                str(root).strip()
+                for root in value
+                if str(root).strip()
+            ]
+        except TypeError:
+            roots = [str(value).strip()] if str(value).strip() else []
+    return ",".join(
+        sorted(
+            dict.fromkeys(roots),
+            key=str.lower,
         )
-    try:
-        return ",".join(
-            str(root).strip()
-            for root in value
-            if str(root).strip()
-        )
-    except TypeError:
-        return str(value).strip()
+    )
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:
