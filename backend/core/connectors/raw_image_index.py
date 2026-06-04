@@ -111,7 +111,11 @@ class RawImageIndexConnector(BaseConnector):
             placeholders = ",".join("?" * len(artifact_type_list))
             where.append(f"a.artifact_type IN ({placeholders})")
             params.extend(artifact_type_list)
-        raw_keywords = [keywords] if isinstance(keywords, str) else keywords or []
+        raw_keywords = (
+            [k.strip() for k in keywords.split(",") if k.strip()]
+            if isinstance(keywords, str)
+            else keywords or []
+        )
         keyword_list = list(
             dict.fromkeys(str(k).strip() for k in raw_keywords if str(k).strip())
         )

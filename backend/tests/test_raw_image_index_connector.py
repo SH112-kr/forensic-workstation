@@ -95,6 +95,34 @@ def _seed_timed_types(db_path, artifact_types):
     store.close()
 
 
+def _seed_timed_names(db_path, names):
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "seed",
+        "unit",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for name in names:
+        store.insert_artifact(
+            artifact_type="File System Entry",
+            source_ref="unit",
+            source_path=f"/c:/Tools/{name}",
+            primary_path=f"/c:/Tools/{name}",
+            description=f"File System Entry /c:/Tools/{name}",
+            strings={"Path": f"/c:/Tools/{name}", "Name": name},
+            times={"Modified": (1791072000000, "2026-10-04T00:00:00Z")},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+
+
 def test_raw_image_index_connector_search_and_detail(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)
@@ -508,6 +536,24 @@ def test_raw_image_index_connector_timeline_accepts_keyword_string(tmp_path):
         sql.count("st.search_text LIKE") == 1
         for sql in timeline_like_queries
     )
+
+
+def test_raw_image_index_connector_timeline_splits_keyword_string_list(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_timed_names(db_path, ["alpha-one.exe", "beta-one.exe"])
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        keywords="alpha,beta",
+        limit=10,
+    )
+
+    assert timeline["total_events"] == 2
+    assert timeline["timeline_strategy"]["keyword_filter"] == "search_text"
+    assert {entry["hit_id"] for entry in timeline["entries"]} == {1, 2}
 
 
 def test_raw_image_index_connector_caches_artifact_type_counts_until_external_change(tmp_path):
