@@ -674,7 +674,36 @@ async def open_raw_index(path: str) -> dict:
         from core.connectors.raw_image_index import RawImageIndexConnector
 
         c = RawImageIndexConnector()
-        meta = c.connect(path)
+        try:
+            meta = c.connect(path)
+        except FileNotFoundError as exc:
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "error": str(exc),
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "missing_raw_index_sidecar",
+                    "path": path,
+                },
+            }
+        except RuntimeError as exc:
+            try:
+                c.disconnect()
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "error": str(exc),
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "stale_raw_index_sidecar",
+                    "path": path,
+                },
+            }
         app_state.set("raw_index", c)
         return meta
 

@@ -102,6 +102,48 @@ def test_open_raw_index_sets_raw_connector(monkeypatch, tmp_path):
     assert "raw_index" in captured
 
 
+def test_open_raw_index_reports_stale_sidecar_as_not_evaluable(monkeypatch, tmp_path):
+    from core.raw_index.store import RawIndexStore
+
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+    store._conn().execute(
+        "UPDATE raw_index_metadata SET value = ? WHERE key = ?",
+        ("999", "schema_version"),
+    )
+    store._conn().commit()
+    store.close()
+    state = _State()
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+
+    result = _run(mcp_bridge.open_raw_index(str(db_path)))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "stale_raw_index_sidecar"
+    assert "raw_index" not in state.captured
+
+
+def test_open_raw_index_reports_missing_sidecar_as_not_evaluable(monkeypatch, tmp_path):
+    db_path = tmp_path / "missing-raw-index.sqlite"
+    state = _State()
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+
+    result = _run(mcp_bridge.open_raw_index(str(db_path)))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "missing_raw_index_sidecar"
+    assert "raw_index" not in state.captured
+
+
 def test_search_artifacts_uses_active_raw_index(monkeypatch, tmp_path):
     raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
