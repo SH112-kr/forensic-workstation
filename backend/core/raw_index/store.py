@@ -10,6 +10,9 @@ from typing import Any
 from core.raw_index.schema import initialize_schema
 
 
+MAX_FAST_CANDIDATE_IDS = 900
+
+
 class RawIndexStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -583,12 +586,16 @@ class RawIndexStore:
                 FROM raw_index_search_fts
                 WHERE search_text LIKE ?
                 ORDER BY rowid
+                LIMIT ?
                 """,
-                (like_pattern,),
+                (like_pattern, MAX_FAST_CANDIDATE_IDS + 1),
             ).fetchall()
         except sqlite3.Error:
             return None, "fts_query_failed"
-        return [int(row["rowid"]) for row in rows], ""
+        candidate_ids = [int(row["rowid"]) for row in rows]
+        if len(candidate_ids) > MAX_FAST_CANDIDATE_IDS:
+            return None, "fast_candidate_too_large"
+        return candidate_ids, ""
 
     def _fast_candidate_ids_for_keywords(
         self,
@@ -609,12 +616,16 @@ class RawIndexStore:
                 FROM raw_index_search_fts
                 WHERE {where_sql}
                 ORDER BY rowid
+                LIMIT ?
                 """,
-                like_patterns,
+                [*like_patterns, MAX_FAST_CANDIDATE_IDS + 1],
             ).fetchall()
         except sqlite3.Error:
             return None, "fts_query_failed"
-        return [int(row["rowid"]) for row in rows], ""
+        candidate_ids = [int(row["rowid"]) for row in rows]
+        if len(candidate_ids) > MAX_FAST_CANDIDATE_IDS:
+            return None, "fast_candidate_too_large"
+        return candidate_ids, ""
 
     def _fts_count_current(self) -> bool:
         try:

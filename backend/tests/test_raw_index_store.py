@@ -445,6 +445,74 @@ def test_search_falls_back_when_fast_candidate_index_ids_mismatch(tmp_path):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/beta.exe"
 
 
+def test_search_falls_back_when_fast_candidate_set_is_too_large(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    fts_exists = store._conn().execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'raw_index_search_fts'
+        """
+    ).fetchone()
+    if not fts_exists:
+        pytest.skip("SQLite FTS5 trigram accelerator is not available")
+
+    run_id = store.start_parser_run(
+        "file_indexer",
+        "/c:",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    with store.batch():
+        for index in range(905):
+            name = f"agent-{index:04d}.exe"
+            store.insert_artifact(
+                artifact_type="File System Entry",
+                source_ref="/c:",
+                source_path=f"/c:/Tools/{name}",
+                primary_path=f"/c:/Tools/{name}",
+                description=f"File System Entry /c:/Tools/{name}",
+                strings={"Name": name, "Path": f"/c:/Tools/{name}"},
+                parser_run_id=run_id,
+            )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+
+    single = store.search(
+        keyword="agent",
+        artifact_type="File System Entry",
+        limit=5,
+    )
+    multi = store.search(
+        keywords=["agent", "tools"],
+        artifact_type="File System Entry",
+        limit=5,
+    )
+
+    assert single["total"] == 905
+    assert single["returned"] == 5
+    assert single["total_is_estimated"] is False
+    assert single["search_strategy"]["index"] == "materialized_like"
+    assert (
+        single["search_strategy"]["fast_candidate_gap"]
+        == "fast_candidate_too_large"
+    )
+    assert multi["total"] == 905
+    assert multi["returned"] == 5
+    assert multi["total_is_estimated"] is False
+    assert multi["search_strategy"]["index"] == "materialized_like_or"
+    assert (
+        multi["search_strategy"]["fast_candidate_gap"]
+        == "fast_candidate_too_large"
+    )
+
+
 def test_search_applies_exact_date_filter_from_artifact_times(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
