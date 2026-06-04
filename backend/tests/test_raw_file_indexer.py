@@ -30,6 +30,23 @@ class _RaisingImage:
         raise RuntimeError(f"cannot list {path}")
 
 
+class _TimestampImage:
+    def list_directory(self, path="/"):
+        if path == "/c:":
+            return [
+                {
+                    "name": "dated.exe",
+                    "path": "/c:/Tools/dated.exe",
+                    "is_dir": False,
+                    "size": 2048,
+                    "created": "2026-10-03T00:00:00Z",
+                    "modified": "2026-10-04T00:00:00Z",
+                    "accessed": "2026-10-05T00:00:00Z",
+                },
+            ]
+        return []
+
+
 def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     store = RawIndexStore(str(db_path))
@@ -52,6 +69,33 @@ def test_index_file_listing_records_files_and_coverage_gaps(tmp_path):
     assert result["coverage_gaps"][0]["path"] == "/c:/Temp"
     assert search["total"] == 1
     assert search["hits"][0]["fields"]["Path"] == "/c:/Windows/notepad.exe"
+
+
+def test_index_file_listing_records_entry_timestamps(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    store = RawIndexStore(str(db_path))
+    store.open()
+
+    result = index_file_listing(
+        _TimestampImage(),
+        store,
+        roots=["/c:"],
+        started_at="2026-06-04T00:00:00Z",
+    )
+    search = store.search(
+        keyword="dated",
+        artifact_type="File System Entry",
+        start_date="2026-10-04",
+        end_date="2026-10-04",
+        limit=10,
+    )
+    detail = store.get_hit_detail(1)
+
+    assert result["status"] == "completed"
+    assert search["total"] == 1
+    assert search["total_is_estimated"] is False
+    assert search["search_strategy"]["date_filter"] == "artifact_times"
+    assert detail["timestamps"]["Modified"] == "2026-10-04T00:00:00Z"
 
 
 def test_index_file_listing_records_listing_exceptions_as_coverage_gaps(tmp_path):

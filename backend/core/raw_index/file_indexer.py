@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 from core.raw_index.store import RawIndexStore
@@ -64,7 +65,7 @@ def index_file_listing(
                     "Path": entry_path,
                     "Size": size,
                 },
-                times={},
+                times=_entry_timestamps(entry),
                 parser_run_id=run_id,
             )
             indexed_files += 1
@@ -85,3 +86,38 @@ def index_file_listing(
         "coverage_gaps": coverage_gaps,
         "parser_run_id": run_id,
     }
+
+
+def _entry_timestamps(entry: dict[str, Any]) -> dict[str, tuple[int, str]]:
+    fields = {
+        "Created": ("created", "creation_time", "birth_time"),
+        "Modified": ("modified", "mtime", "modification_time", "last_modified"),
+        "Accessed": ("accessed", "atime", "access_time", "last_accessed"),
+    }
+    timestamps: dict[str, tuple[int, str]] = {}
+    for field_name, keys in fields.items():
+        for key in keys:
+            value = entry.get(key)
+            parsed = _parse_timestamp(value)
+            if parsed is not None:
+                timestamps[field_name] = parsed
+                break
+    return timestamps
+
+
+def _parse_timestamp(value: Any) -> tuple[int, str] | None:
+    if value is None or value == "":
+        return None
+    display = str(value)
+    try:
+        if isinstance(value, (int, float)):
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        elif isinstance(value, datetime):
+            dt = value
+        else:
+            dt = datetime.fromisoformat(display.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000), display
+    except Exception:
+        return None

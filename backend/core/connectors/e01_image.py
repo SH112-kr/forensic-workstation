@@ -163,7 +163,13 @@ class E01ImageConnector(BaseConnector):
                 }
                 if not entry.is_dir():
                     try:
-                        info["size"] = entry.stat().st_size
+                        st = entry.stat()
+                        info["size"] = st.st_size
+                        info["created"] = _format_fs_ts(
+                            getattr(st, "st_birthtime", None) or getattr(st, "st_ctime", None)
+                        )
+                        info["modified"] = _format_fs_ts(st.st_mtime)
+                        info["accessed"] = _format_fs_ts(st.st_atime)
                     except Exception:
                         info["size"] = -1
                 results.append(info)
