@@ -2473,6 +2473,47 @@ async def initial_triage_pack(
         try:
             axiom = _get_axiom()
         except Exception as e:
+            raw = _get_raw_index()
+            e01 = _connectors.get("e01")
+            e01_connected = bool(
+                e01 is not None
+                and getattr(e01, "is_connected", lambda: False)()
+            )
+            if raw and not e01_connected:
+                return _mask({
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "mode": "raw_sidecar_unsupported_for_initial_triage",
+                    "source_type": "raw_image_sidecar",
+                    "parsed_case_error": str(e),
+                    "coverage_gap": {
+                        "status": "not_evaluable",
+                        "reason": "raw_initial_triage_pack_unsupported",
+                        "detail": (
+                            "initial_triage_pack requires parsed case "
+                            "artifact families, or a mounted raw image for "
+                            "the limited raw-image coverage gate. Only a raw "
+                            "sidecar is active, so full window-first triage "
+                            "cannot run without risking a silent miss."
+                        ),
+                    },
+                    "raw_index_coverage": raw.get_coverage(),
+                    "analysis_blockers": [
+                        "Full initial_triage_pack requires a parsed AXIOM/KAPE case.",
+                        (
+                            "Mounted-image raw fallback is unavailable; mount "
+                            "the source image or use raw sidecar search/timeline "
+                            "tools directly."
+                        ),
+                    ],
+                    "notes": [
+                        (
+                            "Do not interpret this as no incident window. The "
+                            "raw sidecar does not yet expose the full triage "
+                            "substrates used by initial_triage_pack."
+                        ),
+                    ],
+                })
             try:
                 fallback = _raw_image_triage_gate()
             except Exception as raw_e:

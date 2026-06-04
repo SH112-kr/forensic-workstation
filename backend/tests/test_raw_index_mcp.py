@@ -1307,6 +1307,58 @@ def test_compare_case_image_entity_preserves_raw_index_not_evaluable_coverage(
     assert result["joined_assessment"]["has_artifact_history"] is False
 
 
+def test_initial_triage_pack_reports_raw_sidecar_unsupported_without_e01(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:") or key == "e01":
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.initial_triage_pack(
+        scope_mode="custom",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+    ))
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["mode"] == "raw_sidecar_unsupported_for_initial_triage"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_initial_triage_pack_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "searched"
+    assert result["analysis_blockers"]
+
+
+def test_initial_triage_pack_preserves_raw_sidecar_not_evaluable_coverage(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:") or key == "e01":
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.initial_triage_pack())
+
+    assert result.get("ok") is False
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == (
+        "raw_initial_triage_pack_unsupported"
+    )
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == (
+        "simulated parser failure"
+    )
+
+
 def test_assess_evidence_strength_auto_findings_reports_raw_index_not_evaluable(
     monkeypatch,
     tmp_path,
