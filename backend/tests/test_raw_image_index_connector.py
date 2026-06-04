@@ -66,6 +66,35 @@ def _seed_untimed(db_path):
     store.close()
 
 
+def _seed_timed_types(db_path, artifact_types):
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "seed",
+        "unit",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    for index, artifact_type in enumerate(artifact_types):
+        name = f"timed-{index}.exe"
+        store.insert_artifact(
+            artifact_type=artifact_type,
+            source_ref="unit",
+            source_path=f"/c:/Temp/{name}",
+            primary_path=f"/c:/Temp/{name}",
+            description=f"{artifact_type} /c:/Temp/{name}",
+            strings={"Path": f"/c:/Temp/{name}", "Name": name},
+            times={"Modified": (1791072000000, "2026-10-04T00:00:00Z")},
+            parser_run_id=run_id,
+        )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+
+
 def test_raw_image_index_connector_search_and_detail(tmp_path):
     db_path = tmp_path / "raw-index.sqlite"
     _seed(db_path)
@@ -163,6 +192,31 @@ def test_raw_image_index_connector_timeline_matching_untimed_artifact_is_not_eva
     assert timeline["coverage"]["gaps"][0]["reason"] == (
         "raw_timeline_date_filter_without_indexed_times"
     )
+
+
+def test_raw_image_index_connector_timeline_checks_multi_type_untimed_candidates_once(tmp_path):
+    db_path = tmp_path / "raw-index.sqlite"
+    _seed_timed_types(db_path, ["File System Entry", "Registry Entry"])
+    conn = RawImageIndexConnector()
+    conn.connect(str(db_path))
+    statements: list[str] = []
+    conn._require_store()._conn().set_trace_callback(statements.append)
+
+    timeline = conn.get_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types=["File System Entry", "Registry Entry"],
+        limit=10,
+    )
+
+    untimed_probes = [
+        sql
+        for sql in statements
+        if "NOT EXISTS" in sql
+        and "FROM raw_index_artifacts a" in sql
+    ]
+    assert timeline["total_events"] == 2
+    assert len(untimed_probes) == 1
 
 
 def test_raw_image_index_connector_timeline_reuses_required_store(tmp_path):

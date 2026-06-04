@@ -292,16 +292,11 @@ def _has_untimed_timeline_candidate(
     keyword_likes: list[str],
     conn: Any,
 ) -> bool:
-    if artifact_type_list:
-        return any(
-            store._has_untimed_candidate(
-                artifact_type=artifact_type,
-                keyword_likes=keyword_likes,
-                conn=conn,
-            )
-            for artifact_type in artifact_type_list
-        )
-    return store._has_untimed_candidate(keyword_likes=keyword_likes, conn=conn)
+    return store._has_untimed_candidate_for_artifact_types(
+        artifact_types=artifact_type_list,
+        keyword_likes=keyword_likes,
+        conn=conn,
+    )
 
 
 def _iso_date_to_ms(value: str, *, is_end: bool) -> int:

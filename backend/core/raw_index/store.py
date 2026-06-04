@@ -29,7 +29,9 @@ class RawIndexStore:
         self._artifact_type_counts_cache_version: int | None = None
         self._artifact_type_counts_cache: list[dict[str, Any]] | None = None
         self._untimed_candidate_cache_version: int | None = None
-        self._untimed_candidate_cache: dict[tuple[str, tuple[str, ...]], bool] = {}
+        self._untimed_candidate_cache: dict[
+            tuple[tuple[str, ...], tuple[str, ...]], bool
+        ] = {}
 
     def open(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -1089,6 +1091,20 @@ class RawIndexStore:
         keyword_likes: list[str] | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> bool:
+        artifact_types = [artifact_type] if artifact_type else []
+        return self._has_untimed_candidate_for_artifact_types(
+            artifact_types=artifact_types,
+            keyword_likes=keyword_likes,
+            conn=conn,
+        )
+
+    def _has_untimed_candidate_for_artifact_types(
+        self,
+        *,
+        artifact_types: list[str] | tuple[str, ...] | None = None,
+        keyword_likes: list[str] | None = None,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
         conn = conn or self._conn()
         joins = []
         where = []
@@ -1102,10 +1118,18 @@ class RawIndexStore:
             keyword_sql = " OR ".join("st.search_text LIKE ?" for _ in keyword_likes)
             where.append(f"({keyword_sql})")
             params.extend(keyword_likes)
-        if artifact_type:
-            where.append("a.artifact_type = ?")
-            params.append(artifact_type)
-        cache_key = (artifact_type, tuple(keyword_likes))
+        artifact_type_values = tuple(
+            dict.fromkeys(
+                str(artifact_type).strip()
+                for artifact_type in (artifact_types or [])
+                if str(artifact_type).strip()
+            )
+        )
+        if artifact_type_values:
+            placeholders = ",".join("?" * len(artifact_type_values))
+            where.append(f"a.artifact_type IN ({placeholders})")
+            params.extend(artifact_type_values)
+        cache_key = (artifact_type_values, tuple(keyword_likes))
         current_data_version = self._sqlite_data_version_for_conn(conn)
         if current_data_version is not None:
             if self._untimed_candidate_cache_version != current_data_version:
