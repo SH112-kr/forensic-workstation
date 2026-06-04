@@ -293,8 +293,8 @@ def test_raw_image_index_connector_timeline_checks_multi_type_untimed_candidates
     untimed_probes = [
         sql
         for sql in statements
-        if "NOT EXISTS" in sql
-        and "FROM raw_index_artifacts a" in sql
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
     ]
     assert timeline["total_events"] == 2
     assert len(untimed_probes) == 1
@@ -592,8 +592,8 @@ def test_raw_image_index_connector_hot_keyword_untimed_probe_uses_fts_join(tmp_p
     untimed_probe_fts_joins = [
         sql
         for sql in statements
-        if "NOT EXISTS" in sql
-        and "FROM raw_index_artifact_times t" in sql
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
         and "JOIN raw_index_search_fts fts" in sql
         and "st.search_text LIKE" in sql
     ]

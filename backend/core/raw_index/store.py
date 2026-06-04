@@ -1206,15 +1206,11 @@ class RawIndexStore:
             placeholders = ",".join("?" * len(artifact_type_values))
             where.append(f"a.artifact_type IN ({placeholders})")
             params.extend(artifact_type_values)
-        where.append(
-            """
-            NOT EXISTS (
-                SELECT 1
-                FROM raw_index_artifact_times t
-                WHERE t.artifact_id = a.artifact_id
-            )
-            """
+        joins.append(
+            "LEFT JOIN raw_index_artifact_times t_missing "
+            "ON t_missing.artifact_id = a.artifact_id"
         )
+        where.append("t_missing.artifact_id IS NULL")
         where_sql = "WHERE " + " AND ".join(where)
         row = conn.execute(
             f"""

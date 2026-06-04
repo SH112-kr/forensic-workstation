@@ -1962,8 +1962,8 @@ def test_date_filtered_hot_keyword_untimed_probe_uses_fts_join(tmp_path):
     untimed_probe_fts_joins = [
         sql
         for sql in statements
-        if "NOT EXISTS" in sql
-        and "FROM raw_index_artifact_times t" in sql
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
         and "JOIN raw_index_search_fts fts" in sql
         and "st.search_text LIKE" in sql
     ]
@@ -2197,8 +2197,8 @@ def test_repeated_date_filtered_searches_cache_untimed_candidate_probe(tmp_path)
     untimed_probes = [
         sql
         for sql in statements
-        if "NOT EXISTS" in sql
-        and "FROM raw_index_artifact_times t" in sql
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
     ]
     assert first["total"] == 2
     assert second["total"] == 2
@@ -2232,8 +2232,8 @@ def test_repeated_date_filtered_searches_cache_untimed_candidate_probe(tmp_path)
     post_change_probes = [
         sql
         for sql in statements
-        if "NOT EXISTS" in sql
-        and "FROM raw_index_artifact_times t" in sql
+        if "LEFT JOIN raw_index_artifact_times t_missing" in sql
+        and "t_missing.artifact_id IS NULL" in sql
     ]
 
     assert changed["status"] == "not_evaluable"
