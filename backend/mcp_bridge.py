@@ -1189,6 +1189,19 @@ async def build_raw_file_index(
             }
         db_path = _raw_index_db_path(fingerprint, root_values, cache_root)
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if not os.path.exists(db_path):
+            try:
+                _remove_raw_index_sidecar_files(db_path)
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "status": "coverage_gap",
+                    "error": f"Orphan raw index SQLite files could not be removed: {exc}",
+                    "coverage_gap": {
+                        "status": "coverage_gap",
+                        "reason": "orphan_sidecar_aux_unremovable",
+                    },
+                }
 
         if os.path.exists(db_path) and force_rebuild:
             _disconnect_raw_index_for_path(db_path)

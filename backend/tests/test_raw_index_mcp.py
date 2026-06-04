@@ -2585,6 +2585,43 @@ def test_build_raw_file_index_force_rebuild_removes_sqlite_aux_files(
     assert not any(os.path.exists(path) for path in aux_paths)
 
 
+def test_build_raw_file_index_removes_orphan_sqlite_aux_files_before_indexing(
+    monkeypatch,
+    tmp_path,
+):
+    state = _State()
+    image = _StubImage()
+    cache_root = tmp_path / "cache"
+    fingerprint = mcp_bridge._raw_image_index_fingerprint(image.get_metadata())
+    db_path = mcp_bridge._raw_index_db_path(
+        fingerprint,
+        ["/c:"],
+        str(cache_root),
+    )
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    aux_paths = [
+        db_path + suffix
+        for suffix in ("-wal", "-shm", "-journal")
+    ]
+    for path in aux_paths:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("orphan sqlite sidecar fragment")
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(cache_root),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert result["status"] == "indexed"
+    assert result["db_path"] == db_path
+    assert not any(os.path.exists(path) for path in aux_paths)
+
+
 def test_build_raw_file_index_uses_root_scoped_sidecars(monkeypatch, tmp_path):
     state = _State()
     image = _MultiRootImage()
