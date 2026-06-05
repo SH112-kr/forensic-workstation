@@ -146,6 +146,48 @@ async def get_summary():
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+    # Raw sidecar only: surface indexed metadata plus coverage status.
+    raw = app_state.get("raw_index")
+    if raw and raw.is_connected():
+        try:
+            meta = raw.get_metadata()
+            types = raw.get_artifact_type_counts()
+            coverage = (
+                raw.get_coverage()
+                if callable(getattr(raw, "get_coverage", None))
+                else {"status": "searched", "gaps": []}
+            )
+            artifact_types = {
+                str(
+                    row.get("artifact_name")
+                    or row.get("artifact_type")
+                    or row.get("name")
+                    or ""
+                ): int(row.get("hit_count") or row.get("count") or 0)
+                for row in types or []
+                if row.get("artifact_name") or row.get("artifact_type") or row.get("name")
+            }
+            result = {
+                "ok": True,
+                "summary_scope": "raw_image_sidecar",
+                "parsed_case_loaded": False,
+                **meta,
+                "case_name": meta.get("case_name") or "Raw Image Sidecar",
+                "total_hits": int(meta.get("total_hits") or sum(artifact_types.values())),
+                "artifact_type_count": len(types or []),
+                "artifact_types": artifact_types,
+                "coverage": coverage,
+            }
+            coverage_status = str(coverage.get("status") or "")
+            if coverage_status == "not_evaluable":
+                result["ok"] = False
+                result["status"] = "not_evaluable"
+            elif coverage_status == "coverage_gap":
+                result["status"] = "coverage_gap"
+            return result
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     # E01 이미지만 로드된 경우 — 제한된 메타데이터 반환
     e01 = app_state.get("e01")
     if e01 and e01.is_connected():
@@ -173,6 +215,30 @@ async def get_summary():
 async def get_artifact_types():
     from state import app_state
     axiom = app_state.get("axiom")
+    raw = app_state.get("raw_index")
+    if (not axiom or not axiom.is_connected()) and raw and raw.is_connected():
+        try:
+            types = raw.get_artifact_type_counts()
+            coverage = (
+                raw.get_coverage()
+                if callable(getattr(raw, "get_coverage", None))
+                else {"status": "searched", "gaps": []}
+            )
+            result = {
+                "source_type": "raw_image_sidecar",
+                "artifact_types": types,
+                "total_types": len(types),
+                "coverage": coverage,
+            }
+            coverage_status = str(coverage.get("status") or "")
+            if coverage_status == "not_evaluable":
+                result["ok"] = False
+                result["status"] = "not_evaluable"
+            elif coverage_status == "coverage_gap":
+                result["status"] = "coverage_gap"
+            return result
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if not axiom or not axiom.is_connected():
         return {"artifact_types": [], "total_types": 0}
     try:

@@ -6,8 +6,10 @@ import state
 from api.cases import (
     ExplainZeroRequest,
     PivotRequest,
+    get_artifact_types,
     get_compare,
     get_coverage,
+    get_summary,
     post_explain_zero,
     post_pivot,
 )
@@ -15,6 +17,79 @@ from api.cases import (
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_cases_summary_uses_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+                "case_name": "Raw Index",
+                "total_hits": 2,
+            }
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 2,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_summary())
+
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["source_path"] == "raw-index.sqlite"
+    assert result["case_name"] == "Raw Index"
+    assert result["artifact_type_count"] == 1
+    assert result["artifact_types"] == {"File System Entry": 2}
+    assert result["coverage"]["status"] == "searched"
+
+
+def test_cases_types_uses_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 2,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_artifact_types())
+
+    assert result["artifact_types"] == [{
+        "artifact_name": "File System Entry",
+        "hit_count": 2,
+    }]
+    assert result["total_types"] == 1
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage"]["status"] == "searched"
 
 
 def test_cases_compare_includes_active_raw_index(monkeypatch):
