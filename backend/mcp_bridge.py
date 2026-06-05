@@ -1911,6 +1911,7 @@ async def search_artifacts(
               "start_date": start_date, "end_date": end_date, "fields": fields, "limit": limit, "offset": offset,
               "all_cases": all_cases}
     def fn():
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
         if all_cases:
             from state import app_state
             from core.analysis.case_aggregator import search_across_cases
@@ -1919,12 +1920,12 @@ async def search_artifacts(
             per_case_cap = max(cap, offset + cap)
             return _mask(search_across_cases(
                 app_state._connectors,
-                keyword=keyword or (keywords.split(",")[0].strip() if keywords else ""),
+                keyword=keyword,
+                keywords=kw_list,
                 artifact_type=artifact_type, start_date=start_date, end_date=end_date,
                 limit_per_case=per_case_cap, global_limit=cap, global_offset=offset,
             ))
         cap = min(limit, config.search_max_limit)
-        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
         raw = _get_raw_index()
         if raw:
             field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []

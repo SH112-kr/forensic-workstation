@@ -172,6 +172,87 @@ def test_search_across_cases_preserves_exact_per_case_totals():
     assert r["hits"][0]["case_id"] == "raw_index"
 
 
+def test_search_across_cases_passes_raw_keyword_union():
+    class _RawKeywordUnion:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            filters = filters or {}
+            assert keyword == ""
+            assert filters["keywords"] == ["alpha", "beta"]
+            hits = [
+                {
+                    "hit_id": 1,
+                    "timestamp": "2026-10-04T00:00:00Z",
+                    "fields": {"Path": "/c:/Tools/alpha.exe"},
+                },
+                {
+                    "hit_id": 2,
+                    "timestamp": "2026-10-04T00:00:01Z",
+                    "fields": {"Path": "/c:/Tools/beta.exe"},
+                },
+            ]
+            return {
+                "total": 2,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 2,
+                "hits": hits,
+            }
+
+    r = search_across_cases(
+        {"raw_index": _RawKeywordUnion()},
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        limit_per_case=10,
+        global_limit=10,
+    )
+
+    assert r["query"]["keywords"] == ["alpha", "beta"]
+    assert r["merged_total"] == 2
+    assert {hit["fields"]["Path"] for hit in r["hits"]} == {
+        "/c:/Tools/alpha.exe",
+        "/c:/Tools/beta.exe",
+    }
+
+
+def test_search_across_cases_refuses_unsupported_keyword_union():
+    class _LegacySearch:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "legacy_case",
+                "source_path": "legacy",
+            }
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            raise AssertionError("unsupported connector must not be searched")
+
+    r = search_across_cases(
+        {"axiom:legacy": _LegacySearch()},
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        limit_per_case=10,
+        global_limit=10,
+    )
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["merged_total"] == 0
+    assert r["per_case"][0]["coverage"]["gaps"][0]["reason"] == (
+        "search_keyword_union_not_supported"
+    )
+
+
 def test_search_across_cases_surfaces_connector_not_evaluable():
     class _RawNotEvaluable:
         def is_connected(self):

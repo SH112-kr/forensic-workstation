@@ -226,6 +226,7 @@ def _hit_sort_key(h: dict[str, Any]) -> tuple:
 def search_across_cases(
     connectors: dict[str, Any],
     keyword: str = "",
+    keywords: list[str] | None = None,
     artifact_type: str = "",
     start_date: str = "",
     end_date: str = "",
@@ -241,11 +242,43 @@ def search_across_cases(
     slice ``[global_offset : global_offset + global_limit]``.
     """
     cases = iter_cases(connectors)
+    keyword_list = list(
+        dict.fromkeys(str(k).strip() for k in (keywords or []) if str(k).strip())
+    )
 
     def _run(case_id: str, connector: Any) -> dict[str, Any]:
+        filters = {
+            "artifact_type": artifact_type,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+        effective_keyword = keyword
+        if keyword_list:
+            try:
+                meta = connector.get_metadata() or {}
+            except Exception:
+                meta = {}
+            source_type = str(meta.get("source_type") or "").lower()
+            if source_type == "raw_image_sidecar":
+                filters["keywords"] = keyword_list
+            elif not str(keyword or "").strip() and len(keyword_list) == 1:
+                effective_keyword = keyword_list[0]
+            else:
+                return {
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "error": "search_keyword_union_not_supported",
+                    "coverage": {
+                        "status": "not_evaluable",
+                        "gaps": [{
+                            "reason": "search_keyword_union_not_supported",
+                            "keywords": keyword_list,
+                        }],
+                    },
+                }
         return connector.search(
-            keyword=keyword,
-            filters={"artifact_type": artifact_type, "start_date": start_date, "end_date": end_date},
+            keyword=effective_keyword,
+            filters=filters,
             limit=limit_per_case,
             offset=0,
         )
@@ -273,6 +306,7 @@ def search_across_cases(
         **({"status": result_status} if result_status != "searched" else {}),
         "query": {
             "keyword": keyword,
+            "keywords": keyword_list,
             "artifact_type": artifact_type,
             "start_date": start_date,
             "end_date": end_date,

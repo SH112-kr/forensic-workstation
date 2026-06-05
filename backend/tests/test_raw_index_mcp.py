@@ -547,6 +547,26 @@ def test_search_artifacts_all_cases_preserves_exact_raw_total(monkeypatch, tmp_p
     assert result["returned"] == 1
 
 
+def test_search_artifacts_all_cases_applies_raw_keyword_union(monkeypatch, tmp_path):
+    raw = _seed_multi_keyword_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keywords="alpha,beta",
+        artifact_type="File System Entry",
+        limit=10,
+        all_cases=True,
+    ))
+
+    names = {hit["fields"]["Name"] for hit in result["hits"]}
+    assert result["case_count"] == 1
+    assert result["query"]["keywords"] == ["alpha", "beta"]
+    assert result["per_case_totals"] == {"raw_index": 3}
+    assert result["merged_total"] == 3
+    assert names == {"alpha-one.exe", "alpha-two.exe", "beta-one.exe"}
+
+
 def test_search_artifacts_all_cases_preserves_raw_not_evaluable(monkeypatch, tmp_path):
     raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
