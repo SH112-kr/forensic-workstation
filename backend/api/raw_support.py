@@ -34,6 +34,31 @@ def raw_index_coverage(raw: Any) -> dict:
     return {"status": "searched", "gaps": []}
 
 
+def raw_exception_result(error: Exception) -> dict:
+    message = str(error)
+    coverage = {
+        "status": "not_evaluable",
+        "gaps": [{"error": message}],
+    }
+    return {
+        "ok": False,
+        "status": "not_evaluable",
+        "error": message,
+        "coverage_gap": {
+            "status": "not_evaluable",
+            "reason": "raw_index_exception",
+            "error": message,
+        },
+        "coverage": coverage,
+        "raw_index_coverage": coverage,
+        "total": 0,
+        "total_events": 0,
+        "returned": 0,
+        "hits": [],
+        "entries": [],
+    }
+
+
 def should_fallback_to_parsed_case(raw_result: Any, app_state: Any) -> bool:
     if not isinstance(raw_result, dict) or not parsed_case_loaded(app_state):
         return False

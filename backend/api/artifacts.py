@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from api.raw_support import (
     active_raw_index_without_parsed_case,
     annotate_parsed_fallback,
+    raw_exception_result,
     should_fallback_to_parsed_case,
 )
 from core.config import config
@@ -84,16 +85,19 @@ async def search_artifacts(req: SearchRequest):
 
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            raw_result = raw.search(
-                keyword=req.keyword,
-                filters={
-                    "artifact_type": req.artifact_type,
-                    "start_date": req.start_date,
-                    "end_date": req.end_date,
-                },
-                limit=min(req.limit, config.max_limit),
-                offset=req.offset,
-            )
+            try:
+                raw_result = raw.search(
+                    keyword=req.keyword,
+                    filters={
+                        "artifact_type": req.artifact_type,
+                        "start_date": req.start_date,
+                        "end_date": req.end_date,
+                    },
+                    limit=min(req.limit, config.max_limit),
+                    offset=req.offset,
+                )
+            except Exception as raw_error:
+                raw_result = raw_exception_result(raw_error)
             if should_fallback_to_parsed_case(raw_result, app_state):
                 parsed_result = app_state.get_axiom().search(
                     keyword=req.keyword,
@@ -145,12 +149,17 @@ async def artifact_grid(req: GridRequest):
         limit = req.endRow - req.startRow
         offset = req.startRow
 
-        result = connector.search(
-            keyword=keyword,
-            filters={"artifact_type": artifact_type},
-            limit=limit,
-            offset=offset,
-        )
+        try:
+            result = connector.search(
+                keyword=keyword,
+                filters={"artifact_type": artifact_type},
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as raw_error:
+            if not (raw and raw.is_connected()):
+                raise
+            result = raw_exception_result(raw_error)
         fallback_metadata: dict = {}
         if raw and raw.is_connected() and should_fallback_to_parsed_case(
             result,
@@ -173,11 +182,17 @@ async def artifact_grid(req: GridRequest):
             }
 
         # AG Grid expects: { rowData: [...], rowCount: total }
+        status_metadata = {
+            key: value
+            for key, value in result.items()
+            if key in {"ok", "status", "coverage_gap", "raw_index_coverage"}
+        }
         return {
             "rowData": result.get("hits", []),
             "rowCount": result.get("total", result.get("total_estimated", 0)),
             "count_accuracy": result.get("count_accuracy", ""),
             "total_is_estimated": result.get("total_is_estimated"),
+            **status_metadata,
             **fallback_metadata,
         }
     except Exception as e:
@@ -214,7 +229,15 @@ async def search_by_source(path_pattern: str, limit: int = 50):
     try:
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            raw_result = raw.search(keyword=path_pattern, filters={}, limit=limit, offset=0)
+            try:
+                raw_result = raw.search(
+                    keyword=path_pattern,
+                    filters={},
+                    limit=limit,
+                    offset=0,
+                )
+            except Exception as raw_error:
+                raw_result = raw_exception_result(raw_error)
             if should_fallback_to_parsed_case(raw_result, app_state):
                 parsed_result = app_state.get_axiom().search_by_source(path_pattern, limit)
                 return annotate_parsed_fallback(parsed_result, raw_result)
@@ -230,7 +253,10 @@ async def get_hit_detail(hit_id: int):
     try:
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            raw_result = raw.get_hit_detail(hit_id)
+            try:
+                raw_result = raw.get_hit_detail(hit_id)
+            except Exception as raw_error:
+                raw_result = raw_exception_result(raw_error)
             if should_fallback_to_parsed_case(raw_result, app_state):
                 parsed_result = app_state.get_axiom().get_hit_detail(hit_id)
                 return annotate_parsed_fallback(parsed_result, raw_result)

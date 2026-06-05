@@ -142,6 +142,76 @@ def test_timeline_api_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
     assert result["entries"][0]["artifact_type"] == "Prefetch"
 
 
+def test_timeline_api_falls_back_to_axiom_when_raw_raises(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_timeline(
+            self,
+            start_date="",
+            end_date="",
+            artifact_types=None,
+            limit=200,
+            offset=0,
+        ):
+            raise RuntimeError("simulated raw timeline failure")
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def get_timeline(
+            self,
+            start_date="",
+            end_date="",
+            artifact_types=None,
+            limit=200,
+        ):
+            assert start_date == "2026-10-01"
+            assert end_date == "2026-10-31"
+            assert artifact_types == ["Prefetch"]
+            assert limit == 10
+            return {
+                "total_events": 1,
+                "returned": 1,
+                "entries": [{
+                    "hit_id": 22,
+                    "artifact_type": "Prefetch",
+                    "description": "Prefetch powershell.exe",
+                }],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(build_timeline(TimelineRequest(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types=["Prefetch"],
+        limit=10,
+    )))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "simulated raw timeline failure"
+    assert result["entries"][0]["artifact_type"] == "Prefetch"
+
+
 def test_timeline_api_all_cases_includes_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):

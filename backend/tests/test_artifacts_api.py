@@ -248,6 +248,52 @@ def test_search_by_source_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
+def test_search_by_source_falls_back_to_axiom_when_raw_raises(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            raise RuntimeError("simulated raw source failure")
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search_by_source(self, path_pattern, limit=50):
+            assert path_pattern == "/c:/Tools"
+            assert limit == 5
+            return {
+                "total": 1,
+                "returned": 1,
+                "hits": [{"hit_id": 32, "fields": {"Path": "/c:/Tools/agent.exe"}}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_by_source("/c:/Tools", limit=5))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "simulated raw source failure"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_artifact_grid_uses_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):
@@ -359,6 +405,51 @@ def test_get_hit_detail_falls_back_to_axiom_when_raw_detail_missing(monkeypatch)
     assert result["raw_index_status"] == "error"
     assert result["raw_index_coverage"]["status"] == "not_evaluable"
     assert result["raw_index_coverage"]["gaps"][0]["error"] == "artifact_id 42 not found"
+    assert result["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
+def test_get_hit_detail_falls_back_to_axiom_when_raw_raises(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_hit_detail(self, hit_id):
+            assert hit_id == 42
+            raise RuntimeError("simulated raw detail failure")
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def get_hit_detail(self, hit_id):
+            assert hit_id == 42
+            return {
+                "hit_id": 42,
+                "fields": {"Path": "/c:/Tools/agent.exe"},
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_hit_detail(42))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "simulated raw detail failure"
     assert result["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
@@ -477,6 +568,62 @@ def test_search_api_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
     assert result["hits"][0]["artifact_type"] == "Prefetch"
 
 
+def test_search_api_falls_back_to_axiom_when_raw_raises(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            raise RuntimeError("simulated raw search failure")
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "agent.exe"
+            assert filters == {
+                "artifact_type": "Prefetch",
+                "start_date": "",
+                "end_date": "",
+            }
+            assert limit == 10
+            assert offset == 0
+            return {
+                "total": 1,
+                "returned": 1,
+                "hits": [{"hit_id": 14, "artifact_type": "Prefetch"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_artifacts(SearchRequest(
+        keyword="agent.exe",
+        artifact_type="Prefetch",
+        limit=10,
+    )))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "simulated raw search failure"
+    assert result["hits"][0]["artifact_type"] == "Prefetch"
+
+
 def test_artifact_grid_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
     class _RawIndex:
         def is_connected(self):
@@ -540,6 +687,61 @@ def test_artifact_grid_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
     assert result["raw_index_status"] == "not_evaluable"
     assert result["raw_index_coverage"]["status"] == "not_evaluable"
     assert result["rowCount"] == 2
+    assert result["rowData"][0]["artifact_type"] == "Prefetch"
+
+
+def test_artifact_grid_falls_back_to_axiom_when_raw_raises(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            raise RuntimeError("simulated raw grid failure")
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "powershell.exe"
+            assert filters == {"artifact_type": "Prefetch"}
+            assert limit == 25
+            assert offset == 0
+            return {
+                "total": 2,
+                "returned": 1,
+                "hits": [{"hit_id": 13, "artifact_type": "Prefetch"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(artifact_grid(GridRequest(
+        startRow=0,
+        endRow=25,
+        filterModel={
+            "keyword": {"filter": "powershell.exe"},
+            "artifact_type": {"filter": "Prefetch"},
+        },
+    )))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "simulated raw grid failure"
     assert result["rowData"][0]["artifact_type"] == "Prefetch"
 
 
