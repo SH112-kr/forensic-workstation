@@ -94,7 +94,8 @@ async def artifact_grid(req: GridRequest):
     """
     from state import app_state
     try:
-        connector = app_state.get_axiom()
+        raw = app_state.get("raw_index")
+        connector = raw if raw and raw.is_connected() else app_state.get_axiom()
 
         # Extract filters from AG Grid filterModel
         keyword = ""
@@ -118,7 +119,9 @@ async def artifact_grid(req: GridRequest):
         # AG Grid expects: { rowData: [...], rowCount: total }
         return {
             "rowData": result.get("hits", []),
-            "rowCount": result.get("total_estimated", 0),
+            "rowCount": result.get("total", result.get("total_estimated", 0)),
+            "count_accuracy": result.get("count_accuracy", ""),
+            "total_is_estimated": result.get("total_is_estimated"),
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -155,6 +158,9 @@ async def search_by_source(path_pattern: str, limit: int = 50):
 async def get_hit_detail(hit_id: int):
     from state import app_state
     try:
+        raw = app_state.get("raw_index")
+        if raw and raw.is_connected():
+            return raw.get_hit_detail(hit_id)
         return app_state.get_axiom().get_hit_detail(hit_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
