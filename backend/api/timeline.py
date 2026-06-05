@@ -23,10 +23,9 @@ async def build_timeline(req: TimelineRequest):
     try:
         if req.all_cases:
             from core.analysis.case_aggregator import timeline_across_cases
-            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             cap = min(req.limit, config.max_limit)
             result = timeline_across_cases(
-                axiom_conns,
+                app_state._connectors,
                 start_date=req.start_date,
                 end_date=req.end_date,
                 artifact_types=req.artifact_types or None,
