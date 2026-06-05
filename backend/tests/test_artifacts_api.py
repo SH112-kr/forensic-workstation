@@ -8,12 +8,97 @@ from api.artifacts import (
     SearchRequest,
     artifact_grid,
     get_hit_detail,
+    get_tagged_hits,
     search_artifacts,
+    search_by_hash,
+    search_by_source,
 )
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_get_tagged_hits_reports_raw_index_unsupported(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_tagged_hits("interesting"))
+
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_tagged_hits_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_search_by_hash_reports_raw_index_unsupported(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_by_hash("deadbeef", limit=5))
+
+    assert result["status"] == "not_evaluable"
+    assert result["coverage_gap"]["reason"] == "raw_hash_search_unsupported"
+    assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_search_by_source_uses_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "/c:/Tools"
+            assert filters == {}
+            assert limit == 5
+            assert offset == 0
+            return {
+                "total": 1,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 1,
+                "hits": [{
+                    "hit_id": 3,
+                    "fields": {"Path": "/c:/Tools/agent.exe"},
+                }],
+            }
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_by_source("/c:/Tools", limit=5))
+
+    assert result["total"] == 1
+    assert result["count_accuracy"] == "exact"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
 def test_artifact_grid_uses_active_raw_index(monkeypatch):
