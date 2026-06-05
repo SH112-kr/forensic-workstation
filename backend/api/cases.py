@@ -270,8 +270,11 @@ async def post_explain_zero(req: ExplainZeroRequest):
     """
     from state import app_state
     from core.analysis.zero_results import explain_zero_results as _explain
-    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-    return _explain(axiom_conns, tool_name=req.tool_name, params=req.params)
+    return _explain(
+        app_state._connectors,
+        tool_name=req.tool_name,
+        params=req.params,
+    )
 
 
 @router.get("/health")
@@ -296,8 +299,7 @@ async def get_coverage(artifact_types: str = ""):
     from state import app_state
     from core.analysis.coverage import build_coverage_report
     requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
-    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-    return build_coverage_report(axiom_conns, artifact_types=requested)
+    return build_coverage_report(app_state._connectors, artifact_types=requested)
 
 
 @router.get("/list")

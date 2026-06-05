@@ -100,6 +100,29 @@ def explain_zero_results(
                 "why": "Confirm the structural gap and see which case format exposes this family.",
             })
 
+    # 1b) Raw sidecar has not indexed this family. This is not a zero-activity
+    # signal; it means the source cannot currently answer the question.
+    for it in cov_items:
+        if (
+            it.get("artifact_type") == artifact_type
+            and it.get("status") == "not_evaluable"
+            and it.get("reason") == "raw_artifact_family_not_indexed"
+        ):
+            causes.append({
+                "cause": "raw_artifact_family_not_indexed",
+                "confidence": "high",
+                "detail": (
+                    f"Artifact family '{artifact_type}' is not indexed in the "
+                    "active raw sidecar. This is not evidence of zero activity."
+                ),
+                "reason": it.get("reason"),
+            })
+            suggestions.append({
+                "tool_name": "coverage_explainer",
+                "params": {"artifact_types": artifact_type},
+                "why": "Confirm the raw sidecar coverage gap for this family.",
+            })
+
     # 2) No records loaded for the requested family.
     for it in cov_items:
         if it.get("artifact_type") == artifact_type and it.get("status") == "available_not_loaded":

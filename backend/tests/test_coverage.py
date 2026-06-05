@@ -43,3 +43,67 @@ def test_explicit_artifact_types_narrows_report(kape_case):
     by_type = {c["artifact_type"]: c for c in r["coverage"]}
     assert by_type["Mobile Backups"]["status"] == "structurally_unavailable"
     assert by_type["Prefetch"]["status"] == "searched"
+
+
+def test_raw_index_loaded_family_is_searched():
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"source_type": "raw_image_sidecar"}
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 3,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    r = build_coverage_report({"raw_index": _RawIndex()})
+
+    assert r["case_context"]["case_format"] == "raw_image_sidecar"
+    assert r["case_context"]["cases"] == ["raw_index"]
+    assert r["coverage"] == [{
+        "artifact_type": "File System Entry",
+        "status": "searched",
+        "record_count": 3,
+        "cases": ["raw_index"],
+        "reason": None,
+    }]
+
+
+def test_raw_index_unindexed_requested_family_is_not_evaluable():
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"source_type": "raw_image_sidecar"}
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 3,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    r = build_coverage_report({"raw_index": _RawIndex()}, artifact_types=["Prefetch"])
+
+    assert r["status"] == "not_evaluable"
+    assert r["coverage"] == [{
+        "artifact_type": "Prefetch",
+        "status": "not_evaluable",
+        "record_count": 0,
+        "cases": [],
+        "reason": "raw_artifact_family_not_indexed",
+        "detail": (
+            "The active raw sidecar has not indexed this artifact family. "
+            "Do not treat this as zero activity."
+        ),
+    }]
+    assert r["summary"]["not_evaluable"] == 1

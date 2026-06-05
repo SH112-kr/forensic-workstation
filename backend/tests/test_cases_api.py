@@ -3,7 +3,14 @@ from __future__ import annotations
 import asyncio
 
 import state
-from api.cases import PivotRequest, get_compare, post_pivot
+from api.cases import (
+    ExplainZeroRequest,
+    PivotRequest,
+    get_compare,
+    get_coverage,
+    post_explain_zero,
+    post_pivot,
+)
 
 
 def _run(coro):
@@ -79,3 +86,66 @@ def test_cases_pivot_includes_active_raw_index(monkeypatch):
     assert result["per_case_counts"] == {"raw_index": 1}
     assert result["hits"][0]["case_id"] == "raw_index"
     assert result["hits"][0]["source_type"] == "raw_image_sidecar"
+
+
+def test_cases_coverage_includes_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"source_type": "raw_image_sidecar"}
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 2,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_coverage("File System Entry"))
+
+    assert result["case_context"]["case_format"] == "raw_image_sidecar"
+    assert result["coverage"][0]["artifact_type"] == "File System Entry"
+    assert result["coverage"][0]["status"] == "searched"
+    assert result["coverage"][0]["record_count"] == 2
+    assert result["coverage"][0]["cases"] == ["raw_index"]
+
+
+def test_cases_explain_zero_includes_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"source_type": "raw_image_sidecar"}
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 2,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(post_explain_zero(ExplainZeroRequest(
+        tool_name="search_artifacts",
+        params={"artifact_type": "Prefetch"},
+    )))
+
+    causes = [c["cause"] for c in result["likely_causes"]]
+    assert "raw_artifact_family_not_indexed" in causes
+    assert result["case_context"]["case_format"] == "raw_image_sidecar"

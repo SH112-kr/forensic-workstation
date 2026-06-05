@@ -48,3 +48,31 @@ def test_stacked_filters_low_confidence(kape_case):
 def test_always_suggests_coverage_explainer(kape_case):
     r = explain_zero_results({"axiom:b": kape_case}, tool_name="foo", params={})
     assert any(s["tool_name"] == "coverage_explainer" for s in r["suggested_queries"])
+
+
+def test_raw_unindexed_family_flagged_not_evaluable():
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {"source_type": "raw_image_sidecar"}
+
+        def get_artifact_type_counts(self):
+            return [{
+                "artifact_name": "File System Entry",
+                "hit_count": 3,
+            }]
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    r = explain_zero_results(
+        {"raw_index": _RawIndex()},
+        tool_name="search_artifacts",
+        params={"artifact_type": "Prefetch"},
+    )
+
+    causes = [c["cause"] for c in r["likely_causes"]]
+    assert "raw_artifact_family_not_indexed" in causes
+    assert r["case_context"]["case_format"] == "raw_image_sidecar"

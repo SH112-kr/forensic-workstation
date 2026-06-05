@@ -68,40 +68,59 @@ AXIOM_ONLY_FAMILIES: list[dict[str, str]] = [
 ]
 
 
+def _iter_case_connectors(connectors: dict[str, Any]):
+    for name, c in connectors.items():
+        if name.startswith("axiom:"):
+            case_id = name.replace("axiom:", "", 1)
+        elif name == "raw_index":
+            case_id = "raw_index"
+        else:
+            continue
+        if not getattr(c, "is_connected", lambda: False)():
+            continue
+        yield name, case_id, c
+
+
 def _infer_source_mix(connectors: dict[str, Any]) -> dict[str, Any]:
     """Classify the currently-loaded case set by connector source type."""
     kinds: list[str] = []
     case_names: list[str] = []
-    for name, c in connectors.items():
-        if not name.startswith("axiom:"):
-            continue
-        if not getattr(c, "is_connected", lambda: False)():
-            continue
+    for name, case_id, c in _iter_case_connectors(connectors):
         try:
             meta = c.get_metadata()
         except Exception:
             continue
         src = str(meta.get("source_type") or "").lower()
-        if src:
-            kinds.append(src)
-        else:
+        if not src and name == "raw_index":
+            src = "raw_image_sidecar"
+        elif not src:
             # Fallback: AxiomMfdbConnector stores .mfdb, KapeCsvConnector uses a dir
             src = "mfdb" if str(meta.get("source_path", "")).lower().endswith(".mfdb") else "kape"
-            kinds.append(src)
-        case_names.append(name.replace("axiom:", ""))
+        kinds.append(src)
+        case_names.append(case_id)
 
     if not kinds:
-        return {"case_format": "none", "kinds": [], "cases": [], "has_mfdb": False, "has_kape": False}
+        return {
+            "case_format": "none",
+            "kinds": [],
+            "cases": [],
+            "has_mfdb": False,
+            "has_kape": False,
+            "has_raw_index": False,
+        }
 
     has_mfdb = any(k.startswith("mfdb") or k.startswith("axiom") for k in kinds)
     has_kape = any(k.startswith("kape") for k in kinds)
+    has_raw = any(k == "raw_image_sidecar" for k in kinds)
 
-    if has_mfdb and has_kape:
+    if sum(1 for flag in (has_mfdb, has_kape, has_raw) if flag) > 1:
         fmt = "mixed"
     elif has_mfdb:
         fmt = "mfdb"
     elif has_kape:
         fmt = "kape"
+    elif has_raw:
+        fmt = "raw_image_sidecar"
     else:
         fmt = "unknown"
 
@@ -111,6 +130,7 @@ def _infer_source_mix(connectors: dict[str, Any]) -> dict[str, Any]:
         "cases": case_names,
         "has_mfdb": has_mfdb,
         "has_kape": has_kape,
+        "has_raw_index": has_raw,
     }
 
 
@@ -122,16 +142,11 @@ def _collect_loaded_types(connectors: dict[str, Any]) -> dict[str, dict[str, Any
     the counts are summed per name; empty or unreadable connectors are skipped.
     """
     aggregated: dict[str, dict[str, Any]] = {}
-    for name, c in connectors.items():
-        if not name.startswith("axiom:"):
-            continue
-        if not getattr(c, "is_connected", lambda: False)():
-            continue
+    for _name, case_id, c in _iter_case_connectors(connectors):
         try:
             rows = c.get_artifact_type_counts()
         except Exception:
             continue
-        case_id = name.replace("axiom:", "")
         for row in rows or []:
             art = row.get("artifact_name") or row.get("artifact_type") or row.get("name")
             cnt = row.get("hit_count") or row.get("count") or 0
@@ -173,9 +188,11 @@ def build_coverage_report(
         # Only append AXIOM-only families when they'd be non-trivially classified
         # (i.e. KAPE-only case sees them as structurally unavailable; mixed/mfdb
         # cases would show them as searched or available_not_loaded depending on
-        # records).
-        for fam in AXIOM_ONLY_FAMILIES:
-            families_to_report.append(fam["family"])
+        # records). A raw-only sidecar should not inherit AXIOM-only phantom
+        # families unless an analyst explicitly asks for one.
+        if case_ctx["has_mfdb"] or case_ctx["has_kape"]:
+            for fam in AXIOM_ONLY_FAMILIES:
+                families_to_report.append(fam["family"])
         families_to_report = list(dict.fromkeys(families_to_report))
 
     axiom_only_names = {f["family"] for f in AXIOM_ONLY_FAMILIES}
@@ -185,6 +202,7 @@ def build_coverage_report(
     count_searched = 0
     count_unloaded = 0
     count_structural = 0
+    count_not_evaluable = 0
 
     for fam in families_to_report:
         info = loaded.get(fam)
@@ -197,6 +215,25 @@ def build_coverage_report(
                 "reason": None,
             })
             count_searched += 1
+            continue
+
+        if (
+            case_ctx["has_raw_index"]
+            and not case_ctx["has_mfdb"]
+            and not case_ctx["has_kape"]
+        ):
+            coverage.append({
+                "artifact_type": fam,
+                "status": "not_evaluable",
+                "record_count": 0,
+                "cases": [],
+                "reason": "raw_artifact_family_not_indexed",
+                "detail": (
+                    "The active raw sidecar has not indexed this artifact family. "
+                    "Do not treat this as zero activity."
+                ),
+            })
+            count_not_evaluable += 1
             continue
 
         if fam in axiom_only_names and case_ctx["has_kape"] and not case_ctx["has_mfdb"]:
@@ -241,9 +278,17 @@ def build_coverage_report(
             f"{count_structural} family/families are structurally unavailable under "
             f"the current case format; do not treat their absence as evidence."
         )
+    if count_not_evaluable:
+        notes.append(
+            "The active raw sidecar has not indexed at least one requested "
+            "artifact family; do not treat that as zero activity."
+        )
+
+    result_status = "not_evaluable" if count_not_evaluable else ""
 
     return {
-        "ok": True,
+        "ok": result_status != "not_evaluable",
+        **({"status": result_status} if result_status else {}),
         "tool": "coverage_explainer",
         "case_context": case_ctx,
         "coverage": coverage,
@@ -252,6 +297,7 @@ def build_coverage_report(
             "searched": count_searched,
             "available_not_loaded": count_unloaded,
             "structurally_unavailable": count_structural,
+            "not_evaluable": count_not_evaluable,
             "axiom_only_family_count": len(AXIOM_ONLY_FAMILIES),
         },
         "notes": notes,
