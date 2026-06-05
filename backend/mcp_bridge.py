@@ -2082,6 +2082,7 @@ async def build_timeline(
                 app_state._connectors,
                 start_date=start_date, end_date=end_date,
                 artifact_types=type_list,
+                keywords=kw_list,
                 limit_per_case=per_case_cap, global_limit=cap, global_offset=offset,
             ))
 

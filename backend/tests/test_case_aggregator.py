@@ -175,6 +175,43 @@ def test_timeline_across_cases_provenance(mfdb_case, kape_case):
     assert r["merged_total"] >= 2
 
 
+def test_timeline_across_cases_refuses_unsupported_keyword_filter():
+    class _TimelineWithoutKeywords:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "legacy_case",
+                "source_path": "legacy",
+            }
+
+        def get_timeline(
+            self,
+            start_date="",
+            end_date="",
+            artifact_types=None,
+            limit=200,
+            offset=0,
+        ):
+            return {
+                "total_events": 1,
+                "entries": [{"description": "unfiltered timeline row"}],
+            }
+
+    r = timeline_across_cases(
+        {"axiom:legacy": _TimelineWithoutKeywords()},
+        keywords=["agent.exe"],
+    )
+
+    assert r["ok"] is False
+    assert r["status"] == "not_evaluable"
+    assert r["merged_total"] == 0
+    assert r["per_case"][0]["coverage"]["gaps"][0]["reason"] == (
+        "timeline_keyword_filter_not_supported"
+    )
+
+
 def test_hash_across_cases_finds_only_matching(mfdb_case, kape_case):
     r = hash_across_cases({"axiom:a": mfdb_case, "axiom:b": kape_case}, "deadbeef")
     assert r["total"] == 1

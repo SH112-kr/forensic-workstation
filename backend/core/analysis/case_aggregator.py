@@ -18,6 +18,7 @@ This module is the substrate for ``compare_cases`` and later
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Iterable
 
 
@@ -292,6 +293,7 @@ def timeline_across_cases(
     start_date: str = "",
     end_date: str = "",
     artifact_types: list[str] | None = None,
+    keywords: list[str] | None = None,
     limit_per_case: int = 200,
     global_limit: int = 500,
     global_offset: int = 0,
@@ -304,6 +306,35 @@ def timeline_across_cases(
     cases = iter_cases(connectors)
 
     def _run(case_id: str, connector: Any) -> dict[str, Any]:
+        if keywords:
+            try:
+                supports_keywords = (
+                    "keywords"
+                    in inspect.signature(connector.get_timeline).parameters
+                )
+            except (TypeError, ValueError):
+                supports_keywords = False
+            if not supports_keywords:
+                return {
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "error": "timeline_keyword_filter_not_supported",
+                    "coverage": {
+                        "status": "not_evaluable",
+                        "gaps": [{
+                            "reason": "timeline_keyword_filter_not_supported",
+                            "keywords": keywords,
+                        }],
+                    },
+                }
+            return connector.get_timeline(
+                start_date=start_date,
+                end_date=end_date,
+                artifact_types=artifact_types,
+                keywords=keywords,
+                limit=limit_per_case,
+                offset=0,
+            )
         return connector.get_timeline(
             start_date=start_date,
             end_date=end_date,
@@ -334,6 +365,7 @@ def timeline_across_cases(
             "start_date": start_date,
             "end_date": end_date,
             "artifact_types": artifact_types or [],
+            "keywords": keywords or [],
         },
         "case_count": len(cases),
         "per_case": per_case,
