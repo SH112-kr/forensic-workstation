@@ -659,6 +659,25 @@ def test_build_timeline_all_cases_fetches_enough_for_offset(monkeypatch, tmp_pat
     assert result["entries"][0]["description"].endswith("alpha-two.exe")
 
 
+def test_build_timeline_all_cases_preserves_exact_raw_total(monkeypatch, tmp_path):
+    raw = _seed_multi_timed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.build_timeline(
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        artifact_types="File System Entry",
+        limit=1,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["per_case_totals"] == {"raw_index": 3}
+    assert result["merged_total"] == 3
+    assert result["returned"] == 1
+
+
 def test_build_timeline_all_cases_applies_raw_index_keyword_filter(
     monkeypatch,
     tmp_path,

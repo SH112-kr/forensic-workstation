@@ -346,6 +346,7 @@ def timeline_across_cases(
     per_case, warnings = safe_collect(cases, _run)
 
     merged: list[dict[str, Any]] = []
+    per_case_totals: dict[str, int] = {}
     for env in per_case:
         if not env.get("ok"):
             continue
@@ -353,10 +354,16 @@ def timeline_across_cases(
         payload = env.get("data", {}) or {}
         entries = payload.get("entries", []) or payload.get("events", []) or []
         merged.extend(_tag_hits_with_provenance(entries, provenance))
+        per_case_totals[env["case_id"]] = int(
+            payload.get("total_events")
+            or payload.get("total")
+            or len(entries)
+        )
 
     merged.sort(key=_hit_sort_key)
     sliced = merged[global_offset : global_offset + global_limit]
     result_status = _aggregate_status(per_case)
+    merged_total = sum(per_case_totals.values())
 
     return {
         "ok": result_status == "searched",
@@ -369,7 +376,8 @@ def timeline_across_cases(
         },
         "case_count": len(cases),
         "per_case": per_case,
-        "merged_total": len(merged),
+        "per_case_totals": per_case_totals,
+        "merged_total": merged_total,
         "global_offset": global_offset,
         "global_limit": global_limit,
         "returned": len(sliced),

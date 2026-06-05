@@ -175,6 +175,53 @@ def test_timeline_across_cases_provenance(mfdb_case, kape_case):
     assert r["merged_total"] >= 2
 
 
+def test_timeline_across_cases_preserves_exact_per_case_totals():
+    class _TimelineWithMoreRows:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def get_timeline(
+            self,
+            start_date="",
+            end_date="",
+            artifact_types=None,
+            limit=200,
+            offset=0,
+        ):
+            entries = [
+                {
+                    "hit_id": idx + 1,
+                    "timestamp": f"2026-10-04T00:00:0{idx}Z",
+                    "description": f"event {idx}",
+                }
+                for idx in range(3)
+            ]
+            return {
+                "total_events": 3,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": min(limit, len(entries)),
+                "entries": entries[:limit],
+            }
+
+    r = timeline_across_cases(
+        {"raw_index": _TimelineWithMoreRows()},
+        limit_per_case=1,
+        global_limit=1,
+    )
+
+    assert r["per_case_totals"] == {"raw_index": 3}
+    assert r["merged_total"] == 3
+    assert r["returned"] == 1
+    assert r["entries"][0]["case_id"] == "raw_index"
+
+
 def test_timeline_across_cases_refuses_unsupported_keyword_filter():
     class _TimelineWithoutKeywords:
         def is_connected(self):
