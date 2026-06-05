@@ -254,12 +254,7 @@ def search_across_cases(
         }
         effective_keyword = keyword
         if keyword_list:
-            try:
-                meta = connector.get_metadata() or {}
-            except Exception:
-                meta = {}
-            source_type = str(meta.get("source_type") or "").lower()
-            if source_type == "raw_image_sidecar":
+            if case_id == "raw_index":
                 filters["keywords"] = keyword_list
             elif not str(keyword or "").strip() and len(keyword_list) == 1:
                 effective_keyword = keyword_list[0]

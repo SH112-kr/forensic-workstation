@@ -223,6 +223,48 @@ def test_search_across_cases_passes_raw_keyword_union():
     }
 
 
+def test_search_across_cases_keyword_union_does_not_requery_metadata():
+    class _RawKeywordUnion:
+        metadata_calls = 0
+
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            self.metadata_calls += 1
+            return {
+                "source_type": "raw_image_sidecar",
+                "source_path": "raw-index.sqlite",
+            }
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert filters["keywords"] == ["alpha", "beta"]
+            return {
+                "total": 1,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 1,
+                "hits": [{
+                    "hit_id": 1,
+                    "timestamp": "2026-10-04T00:00:00Z",
+                    "fields": {"Path": "/c:/Tools/alpha.exe"},
+                }],
+            }
+
+    raw = _RawKeywordUnion()
+
+    r = search_across_cases(
+        {"raw_index": raw},
+        keywords=["alpha", "beta"],
+        artifact_type="File System Entry",
+        limit_per_case=10,
+        global_limit=10,
+    )
+
+    assert r["merged_total"] == 1
+    assert raw.metadata_calls == 1
+
+
 def test_search_across_cases_refuses_unsupported_keyword_union():
     class _LegacySearch:
         def is_connected(self):
