@@ -25,6 +25,28 @@ class _StubState:
         return _StubConnector()
 
 
+class _RawConnector:
+    def __init__(self, coverage=None):
+        self._coverage = coverage or {"status": "searched", "gaps": []}
+
+    def is_connected(self):
+        return True
+
+    def get_coverage(self):
+        return self._coverage
+
+
+class _RawOnlyState:
+    def __init__(self, coverage=None):
+        self._connectors = {"raw_index": _RawConnector(coverage)}
+
+    def get(self, name):
+        return self._connectors.get(name)
+
+    def get_axiom(self):
+        raise AssertionError("raw-only API must not request AXIOM")
+
+
 def test_run_detection_returns_raw_detection_payload(monkeypatch):
     import state
     from api.detection import DetectionRequest, run_detection
@@ -112,3 +134,101 @@ def test_run_detection_returns_raw_detection_payload(monkeypatch):
     # Findings use query_description, not description
     assert "query_description" in payload["findings"][0]
     assert "description" not in payload["findings"][0]
+
+
+def test_run_detection_reports_raw_index_unsupported(monkeypatch):
+    import state
+    from api.detection import DetectionRequest, run_detection
+
+    monkeypatch.setattr(state, "app_state", _RawOnlyState())
+
+    payload = _run(run_detection(DetectionRequest(
+        rules="evtx_eid_7045_service_installs",
+    )))
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_evaluable"
+    assert payload["source_type"] == "raw_image_sidecar"
+    assert payload["rules_requested"] == ["evtx_eid_7045_service_installs"]
+    assert payload["rules_executed"] == 0
+    assert payload["findings"] == []
+    assert payload["coverage_gap"]["reason"] == "raw_find_suspicious_unsupported"
+    assert payload["raw_index_coverage"]["status"] == "searched"
+
+
+def test_baseline_diff_reports_raw_index_unsupported(monkeypatch):
+    import state
+    from api.detection import baseline_diff_get
+
+    monkeypatch.setattr(state, "app_state", _RawOnlyState())
+
+    payload = _run(baseline_diff_get(categories="services,users"))
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_evaluable"
+    assert payload["source_type"] == "raw_image_sidecar"
+    assert payload["categories"] == ["services", "users"]
+    assert payload["coverage_gap"]["reason"] == "raw_baseline_diff_unsupported"
+    assert payload["raw_index_coverage"]["status"] == "searched"
+
+
+def test_evtx_hunt_reports_raw_index_unsupported(monkeypatch):
+    import state
+    from api.detection import get_evtx_hunt
+
+    monkeypatch.setattr(state, "app_state", _RawOnlyState())
+
+    payload = _run(get_evtx_hunt(
+        rule_ids="fw-evtx-001,fw-evtx-006",
+        severity_min="medium",
+        limit_per_rule=5,
+    ))
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_evaluable"
+    assert payload["source_type"] == "raw_image_sidecar"
+    assert payload["rule_ids_requested"] == ["fw-evtx-001", "fw-evtx-006"]
+    assert payload["rules_evaluated"] == 0
+    assert payload["results"] == []
+    assert payload["coverage_gap"]["reason"] == "raw_evtx_hunt_unsupported"
+    assert payload["raw_index_coverage"]["status"] == "searched"
+
+
+def test_anti_forensics_reports_raw_index_unsupported(monkeypatch):
+    import state
+    from api.detection import get_anti_forensics
+
+    monkeypatch.setattr(state, "app_state", _RawOnlyState())
+
+    payload = _run(get_anti_forensics())
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_evaluable"
+    assert payload["source_type"] == "raw_image_sidecar"
+    assert payload["rules_fired"] == 0
+    assert payload["rules"] == []
+    assert payload["coverage_gap"]["reason"] == "raw_anti_forensics_unsupported"
+    assert payload["raw_index_coverage"]["status"] == "searched"
+
+
+def test_mitre_mapping_reports_raw_auto_detection_unsupported(monkeypatch):
+    import state
+    from api.detection import get_mitre_mapping
+
+    coverage = {
+        "status": "not_evaluable",
+        "gaps": [{"error": "simulated parser failure"}],
+    }
+    monkeypatch.setattr(state, "app_state", _RawOnlyState(coverage))
+
+    payload = _run(get_mitre_mapping())
+
+    assert payload["ok"] is False
+    assert payload["status"] == "not_evaluable"
+    assert payload["source_type"] == "raw_image_sidecar"
+    assert payload["auto_findings_evaluated"] is False
+    assert payload["attack_phases"] == 0
+    assert payload["coverage_gap"]["reason"] == (
+        "raw_mitre_auto_detection_unsupported"
+    )
+    assert payload["raw_index_coverage"]["status"] == "not_evaluable"
