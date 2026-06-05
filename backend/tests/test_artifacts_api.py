@@ -188,6 +188,66 @@ def test_search_by_source_uses_active_raw_index(monkeypatch):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
+def test_search_by_source_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "/c:/Tools"
+            assert filters == {}
+            assert limit == 5
+            assert offset == 0
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "total": 0,
+                "returned": 0,
+                "hits": [],
+                "coverage": {
+                    "status": "not_evaluable",
+                    "gaps": [{"error": "simulated source index gap"}],
+                },
+            }
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search_by_source(self, path_pattern, limit=50):
+            assert path_pattern == "/c:/Tools"
+            assert limit == 5
+            return {
+                "total": 1,
+                "returned": 1,
+                "hits": [{"hit_id": 31, "fields": {"Path": "/c:/Tools/agent.exe"}}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_by_source("/c:/Tools", limit=5))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_artifact_grid_uses_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):
@@ -253,6 +313,52 @@ def test_get_hit_detail_uses_active_raw_index(monkeypatch):
 
     result = _run(get_hit_detail(42))
 
+    assert result["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
+def test_get_hit_detail_falls_back_to_axiom_when_raw_detail_missing(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_hit_detail(self, hit_id):
+            assert hit_id == 42
+            return {"error": "artifact_id 42 not found"}
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def get_hit_detail(self, hit_id):
+            assert hit_id == 42
+            return {
+                "hit_id": 42,
+                "fields": {"Path": "/c:/Tools/agent.exe"},
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_hit_detail(42))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "error"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["gaps"][0]["error"] == "artifact_id 42 not found"
     assert result["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 

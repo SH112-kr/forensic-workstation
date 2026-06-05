@@ -214,7 +214,11 @@ async def search_by_source(path_pattern: str, limit: int = 50):
     try:
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            return raw.search(keyword=path_pattern, filters={}, limit=limit, offset=0)
+            raw_result = raw.search(keyword=path_pattern, filters={}, limit=limit, offset=0)
+            if should_fallback_to_parsed_case(raw_result, app_state):
+                parsed_result = app_state.get_axiom().search_by_source(path_pattern, limit)
+                return annotate_parsed_fallback(parsed_result, raw_result)
+            return raw_result
         return app_state.get_axiom().search_by_source(path_pattern, limit)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -226,7 +230,11 @@ async def get_hit_detail(hit_id: int):
     try:
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            return raw.get_hit_detail(hit_id)
+            raw_result = raw.get_hit_detail(hit_id)
+            if should_fallback_to_parsed_case(raw_result, app_state):
+                parsed_result = app_state.get_axiom().get_hit_detail(hit_id)
+                return annotate_parsed_fallback(parsed_result, raw_result)
+            return raw_result
         return app_state.get_axiom().get_hit_detail(hit_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -35,19 +35,24 @@ def raw_index_coverage(raw: Any) -> dict:
 
 
 def should_fallback_to_parsed_case(raw_result: Any, app_state: Any) -> bool:
-    return (
-        isinstance(raw_result, dict)
-        and str(raw_result.get("status") or "") == "not_evaluable"
-        and parsed_case_loaded(app_state)
-    )
+    if not isinstance(raw_result, dict) or not parsed_case_loaded(app_state):
+        return False
+    if str(raw_result.get("status") or "") == "not_evaluable":
+        return True
+    return bool(raw_result.get("error"))
 
 
 def annotate_parsed_fallback(parsed_result: dict, raw_result: dict) -> dict:
     result = dict(parsed_result)
     coverage = raw_result.get("coverage", raw_result.get("raw_index_coverage"))
     if not isinstance(coverage, dict):
-        coverage = {"status": "not_evaluable", "gaps": []}
+        gaps = []
+        if raw_result.get("error"):
+            gaps.append({"error": str(raw_result["error"])})
+        coverage = {"status": "not_evaluable", "gaps": gaps}
     result["fallback_source"] = "parsed_case"
-    result["raw_index_status"] = str(raw_result.get("status") or "not_evaluable")
+    result["raw_index_status"] = str(
+        raw_result.get("status") or ("error" if raw_result.get("error") else "not_evaluable")
+    )
     result["raw_index_coverage"] = coverage
     return result
