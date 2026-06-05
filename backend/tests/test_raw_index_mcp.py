@@ -529,6 +529,24 @@ def test_search_artifacts_all_cases_fetches_enough_for_offset(monkeypatch, tmp_p
     assert result["hits"][0]["fields"]["Name"] == "alpha-two.exe"
 
 
+def test_search_artifacts_all_cases_preserves_exact_raw_total(monkeypatch, tmp_path):
+    raw = _seed_multi_keyword_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.search_artifacts(
+        keyword="alpha",
+        artifact_type="File System Entry",
+        limit=1,
+        all_cases=True,
+    ))
+
+    assert result["case_count"] == 1
+    assert result["per_case_totals"] == {"raw_index": 2}
+    assert result["merged_total"] == 2
+    assert result["returned"] == 1
+
+
 def test_search_artifacts_all_cases_preserves_raw_not_evaluable(monkeypatch, tmp_path):
     raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
     monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)

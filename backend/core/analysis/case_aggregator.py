@@ -266,6 +266,7 @@ def search_across_cases(
     merged.sort(key=_hit_sort_key)
     sliced = merged[global_offset : global_offset + global_limit]
     result_status = _aggregate_status(per_case)
+    merged_total = sum(per_case_totals.values())
 
     return {
         "ok": result_status == "searched",
@@ -279,7 +280,7 @@ def search_across_cases(
         "case_count": len(cases),
         "per_case": per_case,
         "per_case_totals": per_case_totals,
-        "merged_total": len(merged),
+        "merged_total": merged_total,
         "global_offset": global_offset,
         "global_limit": global_limit,
         "returned": len(sliced),
