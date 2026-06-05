@@ -2251,6 +2251,44 @@ def test_build_raw_file_index_propagates_indexer_not_evaluable(monkeypatch, tmp_
     assert "raw_index" not in state.captured
 
 
+def test_build_raw_file_index_reports_indexer_exception_as_not_evaluable(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import file_indexer as file_indexer_module
+
+    def failing_indexer(_image, _store, *, roots, started_at):
+        raise RuntimeError("simulated file indexer crash")
+
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(
+        file_indexer_module,
+        "index_file_listing",
+        failing_indexer,
+    )
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    result = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+    ))
+
+    assert result["ok"] is False
+    assert result["status"] == "not_evaluable"
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["coverage_gap"]["reason"] == "raw_file_indexer_exception"
+    assert result["coverage_gap"]["error"] == "simulated file indexer crash"
+    assert result["performance"] == {
+        "sidecar_reused": False,
+        "reindexed": True,
+    }
+    assert "raw_index" not in state.captured
+
+
 def test_build_raw_file_index_batches_metadata_and_file_records(monkeypatch, tmp_path):
     from core.raw_index import store as store_module
 

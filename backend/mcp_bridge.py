@@ -1266,23 +1266,46 @@ async def build_raw_file_index(
         store = RawIndexStore(db_path)
         store.open()
         try:
-            with store.batch():
-                store_conn = store._conn()
-                store_conn.execute(
-                    "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
-                    ("raw_image_fingerprint", fingerprint),
-                )
-                store_conn.execute(
-                    "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
-                    ("index_roots", ",".join(root_values)),
-                )
-                store._commit(store_conn)
-                result = index_file_listing(
-                    image,
-                    store,
-                    roots=root_values,
-                    started_at=started_at or datetime.now(timezone.utc).isoformat(),
-                )
+            try:
+                with store.batch():
+                    store_conn = store._conn()
+                    store_conn.execute(
+                        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+                        ("raw_image_fingerprint", fingerprint),
+                    )
+                    store_conn.execute(
+                        "INSERT OR REPLACE INTO raw_index_metadata(key, value) VALUES (?, ?)",
+                        ("index_roots", ",".join(root_values)),
+                    )
+                    store._commit(store_conn)
+                    result = index_file_listing(
+                        image,
+                        store,
+                        roots=root_values,
+                        started_at=started_at or datetime.now(timezone.utc).isoformat(),
+                    )
+            except Exception as exc:
+                coverage_gap = {
+                    "status": "not_evaluable",
+                    "reason": "raw_file_indexer_exception",
+                    "error": str(exc),
+                    "roots": root_values,
+                }
+                return {
+                    "ok": False,
+                    "status": "not_evaluable",
+                    "source_type": "raw_image_sidecar",
+                    "db_path": db_path,
+                    "fingerprint": fingerprint,
+                    "indexed_files": 0,
+                    "coverage_gap": coverage_gap,
+                    "coverage_gaps": [coverage_gap],
+                    "error": str(exc),
+                    "performance": {
+                        "sidecar_reused": False,
+                        "reindexed": True,
+                    },
+                }
         finally:
             store.close()
 
