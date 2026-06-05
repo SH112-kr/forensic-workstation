@@ -33,14 +33,13 @@ async def search_artifacts(req: SearchRequest):
     try:
         if req.all_cases:
             from core.analysis.case_aggregator import search_across_cases
-            axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
             cap = min(req.limit, config.max_limit)
             # For now, surface the UI as a regular search payload: the
             # merged hits live on the same "hits" key, with per-case
             # provenance attached to each row, and the total reflects the
             # merged count so the grid paging stays consistent.
             result = search_across_cases(
-                axiom_conns,
+                app_state._connectors,
                 keyword=req.keyword,
                 artifact_type=req.artifact_type,
                 start_date=req.start_date,
