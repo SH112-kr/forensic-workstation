@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from api.raw_support import active_raw_index_without_parsed_case, raw_index_coverage
 from state import IMAGE_EXTENSIONS, load_active_case, load_allowed_evidence
 
 router = APIRouter(prefix="/api/triage", tags=["triage"])
@@ -604,9 +605,32 @@ async def stop_triage():
 @router.get("/lane-state")
 async def get_lane_state():
     from state import app_state
-    from core.analysis.bias_remediation import build_lane_evidence_summary_surface
 
     try:
+        raw = active_raw_index_without_parsed_case(app_state)
+        if raw:
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "lane_evidence_summary": {},
+                "lane_state_board": {
+                    "blocked_lanes": [],
+                    "allow_strong_conclusion": False,
+                },
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_lane_state_unsupported",
+                    "detail": (
+                        "The lane-state board depends on parsed detection, "
+                        "timeline, and artifact-family evidence that the raw "
+                        "sidecar does not expose yet. Do not interpret this as "
+                        "no lane evidence."
+                    ),
+                },
+                "raw_index_coverage": raw_index_coverage(raw),
+            }
+        from core.analysis.bias_remediation import build_lane_evidence_summary_surface
         axiom = app_state.get_axiom()
         return build_lane_evidence_summary_surface(axiom)
     except Exception as e:
