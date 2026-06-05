@@ -65,6 +65,93 @@ def test_search_by_hash_reports_raw_index_unsupported(monkeypatch):
     assert result["raw_index_coverage"]["status"] == "searched"
 
 
+def test_get_tagged_hits_uses_axiom_when_raw_and_parsed_case_loaded(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def get_tagged_hits(self, tag_name=""):
+            assert tag_name == "interesting"
+            return {
+                "total_tagged": 1,
+                "hits": [{"hit_id": 7, "tag": "interesting"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(get_tagged_hits("interesting"))
+
+    assert result["total_tagged"] == 1
+    assert result["hits"][0]["hit_id"] == 7
+    assert result.get("status") != "not_evaluable"
+
+
+def test_search_by_hash_uses_axiom_when_raw_and_parsed_case_loaded(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def get_coverage(self):
+            return {"status": "searched", "gaps": []}
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search_by_hash(self, hash_value, limit=50):
+            assert hash_value == "deadbeef"
+            assert limit == 5
+            return {
+                "total": 1,
+                "hits": [{"hit_id": 9, "hash": "deadbeef"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_by_hash("deadbeef", limit=5))
+
+    assert result["total"] == 1
+    assert result["hits"][0]["hash"] == "deadbeef"
+    assert result.get("status") != "not_evaluable"
+
+
 def test_search_by_source_uses_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):

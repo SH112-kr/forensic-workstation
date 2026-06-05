@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from api.raw_support import active_raw_index_without_parsed_case
 from core.config import config
 
 router = APIRouter(prefix="/api/artifacts", tags=["artifacts"])
@@ -149,8 +150,8 @@ async def artifact_grid(req: GridRequest):
 async def get_tagged_hits(tag_name: str = ""):
     from state import app_state
     try:
-        raw = app_state.get("raw_index")
-        if raw and raw.is_connected():
+        raw = active_raw_index_without_parsed_case(app_state)
+        if raw:
             return _raw_unsupported_result(raw, "raw_tagged_hits_unsupported")
         return app_state.get_axiom().get_tagged_hits(tag_name)
     except Exception as e:
@@ -161,8 +162,8 @@ async def get_tagged_hits(tag_name: str = ""):
 async def search_by_hash(hash_value: str, limit: int = 50):
     from state import app_state
     try:
-        raw = app_state.get("raw_index")
-        if raw and raw.is_connected():
+        raw = active_raw_index_without_parsed_case(app_state)
+        if raw:
             return _raw_unsupported_result(raw, "raw_hash_search_unsupported")
         return app_state.get_axiom().search_by_hash(hash_value, limit)
     except Exception as e:
