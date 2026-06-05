@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from api.raw_support import annotate_parsed_fallback, should_fallback_to_parsed_case
 from core.config import config
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
@@ -43,13 +44,22 @@ async def build_timeline(req: TimelineRequest):
             }
         raw = app_state.get("raw_index")
         if raw and raw.is_connected():
-            return raw.get_timeline(
+            raw_result = raw.get_timeline(
                 start_date=req.start_date,
                 end_date=req.end_date,
                 artifact_types=req.artifact_types or None,
                 limit=min(req.limit, config.max_limit),
                 offset=0,
             )
+            if should_fallback_to_parsed_case(raw_result, app_state):
+                parsed_result = app_state.get_axiom().get_timeline(
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    artifact_types=req.artifact_types or None,
+                    limit=min(req.limit, config.max_limit),
+                )
+                return annotate_parsed_fallback(parsed_result, raw_result)
+            return raw_result
 
         return app_state.get_axiom().get_timeline(
             start_date=req.start_date,

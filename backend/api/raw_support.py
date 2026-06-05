@@ -14,14 +14,17 @@ def active_raw_index_without_parsed_case(app_state: Any) -> Any | None:
     if not raw.is_connected():
         return None
 
+    return None if parsed_case_loaded(app_state) else raw
+
+
+def parsed_case_loaded(app_state: Any) -> bool:
     connectors = getattr(app_state, "_connectors", {}) or {}
-    parsed_loaded = any(
+    return any(
         (name == "axiom" or str(name).startswith("axiom:"))
         and callable(getattr(connector, "is_connected", None))
         and connector.is_connected()
         for name, connector in connectors.items()
     )
-    return None if parsed_loaded else raw
 
 
 def raw_index_coverage(raw: Any) -> dict:
@@ -29,3 +32,22 @@ def raw_index_coverage(raw: Any) -> dict:
     if callable(coverage):
         return coverage()
     return {"status": "searched", "gaps": []}
+
+
+def should_fallback_to_parsed_case(raw_result: Any, app_state: Any) -> bool:
+    return (
+        isinstance(raw_result, dict)
+        and str(raw_result.get("status") or "") == "not_evaluable"
+        and parsed_case_loaded(app_state)
+    )
+
+
+def annotate_parsed_fallback(parsed_result: dict, raw_result: dict) -> dict:
+    result = dict(parsed_result)
+    coverage = raw_result.get("coverage", raw_result.get("raw_index_coverage"))
+    if not isinstance(coverage, dict):
+        coverage = {"status": "not_evaluable", "gaps": []}
+    result["fallback_source"] = "parsed_case"
+    result["raw_index_status"] = str(raw_result.get("status") or "not_evaluable")
+    result["raw_index_coverage"] = coverage
+    return result

@@ -304,6 +304,139 @@ def test_search_api_default_uses_active_raw_index(monkeypatch):
     assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
 
 
+def test_search_api_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "agent.exe"
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "total": 0,
+                "returned": 0,
+                "hits": [],
+                "coverage": {
+                    "status": "not_evaluable",
+                    "gaps": [{"error": "simulated parser failure"}],
+                },
+            }
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "agent.exe"
+            assert filters == {
+                "artifact_type": "Prefetch",
+                "start_date": "",
+                "end_date": "",
+            }
+            assert limit == 10
+            assert offset == 0
+            return {
+                "total": 1,
+                "returned": 1,
+                "hits": [{"hit_id": 11, "artifact_type": "Prefetch"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_artifacts(SearchRequest(
+        keyword="agent.exe",
+        artifact_type="Prefetch",
+        limit=10,
+    )))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["hits"][0]["artifact_type"] == "Prefetch"
+
+
+def test_artifact_grid_falls_back_to_axiom_when_raw_not_evaluable(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "total": 0,
+                "returned": 0,
+                "hits": [],
+                "coverage": {
+                    "status": "not_evaluable",
+                    "gaps": [{"error": "simulated parser failure"}],
+                },
+            }
+
+    class _Axiom:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "powershell.exe"
+            assert filters == {"artifact_type": "Prefetch"}
+            assert limit == 25
+            assert offset == 0
+            return {
+                "total": 2,
+                "returned": 1,
+                "hits": [{"hit_id": 12, "artifact_type": "Prefetch"}],
+            }
+
+    axiom = _Axiom()
+
+    class _State:
+        _connectors = {
+            "raw_index": _RawIndex(),
+            "axiom": axiom,
+            "axiom:case": axiom,
+        }
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+        def get_axiom(self):
+            return axiom
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(artifact_grid(GridRequest(
+        startRow=0,
+        endRow=25,
+        filterModel={
+            "keyword": {"filter": "powershell.exe"},
+            "artifact_type": {"filter": "Prefetch"},
+        },
+    )))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["rowCount"] == 2
+    assert result["rowData"][0]["artifact_type"] == "Prefetch"
+
+
 def test_search_api_all_cases_includes_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):
