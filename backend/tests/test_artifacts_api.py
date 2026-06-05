@@ -10,6 +10,54 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_search_api_default_uses_active_raw_index(monkeypatch):
+    class _RawIndex:
+        def is_connected(self):
+            return True
+
+        def search(self, keyword="", filters=None, limit=50, offset=0):
+            assert keyword == "agent.exe"
+            assert filters == {
+                "artifact_type": "File System Entry",
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-31",
+            }
+            assert limit == 10
+            assert offset == 0
+            return {
+                "total": 1,
+                "total_is_estimated": False,
+                "count_accuracy": "exact",
+                "returned": 1,
+                "hits": [{
+                    "hit_id": 1,
+                    "timestamp": "2026-10-04T00:00:00Z",
+                    "fields": {"Path": "/c:/Tools/agent.exe"},
+                }],
+            }
+
+    class _State:
+        _connectors = {"raw_index": _RawIndex()}
+
+        def get(self, name):
+            return self._connectors.get(name)
+
+    monkeypatch.setattr(state, "app_state", _State())
+
+    result = _run(search_artifacts(SearchRequest(
+        keyword="agent.exe",
+        artifact_type="File System Entry",
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+        limit=10,
+    )))
+
+    assert result["total"] == 1
+    assert result["total_is_estimated"] is False
+    assert result["count_accuracy"] == "exact"
+    assert result["hits"][0]["fields"]["Path"] == "/c:/Tools/agent.exe"
+
+
 def test_search_api_all_cases_includes_active_raw_index(monkeypatch):
     class _RawIndex:
         def is_connected(self):

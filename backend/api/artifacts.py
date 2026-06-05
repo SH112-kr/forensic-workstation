@@ -59,6 +59,19 @@ async def search_artifacts(req: SearchRequest):
                 "all_cases": True,
             }
 
+        raw = app_state.get("raw_index")
+        if raw and raw.is_connected():
+            return raw.search(
+                keyword=req.keyword,
+                filters={
+                    "artifact_type": req.artifact_type,
+                    "start_date": req.start_date,
+                    "end_date": req.end_date,
+                },
+                limit=min(req.limit, config.max_limit),
+                offset=req.offset,
+            )
+
         return app_state.get_axiom().search(
             keyword=req.keyword,
             filters={
