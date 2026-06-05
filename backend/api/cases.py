@@ -198,8 +198,13 @@ async def post_pivot(req: PivotRequest):
     """
     from state import app_state
     from core.analysis.case_aggregator import pivot_across_cases as _pivot
-    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-    return _pivot(axiom_conns, req.entity_type, req.entity_value, req.window_minutes, req.limit_per_case)
+    return _pivot(
+        app_state._connectors,
+        req.entity_type,
+        req.entity_value,
+        req.window_minutes,
+        req.limit_per_case,
+    )
 
 
 @router.get("/compare")
@@ -211,8 +216,7 @@ async def get_compare():
     """
     from state import app_state
     from core.analysis.case_aggregator import compare_cases as _compare
-    axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
-    return _compare(axiom_conns)
+    return _compare(app_state._connectors)
 
 
 class SnapshotSaveRequest(BaseModel):
