@@ -99,6 +99,19 @@ _RULES: list[dict[str, Any]] = [
     # ── moderate ───────────────────────────────────────────────────────────
     {
         "tier": "moderate",
+        "match_artifact": re.compile(r"com\s*hijack", re.I),
+        "reason": (
+            "Per-user COM hijack candidate (T1546.015): a CLSID server "
+            "registered in UsrClass.dat (HKCU\\Software\\Classes) resolves "
+            "before the machine HKLM entry, so a user-writable server DLL/EXE "
+            "can hijack that COM object. NOTE: legitimate modern apps (Teams, "
+            "Slack, OneDrive) also register user COM in AppData — this is a lead "
+            "to verify (is the server path attacker-controlled / unsigned?), "
+            "not a verdict."
+        ),
+    },
+    {
+        "tier": "moderate",
         "match_artifact": re.compile(r"wmi\s*persistence|filtertoconsumerbinding|eventconsumer", re.I),
         "reason": (
             "WMI event-subscription persistence. Read by Kind/Consumer Type: a "

@@ -117,6 +117,11 @@ FAMILY_ALIASES: dict[str, list[str]] = {
         "Image File Execution Options",
         "SilentProcessExit",
     ],
+    "COM Hijack": [
+        "COM Hijack",
+        "COM Hijacking",
+        "CLSID InprocServer32",
+    ],
     "Office Recent Documents": [
         "Office Recent Documents",
         "Office File MRU",

@@ -511,6 +511,132 @@ def parse_ifeo_entries(
     return entries, gaps
 
 
+# COM hijack (T1546.015): a per-user CLSID server registration in UsrClass.dat
+# (HKCU\Software\Classes\CLSID) is resolved BEFORE the machine HKLM entry, so a
+# user-writable server DLL/EXE hijacks that COM object. We surface user-COM
+# registrations whose server path is in a user-writable location — the hijack
+# surface. NOTE: legitimate modern apps (Teams, Slack, ...) also register here,
+# so each hit is a lead to verify, not a verdict.
+_COM_SUSPICIOUS_PATH_RE = re.compile(
+    r"(\\AppData\\|\\Temp\\|\\Tmp\\|\\ProgramData\\|\\Users\\Public\\|"
+    r"\\Downloads\\|\\Roaming\\|\\Local\\Temp\\|\\Windows\\Temp\\)", re.I)
+_COM_CLSID_CAP = 5000
+_COM_ABSENT_EXC = ("RegistryKeyNotFoundException", "NoRegistrySubkeysException",
+                   "RegistryValueNotFoundException", "KeyError")
+
+
+def _com_suspicious_reason(server: str) -> str:
+    """Classify why a COM server registration is a hijack lead, or '' if it
+    looks like a normal Program Files / System32 install.
+
+    Broadened beyond user-writable paths so scriptlet COM (scrobj.dll) and
+    environment-variable paths — both used for COM hijack — are not missed.
+    """
+    low = server.lower()
+    if "scrobj.dll" in low or ".sct" in low or "scriptlet" in low:
+        return "scriptlet_com"          # scrobj.dll / .sct scriptlet COM
+    if "%" in server:
+        return "env_var_path"           # %APPDATA% etc. — resolves user-writable
+    if _COM_SUSPICIOUS_PATH_RE.search(server):
+        return "user_writable_path"     # AppData / Temp / ProgramData / ...
+    return ""
+
+
+def parse_com_hijack(
+    hive: Any,
+    *,
+    user: str,
+    hive_label: str = "UsrClass",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse per-user COM server hijack candidates from a UsrClass.dat hive.
+
+    Emits CLSID InprocServer32 / LocalServer32 registrations whose server is a
+    hijack lead (user-writable path, environment-variable path, or a scrobj.dll
+    /.sct scriptlet). Returns ``(entries, gaps)``. No-miss: an absent CLSID root
+    or absent server subkey is normal; a corrupt key / unreadable values is a
+    coverage gap. Subkeys are streamed with a cap so a huge hive stays bounded.
+
+    Known limitation: machine-CLSID-override and protected-path (System32)
+    hijacks are not surfaced here (they need an HKLM SOFTWARE\\Classes cross-
+    reference) — recorded in the roadmap, not silently dropped.
+    """
+    entries: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+
+    for clsid_root in ("\\CLSID", "\\Software\\Classes\\CLSID"):
+        try:
+            subkey_iter = hive.get_key(clsid_root).iter_subkeys()
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ in _COM_ABSENT_EXC:
+                continue  # this layout absent — try the other / normal
+            gaps.append({
+                "path": f"{hive_label}:{clsid_root}", "status": "coverage_gap",
+                "reason": "com_clsid_key_error", "error": str(exc),
+            })
+            continue
+
+        scanned = 0
+        capped = False
+        for guid_key in subkey_iter:  # streamed — not materialized via list()
+            if scanned >= _COM_CLSID_CAP:
+                capped = True
+                break
+            scanned += 1
+            guid = str(getattr(guid_key, "name", "") or "")
+            for server_kind, subkey_name in (("inproc", "InprocServer32"),
+                                             ("local", "LocalServer32")):
+                try:
+                    server_key = guid_key.get_subkey(subkey_name)
+                except Exception as exc:  # noqa: BLE001
+                    if type(exc).__name__ in _COM_ABSENT_EXC:
+                        continue  # this CLSID has no such server — normal
+                    gaps.append({
+                        "path": f"{hive_label}:{clsid_root}\\{guid}\\{subkey_name}",
+                        "status": "coverage_gap",
+                        "reason": "com_subkey_read_error", "error": str(exc),
+                    })
+                    continue
+                try:
+                    server = ""
+                    threading = ""
+                    for value in (server_key.iter_values() or ()):
+                        vname = str(getattr(value, "name", "") or "").lower()
+                        if vname in ("", "(default)"):
+                            server = str(getattr(value, "value", "") or "")
+                        elif vname == "threadingmodel":
+                            threading = str(getattr(value, "value", "") or "")
+                except Exception as exc:  # noqa: BLE001
+                    gaps.append({
+                        "path": f"{hive_label}:{clsid_root}\\{guid}\\{subkey_name}",
+                        "status": "coverage_gap",
+                        "reason": "com_subkey_read_error", "error": str(exc),
+                    })
+                    continue
+                if not server:
+                    continue
+                reason = _com_suspicious_reason(server)
+                if not reason:
+                    continue  # standard Program Files / System32 install
+                entries.append({
+                    "clsid": guid,
+                    "server": server,
+                    "server_kind": server_kind,
+                    "threading_model": threading,
+                    "suspicious_reason": reason,
+                    "user": user,
+                    "key_path": f"{clsid_root}\\{guid}\\{subkey_name}",
+                })
+        if capped:
+            gaps.append({
+                "path": f"{hive_label}:{clsid_root}", "status": "coverage_gap",
+                "reason": "com_clsid_cap_reached",
+                "error": f"more than {_COM_CLSID_CAP} CLSIDs; truncated",
+            })
+        break  # found a CLSID root; do not also scan the alternate layout
+
+    return entries, gaps
+
+
 # ── Mark of the Web (Zone.Identifier ADS) ──────────────────────────────────
 
 _MOTW_USER_DIRS = ("Downloads", "Desktop", "Documents")
@@ -1161,7 +1287,8 @@ def index_registry_artifacts(
     counts = {"System Services": 0, "BAM Execution Entries": 0,
               "USB Devices": 0, "AutoRun Items": 0,
               "Office Trusted Documents": 0, "Office Recent Documents": 0,
-              "RDP Client Destinations": 0, "IFEO Persistence": 0}
+              "RDP Client Destinations": 0, "IFEO Persistence": 0,
+              "COM Hijack": 0}
 
     def _insert(artifact_type: str, source: str, description: str,
                 strings: dict[str, str], times: dict | None = None) -> None:
@@ -1358,6 +1485,56 @@ def index_registry_artifacts(
         for idx, entry in enumerate(user_dirs):
             profile = str(entry.get("path", ""))
             user = str(entry.get("name") or profile.rsplit("/", 1)[-1])
+
+            # ── UsrClass.dat: per-user COM hijack (HKCU\Software\Classes\CLSID) ──
+            # Done first / independently so a missing NTUSER.DAT does not skip
+            # COM coverage for this profile.
+            usrclass_internal = (
+                f"{profile}/AppData/Local/Microsoft/Windows/UsrClass.dat"
+            )
+            usrclass_local = os.path.join(tmp, f"UsrClass_{idx}.dat")
+            usrclass_ok = True
+            try:
+                extracted = image.extract_file(usrclass_internal, usrclass_local) or {}
+                if extracted.get("error"):
+                    raise RuntimeError(str(extracted["error"]))
+            except Exception as exc:  # noqa: BLE001
+                usrclass_ok = False
+                coverage_gaps.append({
+                    "path": usrclass_internal,
+                    "status": "coverage_gap",
+                    "reason": "usrclass_hive_unavailable",
+                    "error": str(exc),
+                })
+            if usrclass_ok:
+                try:
+                    from regipy.registry import RegistryHive
+
+                    usrclass_hive = RegistryHive(usrclass_local)
+                    com_entries, com_gaps = parse_com_hijack(
+                        usrclass_hive, user=user, hive_label=f"UsrClass:{user}")
+                    coverage_gaps.extend(com_gaps)
+                    for com in com_entries:
+                        _insert(
+                            "COM Hijack",
+                            usrclass_internal,
+                            f"COM Hijack | {com['clsid']} -> {com['server']}",
+                            {"CLSID": com["clsid"],
+                             "Server": com["server"],
+                             "Server Kind": com["server_kind"],
+                             "Threading Model": com.get("threading_model", ""),
+                             "Suspicious Reason": com.get("suspicious_reason", ""),
+                             "User": user,
+                             "Key Path": com["key_path"]},
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    coverage_gaps.append({
+                        "path": usrclass_internal,
+                        "status": "coverage_gap",
+                        "reason": "usrclass_hive_parse_failed",
+                        "error": str(exc),
+                    })
+
             internal = f"{profile}/NTUSER.DAT"
             local = os.path.join(tmp, f"NTUSER_{idx}.DAT")
             try:
