@@ -1639,6 +1639,7 @@ async def build_raw_artifact_index(
     include_registry: bool = True,
     include_motw: bool = True,
     include_mplog: bool = True,
+    include_wmi: bool = True,
     started_at: str = "",
 ) -> dict:
     """Semantically index EVTX + registry artifacts into the raw sidecar.
@@ -1658,6 +1659,10 @@ async def build_raw_artifact_index(
       - Defender MPLog Activity (process execution inventory, injection
         sources, and any real detections from MPLog-*.log; timestamps are
         device-local strings, not UTC)
+      - WMI Persistence (CIM repository __EventFilter / __EventConsumer /
+        __FilterToConsumerBinding across every namespace — a CommandLine/
+        ActiveScript consumer or a binding outside root\\subscription is a
+        strong fileless-persistence signal)
 
     Reading guide for AI consumers:
     - Every unreadable channel/hive, parse failure, or record-cap stop is a
@@ -1670,6 +1675,7 @@ async def build_raw_artifact_index(
         "include_registry": include_registry,
         "include_motw": include_motw,
         "include_mplog": include_mplog,
+        "include_wmi": include_wmi,
     }
 
     def fn():
@@ -1679,6 +1685,7 @@ async def build_raw_artifact_index(
             index_motw_artifacts,
             index_mplog_artifacts,
             index_registry_artifacts,
+            index_wmi_persistence,
         )
         from core.raw_index.store import RawIndexStore
 
@@ -1718,6 +1725,8 @@ async def build_raw_artifact_index(
                 results["motw"] = index_motw_artifacts(image, store, started_at=stamp)
             if include_mplog:
                 results["mplog"] = index_mplog_artifacts(image, store, started_at=stamp)
+            if include_wmi:
+                results["wmi"] = index_wmi_persistence(image, store, started_at=stamp)
         finally:
             store.close()
 

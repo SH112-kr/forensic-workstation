@@ -107,6 +107,11 @@ FAMILY_ALIASES: dict[str, list[str]] = {
         "Defender MPLog",
         "MPLog",
     ],
+    "WMI Persistence": [
+        "WMI Persistence",
+        "WMI Subscription",
+        "FilterToConsumerBinding",
+    ],
     "Office Recent Documents": [
         "Office Recent Documents",
         "Office File MRU",

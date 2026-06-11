@@ -1305,3 +1305,321 @@ def index_registry_artifacts(
         "coverage_gaps": coverage_gaps,
         "parser_run_id": run_id,
     }
+
+
+# ── WMI subscription persistence ─────────────────────────────────────────────
+#
+# WMI event-subscription persistence (the __EventFilter -> __FilterToConsumer
+# Binding -> __EventConsumer triad) is a classic fileless persistence technique
+# and a documented MFDB/KAPE gap. We parse the CIM repository directly with
+# dissect.cim and enumerate EVERY namespace, because a consumer planted outside
+# root\subscription is itself a strong anomaly. No-miss: the analyst sees all
+# subscriptions and the suspicious one stands out (e.g. a CommandLineEvent
+# Consumer running a script, or a filter with a high-frequency polling query).
+
+_WMI_REPO_DIR = "/c:/Windows/System32/wbem/Repository"
+_WMI_REPO_FILES = (
+    "OBJECTS.DATA", "INDEX.BTR", "MAPPING1.MAP", "MAPPING2.MAP", "MAPPING3.MAP",
+)
+_WMI_CONSUMER_CLASSES = (
+    "CommandLineEventConsumer", "ActiveScriptEventConsumer",
+    "NTEventLogEventConsumer", "LogFileEventConsumer", "SMTPEventConsumer",
+)
+# High-value payload fields to inline per consumer type (union across types).
+_WMI_CONSUMER_FIELDS = (
+    "Name", "CommandLineTemplate", "ExecutablePath", "WorkingDirectory",
+    "ScriptText", "ScriptFileName", "ScriptingEngine", "FileName",
+)
+_WMI_MAX_NAMESPACES = 1000  # recursion safety bound
+_WMI_MAX_INSTANCES = 5000   # per-class instance bound
+
+
+def _wmi_value(instance: Any, name: str) -> str:
+    """Return a property's value as a string, '' if absent/uninitialized."""
+    try:
+        prop = instance.properties.get(name)
+    except Exception:
+        return ""
+    if prop is None:
+        return ""
+    try:
+        value = prop.value
+    except Exception:
+        return ""
+    if isinstance(value, (bytes, bytearray, list, tuple)):
+        return _wmi_sid_from_bytes(value) if name == "CreatorSID" else str(value)
+    return "" if value is None else str(value)
+
+
+def _wmi_sid_from_bytes(raw: Any) -> str:
+    try:
+        b = bytes(raw)
+    except Exception:
+        return ""
+    if len(b) < 8:
+        return ""
+    revision = b[0]
+    sub_count = b[1]
+    authority = int.from_bytes(b[2:8], "big")
+    subs = []
+    offset = 8
+    for _ in range(sub_count):
+        if offset + 4 > len(b):
+            break
+        subs.append(int.from_bytes(b[offset:offset + 4], "little"))
+        offset += 4
+    return "S-%d-%d%s" % (revision, authority,
+                          "".join("-%d" % s for s in subs))
+
+
+def parse_wmi_persistence(
+    root_namespace: Any,
+    *,
+    max_namespaces: int = _WMI_MAX_NAMESPACES,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Walk every namespace under ``root_namespace`` and return
+    ``(records, gaps)`` for WMI subscription persistence.
+
+    Record kinds: ``event_filter`` (trigger query), ``event_consumer`` (action
+    — command line / script / etc.), ``filter_to_consumer_binding`` (the link).
+    Each record carries the WMI namespace it was found in. Duck-typed so it can
+    be tested with fakes: a namespace exposes ``.name``, ``.namespaces`` and
+    ``.class_(name).instances``; an instance exposes ``.properties`` (a dict of
+    objects with a ``.value``).
+    """
+    records: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    visited = 0
+
+    def collect(ns: Any, path: str) -> None:
+        nonlocal visited
+        if visited >= max_namespaces:
+            return
+        visited += 1
+        # __EventFilter
+        for inst in _wmi_instances(ns, "__EventFilter", path, gaps):
+            records.append({
+                "kind": "event_filter",
+                "namespace": path,
+                "name": _wmi_value(inst, "Name"),
+                "query": _wmi_value(inst, "Query"),
+                "query_language": _wmi_value(inst, "QueryLanguage"),
+                "event_namespace": _wmi_value(inst, "EventNamespace"),
+                "creator_sid": _wmi_value(inst, "CreatorSID"),
+            })
+        # __EventConsumer subclasses
+        for cls_name in _WMI_CONSUMER_CLASSES:
+            for inst in _wmi_instances(ns, cls_name, path, gaps):
+                payload = {
+                    f: _wmi_value(inst, f) for f in _WMI_CONSUMER_FIELDS
+                }
+                records.append({
+                    "kind": "event_consumer",
+                    "consumer_type": cls_name,
+                    "namespace": path,
+                    "name": payload.get("Name", ""),
+                    "payload": {k: v for k, v in payload.items() if v},
+                    "creator_sid": _wmi_value(inst, "CreatorSID"),
+                })
+        # __FilterToConsumerBinding
+        for inst in _wmi_instances(ns, "__FilterToConsumerBinding", path, gaps):
+            records.append({
+                "kind": "filter_to_consumer_binding",
+                "namespace": path,
+                "filter": _wmi_value(inst, "Filter"),
+                "consumer": _wmi_value(inst, "Consumer"),
+                "creator_sid": _wmi_value(inst, "CreatorSID"),
+            })
+        # recurse child namespaces
+        try:
+            children = list(ns.namespaces)
+        except Exception as exc:  # noqa: BLE001
+            gaps.append({
+                "path": path, "status": "coverage_gap",
+                "reason": "wmi_namespace_enum_error", "error": str(exc),
+            })
+            return
+        for child in children:
+            # dissect.cim Namespace.name is already the FULL path (e.g.
+            # "root\subscription"), so use it directly rather than concatenating
+            # (which produced "root\root\subscription").
+            child_name = str(getattr(child, "name", "") or "")
+            collect(child, child_name or path)
+
+    collect(root_namespace, "root")
+    if visited >= max_namespaces:
+        gaps.append({
+            "path": "root", "status": "coverage_gap",
+            "reason": "wmi_namespace_cap_reached",
+            "error": f"stopped after {max_namespaces} namespaces",
+        })
+    return records, gaps
+
+
+def _wmi_instances(ns: Any, class_name: str, path: str,
+                   gaps: list[dict[str, Any]]):
+    """Return instances of class_name in ns.
+
+    A class simply not defined in a namespace is normal (dissect.cim raises
+    ReferenceNotFoundError / the duck-typed fake raises KeyError) — return
+    nothing without a gap. Any OTHER class-lookup error is repository corruption
+    and IS a gap. Instances are streamed with a cap and partial results are
+    preserved if iteration fails partway (no-miss)."""
+    try:
+        cls = ns.class_(class_name)
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ in ("ReferenceNotFoundError", "KeyError"):
+            return []  # class not defined in this namespace — normal
+        gaps.append({
+            "path": f"{path}:{class_name}", "status": "coverage_gap",
+            "reason": "wmi_class_lookup_error", "error": str(exc),
+        })
+        return []
+    out: list[Any] = []
+    try:
+        for inst in cls.instances:
+            out.append(inst)
+            if len(out) >= _WMI_MAX_INSTANCES:
+                gaps.append({
+                    "path": f"{path}:{class_name}", "status": "coverage_gap",
+                    "reason": "wmi_instance_cap_reached",
+                    "error": f"more than {_WMI_MAX_INSTANCES} instances; truncated",
+                })
+                break
+    except Exception as exc:  # noqa: BLE001 — keep the instances gathered so far
+        gaps.append({
+            "path": f"{path}:{class_name}", "status": "coverage_gap",
+            "reason": "wmi_instance_enum_error", "error": str(exc),
+        })
+    return out
+
+
+def index_wmi_persistence(
+    image: Any,
+    store: RawIndexStore,
+    *,
+    started_at: str,
+    repo_dir: str = _WMI_REPO_DIR,
+) -> dict[str, Any]:
+    """Index WMI subscription persistence from the CIM repository.
+
+    Extracts the repository files to a temp dir (DO_NOT_EXECUTE marker, removed
+    afterwards) and parses them with dissect.cim. No-miss: a missing/unreadable
+    repository, an unavailable CIM library, and per-namespace enum errors are
+    each recorded as coverage gaps; no repository is ``not_evaluable``.
+    """
+    run_id = store.start_parser_run("wmi_indexer", repo_dir, started_at=started_at)
+    coverage_gaps: list[dict[str, Any]] = []
+    indexed = 0
+    parsed_ok = False
+
+    with store.batch(), tempfile.TemporaryDirectory(prefix="fw_raw_wmi_") as tmp:
+        _write_do_not_execute_marker(tmp)
+        missing = False
+        for fname in _WMI_REPO_FILES:
+            internal = f"{repo_dir}/{fname}"
+            try:
+                extracted = image.extract_file(internal, os.path.join(tmp, fname)) or {}
+                if extracted.get("error"):
+                    raise RuntimeError(str(extracted["error"]))
+            except Exception as exc:  # noqa: BLE001
+                missing = True
+                coverage_gaps.append({
+                    "path": internal, "status": "coverage_gap",
+                    "reason": "wmi_repo_file_unavailable", "error": str(exc),
+                })
+        records: list[dict[str, Any]] = []
+        if not missing:
+            handles: list[Any] = []
+            try:
+                from dissect.cim import CIM
+
+                findex = open(os.path.join(tmp, "INDEX.BTR"), "rb")
+                fobjects = open(os.path.join(tmp, "OBJECTS.DATA"), "rb")
+                fmappings = [
+                    open(os.path.join(tmp, f"MAPPING{i}.MAP"), "rb")
+                    for i in range(1, 4)
+                ]
+                handles = [findex, fobjects, *fmappings]
+                cim = CIM(findex, fobjects, fmappings)
+                root = cim.namespace("root")
+                records, parse_gaps = parse_wmi_persistence(root)
+                coverage_gaps.extend(parse_gaps)
+                parsed_ok = True
+            except Exception as exc:  # noqa: BLE001
+                coverage_gaps.append({
+                    "path": repo_dir, "status": "coverage_gap",
+                    "reason": "wmi_repo_parse_error", "error": str(exc),
+                })
+            finally:
+                # Close repo handles BEFORE the TemporaryDirectory cleanup, or
+                # Windows refuses to delete the still-open OBJECTS.DATA/INDEX.BTR.
+                for handle in handles:
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+
+        for rec in records:
+            kind = rec["kind"]
+            ns_path = rec.get("namespace", "")
+            strings: dict[str, str] = {"Kind": kind, "WMI Namespace": ns_path}
+            if rec.get("creator_sid"):
+                strings["Creator SID"] = rec["creator_sid"]
+            if kind == "event_filter":
+                strings.update({
+                    "Name": rec.get("name", ""),
+                    "Query": rec.get("query", ""),
+                    "Query Language": rec.get("query_language", ""),
+                    "Event Namespace": rec.get("event_namespace", ""),
+                })
+                desc = f"WMI Event Filter | {rec.get('name', '')} | {rec.get('query', '')}"
+            elif kind == "event_consumer":
+                strings["Consumer Type"] = rec.get("consumer_type", "")
+                strings["Name"] = rec.get("name", "")
+                for field_name, value in (rec.get("payload") or {}).items():
+                    strings[field_name] = str(value)
+                desc = (
+                    f"WMI Event Consumer | {rec.get('consumer_type', '')} | "
+                    f"{rec.get('name', '')}"
+                )
+            else:  # filter_to_consumer_binding
+                strings.update({
+                    "Filter": rec.get("filter", ""),
+                    "Consumer": rec.get("consumer", ""),
+                })
+                desc = (
+                    f"WMI FilterToConsumerBinding | {rec.get('filter', '')} -> "
+                    f"{rec.get('consumer', '')}"
+                )
+            store.insert_artifact(
+                artifact_type="WMI Persistence",
+                source_ref=ns_path or repo_dir,
+                source_path=repo_dir,
+                primary_path=repo_dir,
+                description=desc[:512],
+                strings={k: v for k, v in strings.items() if v},
+                times={},  # CIM instances carry no reliable per-record UTC time
+                parser_run_id=run_id,
+            )
+            indexed += 1
+
+    status = "partial" if coverage_gaps else "completed"
+    coverage_status = "coverage_gap" if coverage_gaps else "searched"
+    if not parsed_ok and indexed == 0:
+        status = "not_evaluable"
+        coverage_status = "not_evaluable"
+    store.finish_parser_run(
+        run_id,
+        status=status,
+        coverage_status=coverage_status,
+        finished_at=started_at,
+        error="; ".join(str(g.get("error", "")) for g in coverage_gaps)[:2000],
+    )
+    return {
+        "ok": parsed_ok,
+        "status": status,
+        "indexed_records": indexed,
+        "coverage_gaps": coverage_gaps,
+        "parser_run_id": run_id,
+    }

@@ -522,7 +522,7 @@ truncation 재조회 0회**로.
 | 2 | D-1 (auto-page) + C-1, C-2 (저비용 누수 차단) — ✅ 완료 2026-06-10 | 작고 독립적, 즉시 효과 |
 | 3 | D-4 (raw index 완결: EVTX→Registry, A-2/A-3 동시 포함) — 🟡 대부분 완료 2026-06-10 (raw-only full triage + 실이미지 검증 잔여) | 현 브랜치 완결 + execution/ingress 동시 보강 |
 | 4 | A-1 (MOTW), A-4 (Office) — 🟡 A-4 TrustRecords는 raw 경로에 구현 완료(OAlerts/MRU·KAPE 경로·연계 룰 잔여), A-1 미착수 | ingress lane 구조 공백 — lane gate 정상 작동의 전제 |
-| 5 | A-5, A-6, A-7 + B-3 — ✅ 대부분 완료 2026-06-10; **MPLog 파서 완료 2026-06-11** (Defender MPLog Activity: 프로세스 실행/인젝션/탐지 집계, device-local 시각, 3표면 등록). 잔여: WMI OBJECTS.DATA/qmgr.db ESE 직접 파서(qmgr.db는 Jobs/Files 테이블이 Id+Blob 2컬럼이라 BITS blob RE 파서 필요), SmbClient 31001 | persistence/lateral/defender 공백, EVTX 파서 완성 후 효율적 |
+| 5 | A-5, A-6, A-7 + B-3 — ✅ 대부분 완료 2026-06-10; **MPLog 파서 + WMI OBJECTS.DATA 지속성 파서 완료 2026-06-11**. MPLog: Defender MPLog Activity(프로세스/인젝션/탐지 집계, device-local 시각). WMI: dissect.cim으로 CIM 저장소 전수 파싱 → __EventFilter/__EventConsumer/__FilterToConsumerBinding(비표준 네임스페이스 은닉 포함), 3표면 등록. 둘 다 raw-direct(KAPE/MFDB 비의존). 잔여: qmgr.db BITS(Id+Blob → blob RE 파서 필요), SmbClient 31001 | persistence/lateral/defender 공백 |
 | 6 | C-3, C-4, C-5, C-6 + B-2 — ✅ 완료 2026-06-10 | 아티팩트 확장 후 가드레일 재정렬 |
 | 7 | B-1 (Sigma) — ✅ 완료 2026-06-10 | 룰 폭 확장은 측정 체계 + 편향 재정렬 후 |
 | 8 | A-8, A-9, D-2, D-3, D-5 | 🟡 A-9·D-2 완료 2026-06-10; A-8(UAL)·D-3(docstring 태깅)·D-5(백그라운드 사전계산) 미착수 |

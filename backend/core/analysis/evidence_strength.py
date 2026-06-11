@@ -85,6 +85,18 @@ _RULES: list[dict[str, Any]] = [
     # ── moderate ───────────────────────────────────────────────────────────
     {
         "tier": "moderate",
+        "match_artifact": re.compile(r"wmi\s*persistence|filtertoconsumerbinding|eventconsumer", re.I),
+        "reason": (
+            "WMI event-subscription persistence. Read by Kind/Consumer Type: a "
+            "CommandLineEventConsumer or ActiveScriptEventConsumer, a binding "
+            "whose query polls frequently, or ANY subscription outside "
+            "root\\subscription is a strong fileless-persistence signal. The "
+            "default NTEventLog/SCM Event Log filter+consumer is benign "
+            "baseline present on every Windows host — do not flag it."
+        ),
+    },
+    {
+        "tier": "moderate",
         "match_artifact": re.compile(r"defender\s*mplog|mplog\s*activity", re.I),
         "reason": (
             "Defender MPLog telemetry. Read by the Kind field: process_execution "
