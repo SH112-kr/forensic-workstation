@@ -58,6 +58,19 @@ def _fake_parse_evtx(path, *, target_event_ids=None, limit=0, best_effort=False)
     }
 
 
+def test_smbclient_lateral_movement_channels_and_eids_targeted():
+    """SmbClient lateral-movement coverage: the Security/Connectivity channels
+    and EID 31001 (failed SMB auth to a remote share) must be in the target set."""
+    assert "Microsoft-Windows-SmbClient%4Security.evtx" in ai.CORE_EVTX_CHANNELS
+    assert "Microsoft-Windows-SmbClient%4Connectivity.evtx" in ai.CORE_EVTX_CHANNELS
+    assert 31001 in ai.EVTX_TARGET_EVENT_IDS
+
+
+def test_motw_files_per_dir_cap_covers_typical_downloads():
+    # raised so a 1-2k-file Downloads folder is fully scanned for MOTW
+    assert ai._MOTW_FILES_PER_DIR_CAP >= 2000
+
+
 def test_evtx_indexer_indexes_records_and_reports_missing_channels(tmp_path):
     image = _FakeImage(files={
         "/c:/Windows/System32/winevt/Logs/Security.evtx": b"ElfFile\x00stub",

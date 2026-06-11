@@ -41,6 +41,10 @@ EVTX_TARGET_EVENT_IDS = {
     59, 60,
     # DCSync / WFP / outbound RDP client (fw-evtx-031/032/039).
     4662, 5156, 1024,
+    # Outbound SMB client connections (lateral movement). SmbClient/Security
+    # 31001 = failed SMB auth to a remote share; Connectivity 30803/30804 =
+    # connection attempts. This host reaching out to remote shares.
+    31001, 30803, 30804,
 }
 
 _EVTX_LOG_DIR = "/c:/Windows/System32/winevt/Logs"
@@ -55,6 +59,8 @@ CORE_EVTX_CHANNELS = (
     "Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx",
     "Microsoft-Windows-Bits-Client%4Operational.evtx",
     "Microsoft-Windows-Windows Defender%4Operational.evtx",
+    "Microsoft-Windows-SmbClient%4Security.evtx",
+    "Microsoft-Windows-SmbClient%4Connectivity.evtx",
     "OAlerts.evtx",
 )
 
@@ -508,7 +514,10 @@ def parse_ifeo_entries(
 # ── Mark of the Web (Zone.Identifier ADS) ──────────────────────────────────
 
 _MOTW_USER_DIRS = ("Downloads", "Desktop", "Documents")
-_MOTW_FILES_PER_DIR_CAP = 500
+# Per-dir Zone.Identifier scan ceiling. Raised from 500: a real Downloads
+# folder routinely holds 1-2k files and the ingress lane must not miss a
+# downloaded dropper. Still bounded + reported as a coverage gap when exceeded.
+_MOTW_FILES_PER_DIR_CAP = 5000
 
 
 def parse_zone_identifier(content: bytes | str) -> dict[str, str]:
