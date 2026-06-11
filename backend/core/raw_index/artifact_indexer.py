@@ -1992,3 +1992,190 @@ def index_wmi_persistence(
         "coverage_gaps": coverage_gaps,
         "parser_run_id": run_id,
     }
+
+
+# ── BITS transfer jobs (qmgr.db) ─────────────────────────────────────────────
+#
+# BITS (Background Intelligent Transfer Service) is a common malware
+# download / C2 / exfil channel. Win10+ stores jobs in an ESE database
+# (C:\ProgramData\Microsoft\Network\Downloader\qmgr.db) whose Jobs/Files tables
+# carry the job detail in an opaque binary Blob. Rather than reverse the full
+# job-blob struct, we best-effort extract the UTF-16 RemoteName (download URL)
+# and LocalName (destination path) strings — the core forensic signal (what was
+# fetched from where to where). A BITS job pulling an EXE/DLL from an external
+# host, or writing to a suspicious path, is the lead.
+
+_BITS_DB_PATH = "/c:/ProgramData/Microsoft/Network/Downloader/qmgr.db"
+_BITS_URL_RE = re.compile(r"(?:https?|ftp)://[^\x00-\x1f\s\"'<>|]{4,}", re.I)
+_BITS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\x00-\x1f<>\"|?*]{2,}")
+_BITS_MAX_RECORDS = 5000
+_BITS_MAX_STR = 2048       # per-URL / per-path length cap
+_BITS_MAX_PER_KIND = 20    # URLs / paths kept per blob
+
+
+def parse_bits_blob(blob: bytes) -> tuple[list[str], list[str]]:
+    """Best-effort extract (urls, local_paths) from a BITS job/file Blob.
+
+    The blob stores RemoteName/LocalName as UTF-16; we scan the decoded text
+    rather than parse the opaque struct. Both 2-byte alignments are scanned
+    (a string can start at an odd offset after a binary field), paths are cut
+    where a greedy match runs into the adjacent URL field, and each string is
+    length-capped so a corrupt blob cannot emit a multi-MB value.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        return [], []
+    raw = bytes(blob)
+    urls: list[str] = []
+    paths: list[str] = []
+    for start in (0, 1):  # scan both UTF-16LE byte alignments
+        text = raw[start:].decode("utf-16-le", errors="replace")
+        for match in _BITS_URL_RE.finditer(text):
+            url = match.group(0)[:_BITS_MAX_STR]
+            if url not in urls:
+                urls.append(url)
+        for match in _BITS_PATH_RE.finditer(text):
+            candidate = re.split(
+                r"(?:https?|ftp)://", match.group(0), 1)[0].strip()[:_BITS_MAX_STR]
+            if candidate and candidate not in paths:
+                paths.append(candidate)
+    return urls[:_BITS_MAX_PER_KIND], paths[:_BITS_MAX_PER_KIND]
+
+
+def index_bits_jobs(
+    image: Any,
+    store: RawIndexStore,
+    *,
+    started_at: str,
+    db_path: str = _BITS_DB_PATH,
+) -> dict[str, Any]:
+    """Index BITS transfer jobs from qmgr.db (ESE) — download/C2/exfil channel.
+
+    No-miss: a missing/unreadable qmgr.db, an unavailable ESE library, a
+    per-record blob error, and the record cap are each coverage gaps; no
+    database is ``not_evaluable``.
+    """
+    run_id = store.start_parser_run("bits_indexer", db_path, started_at=started_at)
+    coverage_gaps: list[dict[str, Any]] = []
+    indexed = 0
+    parsed_ok = False
+
+    with store.batch(), tempfile.TemporaryDirectory(prefix="fw_raw_bits_") as tmp:
+        _write_do_not_execute_marker(tmp)
+        local = os.path.join(tmp, "qmgr.db")
+        try:
+            extracted = image.extract_file(db_path, local) or {}
+            if extracted.get("error"):
+                raise RuntimeError(str(extracted["error"]))
+            available = True
+        except Exception as exc:  # noqa: BLE001
+            available = False
+            coverage_gaps.append({
+                "path": db_path, "status": "coverage_gap",
+                "reason": "bits_db_unavailable", "error": str(exc),
+            })
+
+        fh = None
+        if available:
+            try:
+                from dissect.esedb import EseDB
+
+                fh = open(local, "rb")
+                db = EseDB(fh)
+                parsed_ok = True
+                scanned = 0
+                capped = False
+                for table_name in ("Jobs", "Files"):
+                    if capped:
+                        break
+                    try:
+                        rec_iter = iter(db.table(table_name).records())
+                    except Exception as exc:  # noqa: BLE001
+                        coverage_gaps.append({
+                            "path": f"{db_path}:{table_name}",
+                            "status": "coverage_gap",
+                            "reason": "bits_table_unavailable", "error": str(exc),
+                        })
+                        continue
+                    while True:
+                        try:
+                            rec = next(rec_iter)
+                        except StopIteration:
+                            break
+                        except Exception as exc:  # noqa: BLE001 — corrupt page: stop
+                            coverage_gaps.append({   # this table, not the whole DB
+                                "path": f"{db_path}:{table_name}",
+                                "status": "coverage_gap",
+                                "reason": "bits_record_iter_error", "error": str(exc),
+                            })
+                            break
+                        if scanned >= _BITS_MAX_RECORDS:
+                            coverage_gaps.append({
+                                "path": f"{db_path}:{table_name}",
+                                "status": "coverage_gap",
+                                "reason": "bits_record_cap_reached",
+                                "error": f"more than {_BITS_MAX_RECORDS} records; truncated",
+                            })
+                            capped = True
+                            break
+                        scanned += 1
+                        try:
+                            job_id = str(rec.get("Id") or "")
+                            urls, paths = parse_bits_blob(rec.get("Blob"))
+                        except Exception as exc:  # noqa: BLE001
+                            coverage_gaps.append({
+                                "path": f"{db_path}:{table_name}",
+                                "status": "coverage_gap",
+                                "reason": "bits_record_parse_error", "error": str(exc),
+                            })
+                            continue
+                        if not urls and not paths:
+                            continue  # job/file blob with no recoverable URL/path
+                        strings = {
+                            "Job Id": job_id,
+                            "Table": table_name,
+                            "URLs": " | ".join(urls),
+                            "Local Paths": " | ".join(paths),
+                        }
+                        desc = f"BITS Transfer | {table_name} | {(urls or paths or [''])[0]}"
+                        store.insert_artifact(
+                            artifact_type="BITS Transfer",
+                            source_ref=db_path,
+                            source_path=db_path,
+                            primary_path=db_path,
+                            description=desc[:512],
+                            strings={k: v for k, v in strings.items() if v},
+                            times={},  # job blob timestamps are not struct-parsed here
+                            parser_run_id=run_id,
+                        )
+                        indexed += 1
+            except Exception as exc:  # noqa: BLE001
+                coverage_gaps.append({
+                    "path": db_path, "status": "coverage_gap",
+                    "reason": "bits_db_parse_error", "error": str(exc),
+                })
+            finally:
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+
+    status = "partial" if coverage_gaps else "completed"
+    coverage_status = "coverage_gap" if coverage_gaps else "searched"
+    if not parsed_ok and indexed == 0:
+        status = "not_evaluable"
+        coverage_status = "not_evaluable"
+    store.finish_parser_run(
+        run_id,
+        status=status,
+        coverage_status=coverage_status,
+        finished_at=started_at,
+        error="; ".join(str(g.get("error", "")) for g in coverage_gaps)[:2000],
+    )
+    return {
+        "ok": parsed_ok,
+        "status": status,
+        "indexed_records": indexed,
+        "coverage_gaps": coverage_gaps,
+        "parser_run_id": run_id,
+    }

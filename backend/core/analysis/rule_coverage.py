@@ -122,6 +122,11 @@ FAMILY_ALIASES: dict[str, list[str]] = {
         "COM Hijacking",
         "CLSID InprocServer32",
     ],
+    "BITS Transfer": [
+        "BITS Transfer",
+        "BITS Job",
+        "Background Intelligent Transfer",
+    ],
     "Office Recent Documents": [
         "Office Recent Documents",
         "Office File MRU",

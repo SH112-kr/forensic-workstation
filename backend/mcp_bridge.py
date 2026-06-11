@@ -1640,6 +1640,7 @@ async def build_raw_artifact_index(
     include_motw: bool = True,
     include_mplog: bool = True,
     include_wmi: bool = True,
+    include_bits: bool = True,
     started_at: str = "",
 ) -> dict:
     """Semantically index EVTX + registry artifacts into the raw sidecar.
@@ -1663,6 +1664,9 @@ async def build_raw_artifact_index(
         __FilterToConsumerBinding across every namespace — a CommandLine/
         ActiveScript consumer or a binding outside root\\subscription is a
         strong fileless-persistence signal)
+      - BITS Transfer (qmgr.db ESE job/file blobs — best-effort RemoteName URL
+        + LocalName destination; a download from an external host or to a
+        suspicious path is a download/C2/exfil lead)
 
     Reading guide for AI consumers:
     - Every unreadable channel/hive, parse failure, or record-cap stop is a
@@ -1676,11 +1680,13 @@ async def build_raw_artifact_index(
         "include_motw": include_motw,
         "include_mplog": include_mplog,
         "include_wmi": include_wmi,
+        "include_bits": include_bits,
     }
 
     def fn():
         from core.connectors.raw_image_index import RawImageIndexConnector
         from core.raw_index.artifact_indexer import (
+            index_bits_jobs,
             index_evtx_artifacts,
             index_motw_artifacts,
             index_mplog_artifacts,
@@ -1727,6 +1733,8 @@ async def build_raw_artifact_index(
                 results["mplog"] = index_mplog_artifacts(image, store, started_at=stamp)
             if include_wmi:
                 results["wmi"] = index_wmi_persistence(image, store, started_at=stamp)
+            if include_bits:
+                results["bits"] = index_bits_jobs(image, store, started_at=stamp)
         finally:
             store.close()
 

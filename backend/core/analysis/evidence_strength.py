@@ -99,6 +99,18 @@ _RULES: list[dict[str, Any]] = [
     # ── moderate ───────────────────────────────────────────────────────────
     {
         "tier": "moderate",
+        "match_artifact": re.compile(r"bits\s*transfer|bits\s*job", re.I),
+        "reason": (
+            "BITS transfer job (qmgr.db). BITS is a common malware download / "
+            "C2 / exfil channel that survives reboots and runs as a service. A "
+            "RemoteName URL pointing at an EXTERNAL / non-vendor host, or a "
+            "LocalName writing an executable to a suspicious path, is the lead. "
+            "OS/AV update jobs to Microsoft delivery hosts are benign baseline. "
+            "URL/path are best-effort string extractions from the job blob."
+        ),
+    },
+    {
+        "tier": "moderate",
         "match_artifact": re.compile(r"com\s*hijack", re.I),
         "reason": (
             "Per-user COM hijack candidate (T1546.015): a CLSID server "
