@@ -42,7 +42,11 @@ class RawIndexStore:
         parent = os.path.dirname(os.path.abspath(self.db_path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False: the MCP bridge runs each tool call on a
+        # different executor thread, so a connection pinned to its creating
+        # thread breaks every follow-up call. MCP serializes tool calls (no
+        # concurrent writes), so relaxing the thread check is safe here.
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._configure_connection(self.conn)
         initialize_schema(self.conn)
@@ -72,6 +76,11 @@ class RawIndexStore:
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA cache_size = -{RAW_INDEX_CACHE_SIZE_KIB}")
         conn.execute("PRAGMA temp_store = MEMORY")
+        # A background build_raw_file_index job writes from a daemon thread
+        # (its own connection) while read tools query a different connection to
+        # the same file. Wait for the file lock instead of erroring immediately
+        # with "database is locked".
+        conn.execute("PRAGMA busy_timeout = 15000")
 
     @contextmanager
     def batch(self) -> Iterator[None]:
@@ -662,7 +671,11 @@ class RawIndexStore:
         for row in rows:
             coverage_status = str(row["coverage_status"] or "")
             status = str(row["status"] or "")
-            error = str(row["error"] or "")
+            # Defensive read-time cap: a legacy/foreign sidecar may hold a giant
+            # joined error string (seen at ~2.5 MB) that would push any
+            # coverage-bearing response past the MCP token limit. Writers also
+            # cap at 2000, so this only trims pathological pre-existing rows.
+            error = str(row["error"] or "")[:2000]
             if status != "completed" or coverage_status not in {"searched"} or error:
                 gaps.append({
                     "parser_name": row["parser_name"],

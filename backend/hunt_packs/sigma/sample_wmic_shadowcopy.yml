@@ -1,0 +1,18 @@
+title: WMIC ShadowCopy Deletion via Process Creation
+id: 9f2b1c44-0000-4a00-bb00-sampledelete01
+status: experimental
+description: WMIC invoked to delete volume shadow copies (anti-recovery).
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4688
+    CommandLine|contains:
+      - 'shadowcopy delete'
+      - 'win32_shadowcopy'
+  condition: selection
+level: high
+tags:
+  - attack.t1490
+  - attack.impact

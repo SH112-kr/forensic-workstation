@@ -203,6 +203,127 @@ class E01ImageConnector(BaseConnector):
             return [{"error": str(e)}]
         return results
 
+    def mft_segment_count(self, volume_ref: str = "/c:") -> int:
+        """Total $MFT segment slots for the volume (for sharding the scan).
+
+        Returns ``$MFT`` data size // record size — the same upper bound
+        ``Mft.segments()`` iterates to. 0 if the volume has no NTFS MFT.
+        """
+        volume = self._resolve_volume(volume_ref)
+        ntfs = getattr(getattr(volume, "fs", None), "ntfs", None)
+        if ntfs is None:
+            return 0
+        record_size = int(getattr(ntfs, "_record_size", 1024) or 1024)
+        try:
+            mft_size = int(ntfs.mft.get(0).size())
+        except Exception:
+            return 0
+        return mft_size // record_size if record_size else 0
+
+    def iter_mft_records(
+        self,
+        volume_ref: str = "/c:",
+        max_records: int = 0,
+        segment_range: tuple[int, int] | None = None,
+    ):
+        """Stream $MFT records for a TB-safe full file inventory.
+
+        Parses the volume's $MFT directly instead of walking directories.
+        $MFT is bounded (hundreds of MB even on TB images) and streaming it
+        avoids the directory-walk handle exhaustion seen on large volumes.
+
+        ``segment_range=(start, end)`` restricts the scan to an inclusive
+        segment slice so the work can be sharded across worker processes.
+        Each shard preserves ``Mft.segments()`` skip-vs-error semantics
+        (unallocated/invalid slots are skipped, not reported as gaps).
+
+        Yields one dict per file/dir record:
+            {segment, path, name, is_dir, in_use, size,
+             created/modified/changed/accessed (epoch ms or None)}
+        Per-record failures are yielded as {"error": ..., "segment": ...}
+        rather than raised, so one bad record never aborts the stream.
+        A terminal {"error": "mft_record_cap_reached", ...} is yielded if
+        max_records is hit.
+        """
+        volume = self._resolve_volume(volume_ref)
+        ntfs = getattr(getattr(volume, "fs", None), "ntfs", None)
+        if ntfs is None:
+            yield {"error": "no_ntfs_mft_for_volume", "volume": str(volume_ref)}
+            return
+        drive = str(getattr(volume, "drive_letter", "") or "").rstrip(":").lower()
+        if not drive:
+            ref = str(volume_ref or "").strip().lower().replace("\\", "/")
+            drive = ref[1] if ref.startswith("/") and len(ref) >= 3 and ref[2] == ":" else "c"
+        prefix = f"/{drive}:"
+
+        if segment_range is not None:
+            seg_start, seg_end = int(segment_range[0]), int(segment_range[1])
+            segment_iter = ntfs.mft.segments(seg_start, seg_end)
+        else:
+            segment_iter = ntfs.mft.segments()
+
+        count = 0
+        for record in segment_iter:
+            count += 1
+            if max_records and count > max_records:
+                yield {"error": "mft_record_cap_reached", "cap": max_records,
+                       "scanned": count - 1}
+                return
+            try:
+                is_dir = record.is_dir()
+                if not (is_dir or record.is_file()):
+                    continue
+                full = str(record.full_path()).replace("\\", "/").lstrip("/")
+                path = f"{prefix}/{full}" if full else prefix
+                try:
+                    in_use = bool(record.header.flags & 1)  # FILE_RECORD_SEGMENT_IN_USE
+                except Exception:
+                    in_use = None
+                try:
+                    size = 0 if is_dir else int(record.size())
+                except Exception:
+                    size = -1
+                entry = {
+                    "segment": record.segment,
+                    "path": path,
+                    "name": path.rsplit("/", 1)[-1],
+                    "is_dir": is_dir,
+                    "in_use": in_use,
+                    "size": size,
+                }
+                entry.update(self._mft_timestamps(record))
+                yield entry
+            except Exception as exc:  # noqa: BLE001 — one record must not abort the stream
+                yield {"error": str(exc), "segment": getattr(record, "segment", -1)}
+
+    @staticmethod
+    def _mft_timestamps(record: Any) -> dict[str, Any]:
+        """Extract $STANDARD_INFORMATION MAC timestamps as epoch ms."""
+        out: dict[str, Any] = {
+            "created": None, "modified": None, "changed": None, "accessed": None,
+        }
+        try:
+            si = record.attributes.STANDARD_INFORMATION[0]
+        except Exception:
+            return out
+        field_map = {
+            "created": "creation_time",
+            "modified": "last_modification_time",
+            "changed": "last_change_time",
+            "accessed": "last_access_time",
+        }
+        for key, attr in field_map.items():
+            dt = getattr(si, attr, None)
+            if dt is None:
+                continue
+            try:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                out[key] = int(dt.timestamp() * 1000)
+            except Exception:
+                out[key] = None
+        return out
+
     def extract_file(self, internal_path: str, output_path: str) -> dict:
         """Extract a file from the image to local filesystem for STATIC ANALYSIS ONLY.
 

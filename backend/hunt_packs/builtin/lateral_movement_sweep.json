@@ -1,0 +1,10 @@
+{
+  "name": "lateral_movement_sweep",
+  "description": "Ask both directions: is this host a victim of lateral movement, or a pivot launching it? Inbound RDP/WinRM/explicit-credential use vs. outbound RDP client connections and remote service installs. Inbound and outbound evidence are reported as separate lanes — do not collapse them into a single 'lateral movement seen' claim.",
+  "params_schema": {},
+  "steps": [
+    {"tool": "find_suspicious", "args": {"rules": "evtx_eid_4624_type10_rdp_logons,evtx_eid_4648_explicit_credential_logons,evtx_eid_7045_service_installs"}},
+    {"tool": "hunt_evtx_rules", "args": {"rule_ids": "fw-evtx-025,fw-evtx-037,fw-evtx-038,fw-evtx-039,fw-evtx-005", "severity_min": "low"}},
+    {"tool": "search_artifacts", "args": {"artifact_type": "Terminal Server Client", "fetch_all": true}}
+  ]
+}

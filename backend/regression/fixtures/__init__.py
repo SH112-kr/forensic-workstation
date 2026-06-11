@@ -27,6 +27,7 @@ def _register():
         case_insider_data_exfil,
         case_anti_forensics_heavy,
         case_empty_or_malformed,
+        case_paginated_evidence,
     )
     _REGISTRY = {
         "case_ransomware_inc_like": case_ransomware_inc_like.build,
@@ -35,6 +36,7 @@ def _register():
         "case_insider_data_exfil": case_insider_data_exfil.build,
         "case_anti_forensics_heavy": case_anti_forensics_heavy.build,
         "case_empty_or_malformed": case_empty_or_malformed.build,
+        "case_paginated_evidence": case_paginated_evidence.build,
     }
 
 

@@ -158,7 +158,14 @@ def test_analyze_evtx_recovery_reports_failed_chunks_without_absence_claim(tmp_p
 
 
 def test_parse_evtx_best_effort_uses_rebuilt_valid_chunks(tmp_path, monkeypatch):
+    import sys
     from core.analysis import evtx_semantic
+
+    # Force the no-python-evtx path so this test exercises the best-effort
+    # Get-WinEvent fallback regardless of whether python-evtx is installed in
+    # the current environment.
+    monkeypatch.setitem(sys.modules, "Evtx", None)
+    monkeypatch.setitem(sys.modules, "Evtx.Evtx", None)
 
     evtx_path = tmp_path / "partial.evtx"
     evtx_path.write_bytes(_evtx_bytes(good_chunks=1, bad_chunks=1))

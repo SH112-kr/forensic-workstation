@@ -36,6 +36,44 @@ RULE_CATEGORY_MAP = {
     "prefetch_security_sw_werfault_correlation": "initial_access",
     "amcache_remote_access_tool_names": "tool_installation",
     "openssh_artifacts": "remote_access",
+    "office_trustrecords_macro_enabled": "initial_access",
+    "motw_internet_origin_risky_file": "initial_access",
+}
+
+# B-2 rule scope: how broadly a rule's 0-result should be read.
+#   generic           — applies to most Windows endpoints; 0 hits is informative.
+#   campaign_specific — tuned to one campaign/toolset; 0 hits means "not THIS
+#                       campaign", NOT "no compromise". Do not widen.
+#   region_specific   — tuned to a region's software ecosystem (e.g. Korean
+#                       security SW); 0 hits outside that context is expected.
+RULE_SCOPE_MAP = {
+    "sysmon_eid10_lsass_handle_open": "generic",
+    "evtx_eid_4688_process_creation_events": "generic",
+    "evtx_eid_7045_service_installs": "generic",
+    "evtx_eid_4698_scheduled_task_events": "generic",
+    "evtx_eid_1102_audit_log_cleared": "generic",
+    "evtx_eid_4624_type10_rdp_logons": "generic",
+    "evtx_eid_4648_explicit_credential_logons": "generic",
+    "prefetch_pentest_tool_names": "campaign_specific",
+    "services_nonstandard_binary_paths": "generic",
+    "evtx_eid_4104_scriptblock_logs": "generic",
+    "prefetch_security_sw_werfault_correlation": "region_specific",
+    "amcache_remote_access_tool_names": "campaign_specific",
+    "openssh_artifacts": "generic",
+    "office_trustrecords_macro_enabled": "generic",
+    "motw_internet_origin_risky_file": "generic",
+}
+
+_SCOPE_ZERO_RESULT_HINT = {
+    "campaign_specific": (
+        "campaign_specific rule: 0 hits means this specific toolset/campaign "
+        "was not matched, NOT that the host is clean. Other execution evidence "
+        "may still indicate compromise."
+    ),
+    "region_specific": (
+        "region_specific rule: tuned to a regional software ecosystem; 0 hits "
+        "outside that context is expected and not evidence of absence."
+    ),
 }
 
 # Query limits used by each rule — documented for transparency
@@ -53,24 +91,32 @@ RULE_QUERY_LIMITS: dict[str, dict[str, int]] = {
     "prefetch_security_sw_werfault_correlation": {"werfault_prefetch": 500, "security_sw_prefetch": 200, "startup_items": 2000, "details": 20},
     "amcache_remote_access_tool_names": {"amcache_programs": 5000},
     "openssh_artifacts": {"openssh_events": 500, "services": 100, "prefetch": 500},
+    "office_trustrecords_macro_enabled": {"trusted_documents": 0, "details": 20},
+    "motw_internet_origin_risky_file": {"motw_entries": 0, "details": 20},
 }
 
 # Attack techniques and artifact families this workstation has no query interface for.
 # Absence of a fired rule does NOT mean the technique did not occur if it appears here.
+# NOTE: find_suspicious covers the .mfdb rule set. Several techniques listed
+# here are covered by the EVTX rule pack (hunt_evtx_rules / BUILTIN_RULES)
+# when the relevant channel is collected — those carry a "covered_by" note so
+# the analyst pivots to the right tool instead of reading a flat gap.
 KNOWN_COVERAGE_GAPS: dict[str, str] = {
-    "evtx_eid_4769_kerberos_svc_ticket_requests": "No query interface — requires Security EVTX with Kerberos service ticket auditing",
-    "evtx_eid_4768_kerberos_tgt_requests": "No query interface — requires Security EVTX with Kerberos TGT auditing",
-    "evtx_eid_4662_ad_object_access": "No query interface — requires DC Security EVTX for DCSync (EID 4662 with replication rights)",
-    "registry_run_keys_persistence": "No query interface — requires registry hive parsing (NTUSER.DAT / SOFTWARE)",
-    "registry_clsid_hijacking": "No query interface — requires registry hive parsing",
-    "vss_shadow_copy_deletion": "No query interface — VSS deletion typically via cmd/PS; cross-check prefetch + process creation",
-    "wmi_event_subscription_persistence": "No query interface — requires WMI repository (OBJECTS.DATA) parsing",
+    "evtx_eid_4769_kerberos_svc_ticket_requests": "Partial — hunt_evtx_rules fw-evtx-004 matches 4768/4769 weak-encryption; standalone 4769 enumeration still needs Kerberos service-ticket auditing",
+    "evtx_eid_4768_kerberos_tgt_requests": "Partial — hunt_evtx_rules fw-evtx-004 covers 4768 weak encryption; full TGT auditing needed for complete coverage",
+    "evtx_eid_4662_ad_object_access": "Covered by hunt_evtx_rules fw-evtx-031 (DCSync 4662 replication GUIDs) when DC Security EVTX is collected",
+    "registry_run_keys_persistence": "Covered by build_raw_artifact_index (AutoRun Items from Run/RunOnce) and hunt_evtx_rules fw-evtx-028 (Sysmon 12/13 autostart)",
+    "registry_clsid_hijacking": "No query interface — requires registry hive parsing of CLSID/InprocServer32 (raw indexer does not yet enumerate COM)",
+    "vss_shadow_copy_deletion": "No query interface — VSS deletion typically via cmd/PS; cross-check prefetch + process creation; detect_anti_forensics covers vssadmin patterns",
+    "wmi_event_subscription_persistence": "No query interface — requires WMI repository (OBJECTS.DATA) parsing (not yet implemented)",
     "ntds_dit_or_sam_extraction": "No query interface — requires EVTX EID 4663 + file access auditing on DC",
-    "defender_tamper_events": "No query interface — requires Microsoft-Windows-Windows Defender/Operational EVTX",
-    "bits_job_persistence": "No query interface — requires BITS-Client/Operational log",
+    "defender_tamper_events": "Covered by hunt_evtx_rules fw-evtx-034/035 (Defender 1116/1117 detection, 5001/5007/1119 tamper) when Defender Operational EVTX is collected",
+    "bits_job_persistence": "Covered by hunt_evtx_rules fw-evtx-036 (BITS-Client 59/60) when the log is collected; qmgr.db parsing not yet implemented",
     "dpapi_master_key_operations": "No query interface — requires Security EVTX EID 4692/4693",
-    "evtx_eid_4720_user_account_created": "No query interface — requires Security EVTX account management auditing",
-    "evtx_eid_4732_group_membership_changes": "No query interface — requires Security EVTX group auditing",
+    "evtx_eid_4720_user_account_created": "Covered by hunt_evtx_rules fw-evtx-002 (4720) when account-management auditing is on",
+    "evtx_eid_4732_group_membership_changes": "Covered by hunt_evtx_rules fw-evtx-003 (4728/4732/4756) when group auditing is on",
+    "winrm_remote_execution": "Covered by hunt_evtx_rules fw-evtx-037 (WinRM 91/168/6) when WinRM Operational EVTX is collected",
+    "outbound_rdp_pivot": "Covered by hunt_evtx_rules fw-evtx-039 (RDPClient 1024) for outbound connections; Terminal Server Client MRU via build_raw_artifact_index",
 }
 
 # Per-rule explanations for zero-result outcomes — prevents "0 hits = clean" misreads.
@@ -88,6 +134,8 @@ _ZERO_RESULT_NOTES: dict[str, str] = {
     "prefetch_security_sw_werfault_correlation": "0 WerFault + Korean security SW date correlations. WerFault not present or security SW not active during the collection window.",
     "amcache_remote_access_tool_names": "0 AmCache entries matching remote access tool names. AmCache may not include tools installed outside the case window.",
     "openssh_artifacts": "0 OpenSSH artifacts across event logs, services, key files, and Prefetch. SSH may not have been used or artifacts were removed.",
+    "office_trustrecords_macro_enabled": "0 macro-enabled TrustRecords. Requires NTUSER hive parsing (raw build_raw_artifact_index or AXIOM Office artifacts); absence with no TrustRecords family collected means not-evaluable, not clean.",
+    "motw_internet_origin_risky_file": "0 internet-origin risky files. Zone.Identifier requires ADS-capable collection (raw MOTW indexer or AXIOM file system artifacts); ADS-stripping tools or non-NTFS volumes also remove the marker.",
 }
 
 
@@ -113,6 +161,8 @@ def find_suspicious(aq: ArtifactQueries, rules: str = "") -> dict:
         "prefetch_security_sw_werfault_correlation": rule_watering_hole_indicators,
         "amcache_remote_access_tool_names": rule_suspicious_msi_install,
         "openssh_artifacts": rule_ssh_activity,
+        "office_trustrecords_macro_enabled": rule_trustrecords_macro_enabled,
+        "motw_internet_origin_risky_file": rule_motw_internet_origin_risky_file,
     }
 
     if rules:
@@ -128,23 +178,30 @@ def find_suspicious(aq: ArtifactQueries, rules: str = "") -> dict:
     zero_result_rules: list[dict] = []
     for name, func in active.items():
         result = func(aq)
+        scope = RULE_SCOPE_MAP.get(name, "generic")
         if result:
             result["rule_name"] = name  # canonical artifact-descriptive name
             result["query_limits"] = RULE_QUERY_LIMITS.get(name, {})
             result["category"] = RULE_CATEGORY_MAP.get(name, "uncategorized")
+            result["scope"] = scope
             result["query_status"] = "executed"
             td = _temporal_distribution(result.get("details", []))
             if td:
                 result["temporal_distribution"] = td
             findings.append(result)
         else:
-            zero_result_rules.append({
+            zero_entry = {
                 "rule_name": name,
                 "matching_count": 0,
                 "query_status": "executed",
                 "category": RULE_CATEGORY_MAP.get(name, "uncategorized"),
+                "scope": scope,
                 "note": _ZERO_RESULT_NOTES.get(name, "0 results — artifact was queried but no matches found."),
-            })
+            }
+            scope_hint = _SCOPE_ZERO_RESULT_HINT.get(scope)
+            if scope_hint:
+                zero_entry["scope_hint"] = scope_hint
+            zero_result_rules.append(zero_entry)
 
     rules_not_in_scope = sorted(set(all_rules.keys()) - set(active.keys()))
     coverage_manifest = {
@@ -997,10 +1054,223 @@ def rule_ssh_activity(aq: ArtifactQueries) -> dict | None:
     }
 
 
+def rule_trustrecords_macro_enabled(aq: ArtifactQueries) -> dict | None:
+    """Office TrustRecords entries where the user clicked "Enable Content".
+
+    Each hit is a deliberate user action that unlocked macros for a specific
+    document — the canonical ingress signal for document-based intrusion.
+    """
+    hits = aq._query_artifact("Office Trusted Documents", limit=0)
+    findings: list[dict] = []
+    for h in hits:
+        if str(h.get("Macro Enabled", "")).strip().lower() != "true":
+            continue
+        findings.append({
+            "hit_id": h.get("hit_id"),
+            "artifact_type": "Office Trusted Documents",
+            "event_type": "Macro Enabled Document",
+            "timestamp": h.get("Trusted At", h.get("timestamp", "")),
+            "document": h.get("Document", ""),
+            "application": h.get("Application", ""),
+            "user": h.get("User", ""),
+            "artifact_context": (
+                "User explicitly enabled macros/content for this document "
+                "(TrustRecords FF FF FF 7F marker)."
+            ),
+        })
+    if not findings:
+        return None
+    details, truncated, returned_count = _apply_detail_cap(findings)
+    return {
+        "rule_name": "office_trustrecords_macro_enabled",
+        "query_description": (
+            f"Office TrustRecords with macro-enable marker — {len(findings)} "
+            "document(s) the user explicitly trusted."
+        ),
+        "matching_count": len(findings),
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
+    }
+
+
+_MOTW_RISKY_EXTENSIONS = (
+    ".exe", ".dll", ".scr", ".ps1", ".bat", ".cmd", ".vbs", ".js", ".jse",
+    ".wsf", ".hta", ".msi", ".iso", ".img", ".vhd", ".lnk", ".docm", ".xlsm",
+    ".pptm",
+)
+
+
+def rule_motw_internet_origin_risky_file(aq: ArtifactQueries) -> dict | None:
+    """Mark-of-the-Web entries: internet-zone files with risky extensions.
+
+    ZoneId 3 (Internet) / 4 (Restricted) on an executable, script, container,
+    or macro-document bridges the ingress lane to a concrete file. The URL
+    fields, when present, identify the delivery source.
+    """
+    hits = aq._query_artifact("Mark of the Web", limit=0)
+    findings: list[dict] = []
+    for h in hits:
+        zone = str(h.get("Zone ID", "")).strip()
+        if zone not in {"3", "4"}:
+            continue
+        path = str(h.get("File Path", h.get("source_path", "")))
+        if not path.lower().endswith(_MOTW_RISKY_EXTENSIONS):
+            continue
+        findings.append({
+            "hit_id": h.get("hit_id"),
+            "artifact_type": "Mark of the Web (Zone.Identifier)",
+            "event_type": "Internet-Origin Risky File",
+            "timestamp": h.get("Created", h.get("timestamp", "")),
+            "file_path": path,
+            "zone_id": zone,
+            "host_url": h.get("Host URL", ""),
+            "referrer_url": h.get("Referrer URL", ""),
+            "user": h.get("User", ""),
+            "artifact_context": (
+                "File carries an Internet/Restricted-zone Zone.Identifier ADS. "
+                "Origin evidence only — check Prefetch/BAM/4688 for execution."
+            ),
+        })
+    if not findings:
+        return None
+    details, truncated, returned_count = _apply_detail_cap(findings)
+    return {
+        "rule_name": "motw_internet_origin_risky_file",
+        "query_description": (
+            f"Zone.Identifier ZoneId 3/4 on risky extensions — {len(findings)} "
+            "internet-origin file(s) in user folders."
+        ),
+        "matching_count": len(findings),
+        "details": details,
+        "returned_count": returned_count,
+        "truncated": truncated,
+        "detail_cap": 20,
+    }
+
+
 def _apply_detail_cap(hits: list, cap: int = 20) -> tuple[list, bool, int]:
     """Apply the standard detail cap. Returns (capped_list, truncated, returned_count)."""
     capped = hits[:cap]
     return capped, len(hits) > cap, len(capped)
+
+
+# C-4: map a free-text hypothesis to the lanes/families whose ABSENCE would
+# refute it. Keyed by substring; the first matching entry wins. This is a
+# soft hint, not a gate — it never blocks the call, only nudges the analyst
+# toward the refuting evidence before they commit to a verdict.
+_HYPOTHESIS_REFUTATION_MAP = [
+    (("ransomware", "ransom", "encrypt"), {
+        "hypothesis_class": "ransomware_impact",
+        "refute_by_checking": [
+            "Encrypted Files / mass extension churn count (impact lane)",
+            "ransom note text documents",
+            "USN/$LogFile rename-burst around the suspected window",
+        ],
+        "absence_refutes": (
+            "No encrypted-file churn AND no ransom note in a collected impact "
+            "lane refutes ransomware — downgrade to anti-forensics or unknown."
+        ),
+        "next_tool": "build_timeline(fetch_all=true) over the impact window",
+    }),
+    (("insider", "exfil", "exfiltration", "data theft"), {
+        "hypothesis_class": "insider_exfiltration",
+        "refute_by_checking": [
+            "USB Devices (USBSTOR / MountPoints2 / setupapi) connect times",
+            "cloud-upload / webmail browser activity",
+            "sensitive-file access (LNK / ShellBags) vs. business-hours baseline",
+        ],
+        "absence_refutes": (
+            "Authorized account + business-hours + approved app/destination is "
+            "a credible benign-transfer alternative — do not call exfil on "
+            "volume alone."
+        ),
+        "next_tool": "find_suspicious then correlate on the device/account",
+    }),
+    (("lateral", "pivot", "rdp", "smb", "remote execution"), {
+        "hypothesis_class": "lateral_movement",
+        "refute_by_checking": [
+            "INBOUND vs OUTBOUND direction (4624 type10 / WinRM vs RDP Client "
+            "Destinations) — keep them in separate lanes",
+            "explicit-credential use (4648) tying source to destination",
+        ],
+        "absence_refutes": (
+            "Inbound-only evidence does not make this host a pivot; outbound-"
+            "only does not make it a victim. Refute the direction you did not "
+            "see."
+        ),
+        "next_tool": "run_hunt_pack(lateral_movement_sweep)",
+    }),
+    (("persistence", "backdoor", "service", "scheduled task", "autorun"), {
+        "hypothesis_class": "persistence",
+        "refute_by_checking": [
+            "service/task creation time vs. a known-good baseline (net-new?)",
+            "binary path + signer (legitimate vendor install vs. drop)",
+            "execution corroboration (Prefetch/BAM) for the persistence binary",
+        ],
+        "absence_refutes": (
+            "A net-new service that matches a signed vendor installer is not "
+            "persistence — check install_vs_compromise before concluding."
+        ),
+        "next_tool": "service_persistence_gate",
+    }),
+    (("anti-forensic", "anti forensic", "log clear", "tamper", "wipe"), {
+        "hypothesis_class": "anti_forensics",
+        "refute_by_checking": [
+            "actor/process behind the clear (admin maintenance vs. adversary)",
+            "temporal proximity to intrusion/impact evidence",
+            "single tamper family vs. multiple",
+        ],
+        "absence_refutes": (
+            "A lone VSS/log-clear by an admin account in a maintenance window, "
+            "with no nearby intrusion, is credibly benign — do not escalate to "
+            "compromise on the clear alone."
+        ),
+        "next_tool": "detect_anti_forensics then correlate on the actor",
+    }),
+    (("credential", "lsass", "mimikatz", "dump", "pass-the-hash"), {
+        "hypothesis_class": "credential_access",
+        "refute_by_checking": [
+            "LSASS access (Sysmon 10) source process legitimacy",
+            "explicit-credential / NTLM events around the same window",
+            "DCSync (4662 replication) if a DC is in scope",
+        ],
+        "absence_refutes": (
+            "AV/EDR processes legitimately open LSASS handles — refute by "
+            "checking the accessing process, not the handle alone."
+        ),
+        "next_tool": "find_suspicious(rules=sysmon_eid10_lsass_handle_open)",
+    }),
+]
+
+
+def build_refutation_hint(declared_hypothesis: str) -> dict | None:
+    """Return a refutation hint for a declared hypothesis, or None.
+
+    Soft nudge toward the evidence whose absence would refute the stated
+    hypothesis — implements CLAUDE.md "declare hypothesis, then call tools"
+    as structured output without gating the call.
+    """
+    text = (declared_hypothesis or "").lower().strip()
+    if not text:
+        return None
+    for needles, hint in _HYPOTHESIS_REFUTATION_MAP:
+        if any(n in text for n in needles):
+            return {"declared_hypothesis": declared_hypothesis, **hint}
+    return {
+        "declared_hypothesis": declared_hypothesis,
+        "hypothesis_class": "unmapped",
+        "refute_by_checking": [
+            "state the single observation that would most cleanly disprove "
+            "this hypothesis, then query for it directly",
+        ],
+        "absence_refutes": (
+            "No canned refutation path for this hypothesis class; design one "
+            "before treating supporting hits as confirmation."
+        ),
+        "next_tool": "hypothesis_refutation_pack",
+    }
 
 
 def _extract_xml_fields(event_data: str, detail: dict, field_names: list[str]) -> None:

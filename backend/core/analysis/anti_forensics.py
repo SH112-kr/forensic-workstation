@@ -17,10 +17,11 @@ Rules covered (intentionally conservative):
 - T1562.002 EventLog service registry tamper
 - T1070    Anti-forensic tool execution (sdelete, cipher /w, bcdedit disable)
 
+- T1070.006 Timestomp ($SI/$FN creation divergence) — WEAK signal, gated by
+  suspicious path; never escalates a verdict alone (see _rule_timestomp).
+
 Explicitly out of scope for this rule:
 
-- Timestomp $SI/$FN divergence — data-heavy and noisy per case. Use
-  ``get_file_timestamps`` manually on specific files instead.
 - Heuristics derived from a single incident (ransomware families, APT
   toolmarks) — that would overfit the detector and violate the Claude
   rules the project agreed to.
@@ -306,6 +307,129 @@ def _rule_cleanup_tool_execution(aq: ArtifactQueries) -> list[dict[str, Any]] | 
     return out or None
 
 
+# Field-name candidates for $STANDARD_INFORMATION vs $FILE_NAME creation
+# times across AXIOM / MFTECmd / raw $MFT row shapes.
+_SI_CREATED_FIELDS = (
+    "SI Created", "Created0x10", "Created0x10 (SI)",
+    "Standard Info Created", "$SI Created",
+    "Created Date/Time - UTC (yyyy-mm-dd)",
+)
+_FN_CREATED_FIELDS = (
+    "FN Created", "Created0x30", "Created0x30 (FN)",
+    "File Name Created", "$FN Created",
+)
+_SUSPICIOUS_PATH_TOKENS = (
+    "\\temp\\", "\\appdata\\", "\\programdata\\", "\\public\\",
+    "\\downloads\\", "\\windows\\temp\\", "\\users\\public\\",
+)
+
+
+def _first_field(row: dict[str, Any], names: tuple[str, ...]) -> str:
+    for n in names:
+        v = row.get(n)
+        if v:
+            return str(v)
+    return ""
+
+
+def _parse_ts_ms(value: str):
+    """Best-effort parse to epoch-ms; None when unparseable."""
+    if not value:
+        return None
+    from datetime import datetime, timezone
+    text = str(value).strip().replace("Z", "+00:00")
+    for fmt in (None,):  # try fromisoformat first
+        try:
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            break
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(str(value).strip(), fmt).replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            continue
+    return None
+
+
+def _rule_timestomp(aq: ArtifactQueries) -> list[dict[str, Any]] | None:
+    """$SI vs $FN creation-time divergence (timestomp backdating).
+
+    Two signals, both deliberately conservative:
+      - $SI Created earlier than $FN Created → classic backdating. Strength
+        is at most ``weak`` on its own; only promote when the path is
+        suspicious or execution evidence corroborates (judgement is the
+        analyst's — this rule only surfaces the divergence).
+      - sub-second component zeroed on $SI but not $FN → common timestomp
+        tell, but ALSO common for installers/archives. Flagged only when the
+        path is suspicious, never standalone.
+
+    Returns None when the MFT family is absent or carries no $SI/$FN columns,
+    so a case without that substrate never reads as "no timestomping".
+    """
+    try:
+        rows = aq._query_artifact("MFT Entries", limit=0) or []
+    except Exception:
+        rows = []
+    if not rows:
+        try:
+            rows = aq._query_artifact("MFT", limit=0) or []
+        except Exception:
+            rows = []
+    if not rows:
+        return None
+
+    out: list[dict[str, Any]] = []
+    saw_si_fn_columns = False
+    for h in rows:
+        si_raw = _first_field(h, _SI_CREATED_FIELDS)
+        fn_raw = _first_field(h, _FN_CREATED_FIELDS)
+        if not si_raw or not fn_raw:
+            continue
+        saw_si_fn_columns = True
+        si_ms = _parse_ts_ms(si_raw)
+        fn_ms = _parse_ts_ms(fn_raw)
+        if si_ms is None or fn_ms is None:
+            continue
+        path = str(h.get("File Path", h.get("Full Path", h.get("source_path", "")))).lower()
+        suspicious_path = any(tok in path for tok in _SUSPICIOUS_PATH_TOKENS)
+
+        signal = None
+        # Backdating: $SI predates $FN by more than 1s (sub-second jitter is normal).
+        if si_ms < fn_ms - 1000:
+            signal = "si_before_fn_backdating"
+        # Sub-second truncation on $SI only — suspicious-path-gated to avoid
+        # the installer/archive false-positive flood.
+        elif suspicious_path and si_ms % 1000 == 0 and fn_ms % 1000 != 0:
+            signal = "si_subsecond_zeroed"
+        if not signal:
+            continue
+
+        out.append({
+            "hit_id": h.get("hit_id"),
+            "rule": "timestomp_si_fn_divergence",
+            "artifact_type": "MFT Entries",
+            "timestamp": si_raw,
+            "evidence": (
+                f"$SI/$FN creation divergence ({signal}); path "
+                f"{'suspicious' if suspicious_path else 'normal'}. "
+                "Weak on its own — corroborate with execution evidence before "
+                "treating as deliberate timestomping."
+            ),
+            "strength_hint": "weak" if not suspicious_path else "weak_path_corroborated",
+            "si_created": si_raw,
+            "fn_created": fn_raw,
+            "file_path": path,
+        })
+    if not saw_si_fn_columns:
+        return None
+    return out or None
+
+
 def detect_anti_forensics(
     aq: ArtifactQueries,
     max_details_per_rule: int = _DEFAULT_DETAIL_CAP_PER_RULE,
@@ -366,6 +490,12 @@ def detect_anti_forensics(
             "Prefetch entries for known anti-forensic utilities (sdelete, cipher, bcdedit, wipefs).",
             lambda: _rule_cleanup_tool_execution(aq),
         ),
+        (
+            "timestomp_si_fn_divergence", "T1070.006",
+            "$SI/$FN creation-time divergence (timestomp backdating). Weak "
+            "alone — gated by suspicious path / corroboration.",
+            lambda: _rule_timestomp(aq),
+        ),
     ]
 
     rules_output = []
@@ -406,8 +536,10 @@ def detect_anti_forensics(
         "any_rule_truncated": any_truncated,
         "rules": rules_output,
         "notes": [
-            "Timestomp ($SI vs $FN divergence) is intentionally out of scope — use get_file_timestamps "
-            "on specific suspect files instead.",
+            "Timestomp ($SI vs $FN divergence, T1070.006) is surfaced as a WEAK "
+            "signal only — it is gated by suspicious path and never escalates a "
+            "verdict on its own. Corroborate with execution evidence and "
+            "get_file_timestamps on the specific file before concluding.",
             "Heuristics tied to any single incident are excluded by design. All matches above come from "
             "publicly documented ATT&CK sub-techniques (T1070.*/T1562.*/T1490).",
         ],

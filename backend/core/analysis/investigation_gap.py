@@ -74,6 +74,21 @@ def _load_optional_findings(findings_payload: Any) -> dict[str, Any] | None:
     return None
 
 
+def make_gap_id(*parts: Any) -> str:
+    """Stable, content-addressed id for a coverage gap (C-6).
+
+    The same (family, lane, kind) tuple yields the same id wherever it is
+    surfaced — lane_state_board, negative_evidence, investigation_gap — so a
+    single gap can be tracked across surfaces even when each phrases it
+    differently. Deterministic: no time/random input.
+    """
+    import hashlib
+
+    key = "|".join(str(p or "").strip().lower() for p in parts)
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    return f"gap_{digest}"
+
+
 def _substrate_gaps(case_health_out: dict[str, Any]) -> list[dict[str, Any]]:
     checks = case_health_out.get("checks", []) or []
     gaps = []
@@ -81,6 +96,7 @@ def _substrate_gaps(case_health_out: dict[str, Any]) -> list[dict[str, Any]]:
         if c.get("passed"):
             continue
         gaps.append({
+            "gap_id": make_gap_id("substrate", c.get("check_name")),
             "check_name": c.get("check_name"),
             "severity": c.get("severity"),
             "detail": c.get("detail"),
@@ -96,9 +112,11 @@ def _detection_gaps(findings: dict[str, Any] | None) -> list[dict[str, Any]]:
     unevaluable = findings.get("unevaluable_rules") or []
     out = []
     for u in unevaluable:
+        missing = u.get("missing_artifacts") or u.get("missing") or []
         out.append({
+            "gap_id": make_gap_id("detection", ",".join(sorted(str(m) for m in missing))),
             "rule_name": u.get("rule_name") or u.get("rule_id"),
-            "missing_artifacts": u.get("missing_artifacts") or u.get("missing") or [],
+            "missing_artifacts": missing,
             "reason": u.get("reason") or "Rule could not run — required artifacts absent.",
         })
     return out

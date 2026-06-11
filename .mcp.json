@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "forensic-workstation": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:\\Users\\fsec\\forensic-workstation-rawindex\\backend\\mcp_bridge.py"],
+      "env": {}
+    }
+  }
+}

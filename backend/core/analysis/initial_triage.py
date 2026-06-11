@@ -49,6 +49,12 @@ _POLICY_TUNABLES = {
     "weak_window_min_score_ratio": 0.60,
     "weak_window_min_independent_axes": 2,
     "timeline_scan_limit": 1200,
+    # P0 truncation hard gate: when the initial scan is truncated, window
+    # discovery auto-expands up to max_pages × batch(400) events. Past that
+    # budget the remaining count is recorded as a gap and strong
+    # conclusions stay blocked.
+    "timeline_scan_max_pages": 20,
+    "timeline_scan_batch": 400,
     "top_window_count": 3,
     "top_bundle_count": 5,
 }
@@ -80,6 +86,7 @@ _EXECUTION_PATTERNS = (
     "powershell history",
     "script events",
     "process creation",
+    "bam execution",          # raw BAM/DAM: user-SID execution evidence
 )
 _FILESYSTEM_PATTERNS = (
     "encrypted files",
@@ -100,12 +107,18 @@ _NETWORK_PATTERNS = (
     "potential browser activity",
     "firewall",
     "browser",
+    "rdp client destinations",   # outbound RDP pivot
 )
 _USER_PATTERNS = (
     "lnk files",
     "jump list",
     "recent",
     "windows search",
+    "mark of the web",           # A-1: download origin (ingress)
+    "zone.identifier",
+    "office trusted documents",  # A-4: macro enable-content (ingress)
+    "office recent documents",
+    "usb devices",               # A-3: external media (ingress / exfil)
 )
 _PERSISTENCE_PATTERNS = (
     "system services",
@@ -273,8 +286,11 @@ def _coverage_gate(
     *,
     case_start_date: str,
     case_end_date: str,
+    counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    counts = _artifact_counts(connector)
+    # D-2: reuse a pre-computed artifact-count map when the caller already
+    # has one (initial_triage), so we don't re-query get_artifact_type_counts.
+    counts = counts if counts is not None else _artifact_counts(connector)
     case_start = _parse_dt(case_start_date)
     case_end = _parse_dt(case_end_date)
     span_days = max((case_end - case_start).days, 0) if case_start and case_end else 0
@@ -873,12 +889,18 @@ def _build_lane_state_board(
         if lane_blocked:
             basis.append("coverage gate blocks one or more claims for this lane")
 
-        board[lane] = {
+        entry = {
             "state": state,
             "basis": basis,
             "axis_event_count": axis_total,
             "artifact_families_seen": families,
         }
+        if state in {"unverified", "not_seen"}:
+            # C-6: share a stable id with investigation_gap / negative_evidence
+            # for the same (lane, state) coverage gap.
+            from core.analysis.investigation_gap import make_gap_id
+            entry["gap_id"] = make_gap_id("lane", lane, state)
+        board[lane] = entry
 
     blocked_lanes = [
         lane for lane in _LANE_AXIS_MAP
@@ -919,18 +941,50 @@ def initial_triage(
     )
 
     health = build_case_health({"axiom:active": connector})
+    # D-2: compute artifact counts once and share them with the coverage gate
+    # instead of re-querying get_artifact_type_counts inside _coverage_gate.
+    artifact_counts = _artifact_counts(connector)
     coverage_gate = _coverage_gate(
         connector,
         case_start_date=selected_scope["case_start_date"],
         case_end_date=selected_scope["case_end_date"],
+        counts=artifact_counts,
     )
 
     bundles = build_artifact_bundles(connector).get("artifact_bundles", [])[:_POLICY_TUNABLES["top_bundle_count"]]
+    initial_budget = max(200, min(timeline_scan_limit, 4000))
     timeline_scan = _collect_timeline_entries(
         connector,
         start_date=selected_scope["start_date"],
         end_date=selected_scope["end_date"],
-        max_events=max(200, min(timeline_scan_limit, 4000)),
+        max_events=initial_budget,
+    )
+
+    # P0 truncation hard gate — auto-expand the scan instead of silently
+    # discovering windows over a noise-only prefix of the timeline.
+    scan_hard_cap = (
+        _POLICY_TUNABLES["timeline_scan_max_pages"]
+        * _POLICY_TUNABLES["timeline_scan_batch"]
+    )
+    auto_expanded = False
+    if timeline_scan.get("truncated") and scan_hard_cap > initial_budget:
+        auto_expanded = True
+        timeline_scan = _collect_timeline_entries(
+            connector,
+            start_date=selected_scope["start_date"],
+            end_date=selected_scope["end_date"],
+            max_events=scan_hard_cap,
+        )
+        timeline_scan.setdefault("notes", []).append(
+            f"Window discovery auto-expanded beyond the initial "
+            f"{initial_budget}-event budget because the scope holds more "
+            f"events; scanned {timeline_scan.get('scanned_entries', 0)} of "
+            f"{timeline_scan.get('total_events', 0)}."
+        )
+    remaining_unscanned = max(
+        0,
+        int(timeline_scan.get("total_events", 0) or 0)
+        - int(timeline_scan.get("scanned_entries", 0) or 0),
     )
 
     windows: list[dict[str, Any]] = []
@@ -944,6 +998,17 @@ def initial_triage(
 
     lane_evidence_summary = _build_lane_evidence_summary(top_windows, coverage_gate)
     lane_state_board = _build_lane_state_board(top_windows, coverage_gate)
+    if remaining_unscanned > 0:
+        # Truncated past the page budget: evidence may sit in the unscanned
+        # tail, so strong conclusions stay blocked (pagination_required).
+        lane_state_board["allow_strong_conclusion"] = False
+        lane_state_board["pagination_required"] = True
+        lane_state_board.setdefault("notes", []).append(
+            f"Timeline scan truncated at the {scan_hard_cap}-event page "
+            f"budget with {remaining_unscanned} events unscanned; strong "
+            "conclusions are blocked until the remaining range is reviewed "
+            "(slice_timeline / narrower date scope)."
+        )
     precursor_context = _build_precursor_context(
         connector,
         selected_scope=selected_scope,
@@ -984,6 +1049,9 @@ def initial_triage(
             "scanned_entries": timeline_scan.get("scanned_entries", 0),
             "total_events_in_scope": timeline_scan.get("total_events", 0),
             "sample_truncated": bool(timeline_scan.get("truncated", False)),
+            "auto_expanded": auto_expanded,
+            "scan_budget": scan_hard_cap,
+            "remaining_unscanned": remaining_unscanned,
             "top_windows": top_windows,
         },
         "lane_evidence_summary": lane_evidence_summary,

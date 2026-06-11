@@ -24,6 +24,23 @@ def is_bias_remediation_enabled() -> bool:
     return raw not in {"1", "true", "yes", "on"}
 
 
+def disabled_guardrail_surface() -> dict[str, Any]:
+    """Explicit marker returned instead of a silently empty surface.
+
+    Consumers (especially the LLM) must be able to tell "guardrails ran"
+    apart from "guardrails were switched off"; an empty dict reads as the
+    former.
+    """
+    return {
+        "guardrails_active": False,
+        "guardrail_warning": (
+            f"{_DISABLE_ENV_VAR} is set: alert balancing, candidate axes, "
+            "and lane state gates are OFF for this response. Conclusions "
+            "are unguarded; re-enable before relying on this output."
+        ),
+    }
+
+
 def build_lane_evidence_summary_surface(
     connector: Any,
     *,
@@ -31,7 +48,7 @@ def build_lane_evidence_summary_surface(
 ) -> dict[str, Any]:
     """Return lane evidence + lane state from initial_triage or surface an error."""
     if not is_bias_remediation_enabled():
-        return {}
+        return disabled_guardrail_surface()
 
     try:
         triage_payload = triage_payload or _run_initial_triage(connector)
@@ -55,12 +72,13 @@ def build_bias_remediation_surface(
 ) -> dict[str, Any]:
     """Return additive anti-anchoring fields for detection/triage responses."""
     if not is_bias_remediation_enabled():
-        return {}
+        return disabled_guardrail_surface()
 
     try:
         rows = list(findings if findings is not None else payload.get("findings", []) or [])
         triage_payload = triage_payload or _run_initial_triage(connector)
         surface = {
+            "guardrails_active": True,
             "alert_summary": {
                 "key_findings": select_key_findings(rows),
                 "balance": analyze_finding_balance(rows),

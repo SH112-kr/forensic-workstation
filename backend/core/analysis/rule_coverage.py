@@ -51,6 +51,8 @@ RULE_REQUIREMENTS: dict[str, list[list[str]]] = {
     "prefetch_security_sw_werfault_correlation":[["Prefetch"], ["Startup Items"]],
     "amcache_remote_access_tool_names":        [["AmCache"]],
     "openssh_artifacts":                       [["Windows Event Logs", "System Services", "Prefetch", "SSH Keys"]],
+    "office_trustrecords_macro_enabled":       [["Office Trusted Documents"]],
+    "motw_internet_origin_risky_file":         [["Mark of the Web"]],
 }
 
 
@@ -79,6 +81,39 @@ FAMILY_ALIASES: dict[str, list[str]] = {
     "System Services": [
         "System Services",
         "Services",
+    ],
+    "BAM": [
+        "BAM Execution Entries",
+        "BAM/DAM",
+        "Background Activity Moderator",
+    ],
+    "USB Devices": [
+        "USB Devices",
+        "USB Device Registry Entries",
+        "USBSTOR",
+    ],
+    "Office Trusted Documents": [
+        "Office Trusted Documents",
+        "Trusted Documents",
+        "TrustRecords",
+    ],
+    "Mark of the Web": [
+        "Mark of the Web (Zone.Identifier)",
+        "Mark of the Web",
+        "Zone.Identifier",
+    ],
+    "Defender MPLog": [
+        "Defender MPLog Activity",
+        "Defender MPLog",
+        "MPLog",
+    ],
+    "Office Recent Documents": [
+        "Office Recent Documents",
+        "Office File MRU",
+    ],
+    "RDP Client Destinations": [
+        "RDP Client Destinations",
+        "Terminal Server Client",
     ],
     "Startup Items": [
         "Startup Items",

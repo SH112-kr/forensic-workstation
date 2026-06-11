@@ -2174,6 +2174,51 @@ def test_build_raw_file_index_indexes_mounted_image(monkeypatch, tmp_path):
     assert "raw_index" in state.captured
 
 
+def test_build_raw_file_index_background_returns_job_then_completes(monkeypatch, tmp_path):
+    import time
+
+    state = _State()
+    image = _StubImage()
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", state)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", image)
+
+    started = _run(mcp_bridge.build_raw_file_index(
+        roots="/c:",
+        cache_root=str(tmp_path / "cache"),
+        started_at="2026-06-04T00:00:00Z",
+        background=True,
+    ))
+    # Returns immediately with a job handle, not the build result.
+    assert started["status"] == "indexing_started"
+    assert started["job_id"]
+    assert "indexed_files" not in started
+    job_id = started["job_id"]
+
+    status = None
+    for _ in range(400):  # up to ~20s; legacy-walk stub finishes near-instantly
+        status = _run(mcp_bridge.raw_file_index_status(job_id=job_id))
+        if status["status"] != "running":
+            break
+        time.sleep(0.05)
+
+    assert status is not None
+    assert status["status"] == "completed"
+    assert status["result"]["status"] == "indexed"
+    assert status["result"]["indexed_files"] == 1
+    # the background thread connected the sidecar into shared state
+    assert "raw_index" in state.captured
+    search = state.captured["raw_index"].search(keyword="agent.exe")
+    assert search["total"] == 1
+
+
+def test_raw_file_index_status_unknown_job_is_not_found(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    result = _run(mcp_bridge.raw_file_index_status(job_id="does-not-exist"))
+    assert result["ok"] is False
+    assert result["status"] == "not_found"
+
+
 def test_build_raw_file_index_preserves_partial_status(monkeypatch, tmp_path):
     state = _State()
     image = _PartialImage()
@@ -2200,7 +2245,7 @@ def test_build_raw_file_index_preserves_partial_status(monkeypatch, tmp_path):
 def test_build_raw_file_index_propagates_indexer_not_evaluable(monkeypatch, tmp_path):
     from core.raw_index import file_indexer as file_indexer_module
 
-    def not_evaluable_indexer(_image, store, *, roots, started_at):
+    def not_evaluable_indexer(_image, store, *, roots, started_at, workers=0, progress=None):
         run_id = store.start_parser_run(
             "file_indexer",
             ",".join(roots),
@@ -2257,7 +2302,7 @@ def test_build_raw_file_index_reports_indexer_exception_as_not_evaluable(
 ):
     from core.raw_index import file_indexer as file_indexer_module
 
-    def failing_indexer(_image, _store, *, roots, started_at):
+    def failing_indexer(_image, _store, *, roots, started_at, workers=0, progress=None):
         raise RuntimeError("simulated file indexer crash")
 
     state = _State()

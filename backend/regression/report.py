@@ -20,6 +20,8 @@ REPORT_FIELDS = [
     "diversity_ratio",
     "top_tool_share",
     "uncertainty_total",
+    "truncated_seen",
+    "truncation_followed_up",
     "required_matched",
     "required_total",
     "prohibited_violations",
@@ -129,6 +131,8 @@ def write_markdown(
             flags.append("FALSE POSITIVE")
         if not row.get("verdict_correct"):
             flags.append("verdict mismatch")
+        if row.get("truncation_followed_up") is False:
+            flags.append("TRUNCATION IGNORED — concluded without pagination")
         viol = row.get("prohibited_violations") or []
         if isinstance(viol, str):
             viol = [v for v in viol.split(";") if v]

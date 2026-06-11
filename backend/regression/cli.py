@@ -95,6 +95,14 @@ def _cmd_ingest(args) -> int:
     div = metrics.tool_diversity(tool_calls)
     uncertainty = metrics.uncertainty_cited(final_text)
     phrase_check = metrics.check_required_phrases(final_text, gt)
+    if args.session_log:
+        trunc_events = ingest.extract_truncation_events(args.session_log)
+        truncation = metrics.truncation_discipline(
+            trunc_events["truncated_results"],
+            trunc_events["paginated_follow_ups"],
+        )
+    else:
+        truncation = None
 
     row = {
         "fixture": fixture,
@@ -108,6 +116,8 @@ def _cmd_ingest(args) -> int:
         "top_tool": div.get("top_tool"),
         "uncertainty_total": uncertainty["total_cited"],
         "uncertainty_markers": uncertainty,
+        "truncated_seen": truncation["truncated_seen"] if truncation else None,
+        "truncation_followed_up": truncation["followed_up"] if truncation else None,
         "required_matched": phrase_check["required_matched"],
         "required_total": phrase_check["required_total"],
         "required_missing": phrase_check["required_missing"],
@@ -131,7 +141,9 @@ def _summarise(row: dict) -> str:
         f"fp={row['is_fp']} "
         f"tools={row['total_calls']} (unique {row['unique_tools']}) "
         f"uncertainty={row['uncertainty_total']}/3 "
-        f"required={row['required_matched']}/{row['required_total']}"
+        f"required={row['required_matched']}/{row['required_total']} "
+        f"truncation={row.get('truncated_seen')}:"
+        f"{row.get('truncation_followed_up')}"
     )
 
 

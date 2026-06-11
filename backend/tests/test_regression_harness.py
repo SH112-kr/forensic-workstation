@@ -79,6 +79,7 @@ FIXTURES = [
     "case_insider_data_exfil",
     "case_anti_forensics_heavy",
     "case_empty_or_malformed",
+    "case_paginated_evidence",
 ]
 
 
@@ -405,3 +406,88 @@ def test_cli_list_fixtures_prints_all(capsys):
     assert exit_code == 0
     for name in FIXTURES:
         assert name in out
+
+
+# ── Paginated-evidence fixture (P0 truncation hard gate) ───────────────────
+
+def test_paginated_fixture_evidence_is_beyond_first_pages():
+    """All three evidence clusters must sit past the first search page (200)
+    and the first timeline page (500); page-1-only analysis sees noise only.
+    """
+    from regression.fixtures import load as load_fixture
+
+    conn = load_fixture("case_paginated_evidence")
+
+    def _blob(rows):
+        return " ".join(
+            " ".join(str(v) for v in r.values()) for r in rows
+        ).lower()
+
+    tl_page1 = conn.get_timeline(limit=500, offset=0)["entries"]
+    assert len(tl_page1) == 500
+    page1_text = _blob(tl_page1)
+    for marker in ("updsvc", ".lkd", "how_to_recover", "1102"):
+        assert marker not in page1_text, f"evidence {marker!r} leaked to page 1"
+
+    search_page1 = conn.search(keyword="", filters={}, limit=200, offset=0)
+    assert search_page1["total"] > search_page1["returned"]
+
+    full_text = _blob([h.to_row() for h in conn.hits])
+    for marker in ("updsvc", ".lkd", "how_to_recover"):
+        assert marker in full_text, f"evidence {marker!r} missing entirely"
+
+
+def test_paginated_fixture_evidence_reachable_via_pagination():
+    from regression.fixtures import load as load_fixture
+
+    conn = load_fixture("case_paginated_evidence")
+    enc = conn.search(keyword="", filters={"artifact_type": "Encrypted Files"},
+                      limit=200, offset=0)
+    assert enc["total"] == 160
+    deep = conn.search(keyword="updsvc", filters={}, limit=50, offset=0)
+    assert deep["total"] >= 3  # 7045 + prefetch + amcache
+
+
+# ── M5 truncation discipline ───────────────────────────────────────────────
+
+def test_extract_truncation_events_counts_markers_and_follow_ups(tmp_path):
+    from regression import ingest
+
+    log = tmp_path / "session.jsonl"
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "find_suspicious", "input": {}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result",
+             "content": [{"type": "text",
+                          "text": '{"findings": [], "truncated": true}'}]}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "find_suspicious",
+             "input": {"rules": "evtx_eid_4688_process_creation_events"}}]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "search_artifacts",
+             "input": {"keyword": "x", "offset": 200}}]}},
+    ]
+    log.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+
+    counts = ingest.extract_truncation_events(log)
+    assert counts["truncated_results"] == 1
+    assert counts["paginated_follow_ups"] == 2
+
+
+def test_extract_truncation_events_missing_log_returns_zeros():
+    from regression import ingest
+
+    counts = ingest.extract_truncation_events("does/not/exist.jsonl")
+    assert counts == {"truncated_results": 0, "paginated_follow_ups": 0}
+
+
+def test_truncation_discipline_metric():
+    from regression import metrics
+
+    assert metrics.truncation_discipline(0, 0)["followed_up"] is None
+    assert metrics.truncation_discipline(2, 0)["followed_up"] is False
+    m = metrics.truncation_discipline(2, 3)
+    assert m["followed_up"] is True
+    assert m["truncated_seen"] == 2
+    assert m["paginated_follow_ups"] == 3

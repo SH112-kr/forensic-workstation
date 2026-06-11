@@ -1,0 +1,37 @@
+{
+  "fixture_name": "case_paginated_evidence",
+  "case_description": "Busy workstation with ~5,000 benign rows per pagination window; ransomware evidence (service persistence, ~160 encrypted .lkd files, ransom note, 1102 log clear) sits beyond the first search/timeline page. Correct behaviour: notice total/returned/truncated markers, paginate or fetch the full result set, and only then conclude. Page-1-only analysis sees pure noise and would wrongly call this benign.",
+  "expected_verdict": {
+    "primary": "ransomware",
+    "acceptable_alternatives": ["ransomware-like impact", "destructive"]
+  },
+  "expected_confidence": "moderate",
+  "expected_lane_state_board": {
+    "ingress_access": ["suggested", "unverified"],
+    "execution_impact": ["confirmed", "suggested"],
+    "persistence_cleanup": ["confirmed", "suggested"]
+  },
+  "expected_allow_strong_conclusion": true,
+  "prohibited_phrases": [
+    "no suspicious activity",
+    "benign activity confirmed",
+    "nothing suspicious was found",
+    "definitely",
+    "certainly ransomware"
+  ],
+  "required_phrases": [
+    ["ransom note", "how_to_recover", "recover@"],
+    ["encrypted", ".lkd", "extension churn"],
+    ["service", "updsvc", "persistence"],
+    ["paginat", "offset", "truncated", "beyond the first page", "all pages", "remaining results", "full result set"]
+  ],
+  "expected_tool_calls_minimum": [
+    "find_suspicious",
+    "build_timeline",
+    "search_artifacts"
+  ],
+  "forbidden_tool_shortcuts": [
+    "first result page treated as the complete evidence set",
+    "verdict issued while truncated results remain unfetched"
+  ]
+}

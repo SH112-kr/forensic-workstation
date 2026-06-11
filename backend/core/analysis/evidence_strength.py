@@ -55,7 +55,73 @@ _RULES: list[dict[str, Any]] = [
         "match_artifact": re.compile(r"sysmon|security.*scriptblock|event\s*logs?\s*\(?.*4104", re.I),
         "reason": "Sysmon / PowerShell ScriptBlock logs capture full activity context at the time it happened.",
     },
+    {
+        "tier": "strong",
+        "match_artifact": re.compile(r"\bBAM\b.*execution|background\s*activity\s*moderator", re.I),
+        "reason": (
+            "BAM/DAM records executable path + last-run time with user-SID "
+            "attribution — execution evidence even where Prefetch is disabled. "
+            "Corroborate with Prefetch/SRUM to upgrade to confirmed."
+        ),
+    },
+    {
+        "tier": "strong",
+        "match_artifact": re.compile(r"mark\s*of\s*the\s*web|zone\.identifier", re.I),
+        "reason": (
+            "Zone.Identifier ADS proves the file arrived from another zone and "
+            "often carries the exact source URL — the strongest single bridge "
+            "between ingress and a file on disk. It does not prove execution."
+        ),
+    },
+    {
+        "tier": "strong",
+        "match_artifact": re.compile(r"trusted\s*documents|trust\s*records", re.I),
+        "reason": (
+            "Office TrustRecords prove the user explicitly trusted a document; "
+            "the macro-enabled marker is a deliberate user action at a recorded "
+            "time — high-value ingress evidence for document-based intrusion."
+        ),
+    },
     # ── moderate ───────────────────────────────────────────────────────────
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"defender\s*mplog|mplog\s*activity", re.I),
+        "reason": (
+            "Defender MPLog telemetry. Read by the Kind field: process_execution "
+            "rows are strong execution evidence (Defender's RTP observed the "
+            "process running, but with no command line); injection_source rows "
+            "are a monitoring relationship, NOT malicious by themselves; only a "
+            "non-zero threat_detection is a real detection. MPLog timestamps are "
+            "device-LOCAL wall-clock, not UTC — do not place them on a UTC "
+            "timeline without offsetting."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"rdp\s*client\s*destinations?|terminal\s*server\s*client", re.I),
+        "reason": (
+            "Terminal Server Client MRU proves this host initiated an OUTBOUND "
+            "RDP connection to the named destination (pivot evidence). It does "
+            "not prove the session succeeded — correlate with destination logs."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"office\s*recent\s*documents|file\s*mru", re.I),
+        "reason": (
+            "Office File MRU proves the user opened a document at a recorded "
+            "time; it does not show content or macro behaviour — pair with "
+            "TrustRecords for the enable-content action."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"USB\s*Devices?|USBSTOR", re.I),
+        "reason": (
+            "USBSTOR proves a device was connected (model/serial/time), not what "
+            "was copied. Correlate with file access before any exfil claim."
+        ),
+    },
     {
         "tier": "moderate",
         "match_artifact": re.compile(r"amcache", re.I),

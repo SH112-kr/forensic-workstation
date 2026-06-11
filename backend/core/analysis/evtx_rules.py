@@ -20,6 +20,7 @@ and generic — CLAUDE.md forbids overfitting to specific incidents.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -250,6 +251,146 @@ BUILTIN_RULES: list[dict[str, Any]] = [
         "mitre": ["T1087.002", "T1018"],
         "tags": ["discovery"],
     },
+    # ── B-3 coverage-gap closures (step 5) ──────────────────────────────
+    {
+        "id": "fw-evtx-025",
+        "title": "Service installed via Security channel (Event ID 4697)",
+        "severity": "high",
+        "event_ids": [4697],
+        "any": [],  # Security-channel pair of System 7045; either can be cleared
+        "mitre": ["T1543.003"],
+        "tags": ["persistence", "service_install"],
+    },
+    {
+        "id": "fw-evtx-026",
+        "title": "PowerShell engine started (Event ID 400 / 600)",
+        "severity": "low",
+        "event_ids": [400, 600],
+        "any": [],  # fallback when 4104 ScriptBlock logging is disabled
+        "mitre": ["T1059.001"],
+        "tags": ["execution", "powershell"],
+    },
+    {
+        "id": "fw-evtx-027",
+        "title": "Sysmon file created in suspicious path (Event ID 11)",
+        "severity": "low",
+        "event_ids": [11],
+        "any": ["\\temp\\", "\\appdata\\", "\\programdata\\", "\\public\\",
+                "\\downloads\\", ".lnk", "startup"],
+        "mitre": ["T1105", "T1547.001"],
+        "tags": ["execution", "persistence"],
+    },
+    {
+        "id": "fw-evtx-028",
+        "title": "Sysmon registry autostart modification (Event ID 12 / 13)",
+        "severity": "medium",
+        "event_ids": [12, 13],
+        "any": ["currentversion\\run", "runonce", "\\services\\",
+                "image file execution options", "\\winlogon", "userinit"],
+        "mitre": ["T1547.001", "T1112"],
+        "tags": ["persistence", "registry"],
+    },
+    {
+        "id": "fw-evtx-029",
+        "title": "Sysmon DNS query to suspicious TLD/host (Event ID 22)",
+        "severity": "low",
+        "event_ids": [22],
+        "any": [".top", ".xyz", ".ru", ".su", "duckdns", "ngrok",
+                "pastebin", "anydesk", "teamviewer"],
+        "mitre": ["T1071.004"],
+        "tags": ["command_and_control"],
+    },
+    {
+        "id": "fw-evtx-030",
+        "title": "Sysmon CreateRemoteThread injection (Event ID 8)",
+        "severity": "high",
+        "event_ids": [8],
+        "any": [],
+        "mitre": ["T1055"],
+        "tags": ["defense_evasion", "process_injection"],
+    },
+    {
+        "id": "fw-evtx-031",
+        "title": "Directory Service replication / DCSync (Event ID 4662)",
+        "severity": "high",
+        "event_ids": [4662],
+        "any": ["1131f6aa", "1131f6ad", "9923a32a", "replicating directory",
+                "ds-replication"],
+        "mitre": ["T1003.006"],
+        "tags": ["credential_access", "dcsync"],
+    },
+    {
+        "id": "fw-evtx-032",
+        "title": "Windows Filtering Platform allowed connection (Event ID 5156)",
+        "severity": "low",
+        "event_ids": [5156],
+        "any": [],
+        "mitre": ["T1071"],
+        "tags": ["command_and_control", "network"],
+    },
+    {
+        "id": "fw-evtx-033",
+        "title": "Scheduled task executed (TaskScheduler 129 / 200 / 201)",
+        "severity": "low",
+        "event_ids": [129, 200, 201],
+        "any": [],  # execution, distinct from creation (106/4698)
+        "mitre": ["T1053.005"],
+        "tags": ["persistence", "execution"],
+    },
+    {
+        "id": "fw-evtx-034",
+        "title": "Windows Defender threat detected (1116 / 1117)",
+        "severity": "high",
+        "event_ids": [1116, 1117],
+        "any": [],
+        "mitre": ["T1059", "T1204"],
+        "tags": ["impact", "malware_detected"],
+    },
+    {
+        "id": "fw-evtx-035",
+        "title": "Windows Defender protection disabled / tampered (5001 / 5007 / 1119)",
+        "severity": "high",
+        "event_ids": [5001, 5007, 1119],
+        "any": [],
+        "mitre": ["T1562.001"],
+        "tags": ["defense_evasion", "defender_tamper"],
+    },
+    {
+        "id": "fw-evtx-036",
+        "title": "BITS transfer job created/completed (BITS-Client 59 / 60 / 3)",
+        "severity": "medium",
+        "event_ids": [59, 60, 3],
+        "any": ["http://", "https://", ".exe", ".dll", ".ps1", "bitsadmin"],
+        "mitre": ["T1197"],
+        "tags": ["persistence", "command_and_control"],
+    },
+    {
+        "id": "fw-evtx-037",
+        "title": "WinRM remote session (WinRM 91 / 168 / 6)",
+        "severity": "medium",
+        "event_ids": [91, 168, 6],
+        "any": [],
+        "mitre": ["T1021.006"],
+        "tags": ["lateral_movement", "remote_execution"],
+    },
+    {
+        "id": "fw-evtx-038",
+        "title": "RDP session reconnected/disconnected (4778 / 4779)",
+        "severity": "low",
+        "event_ids": [4778, 4779],
+        "any": [],
+        "mitre": ["T1021.001"],
+        "tags": ["lateral_movement", "remote_access"],
+    },
+    {
+        "id": "fw-evtx-039",
+        "title": "Outbound RDP client connection (TerminalServices-RDPClient 1024 / 1102)",
+        "severity": "medium",
+        "event_ids": [1024, 1102],
+        "any": [],  # 1102 here is RDPClient channel, distinct from Security 1102
+        "mitre": ["T1021.001"],
+        "tags": ["lateral_movement", "pivot"],
+    },
 ]
 
 
@@ -274,13 +415,20 @@ def _rule_matches(rule: dict[str, Any], row: dict[str, Any]) -> bool:
     return any(n in hay for n in needles)
 
 
+def _sigma_dir() -> str:
+    """Resolve backend/hunt_packs/sigma relative to this module."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(here, "..", "..", "hunt_packs", "sigma"))
+
+
 def hunt_evtx_rules(
     aq: ArtifactQueries,
     rule_ids: list[str] | None = None,
     severity_min: str = "low",
     limit_per_rule: int = 100,
+    include_sigma: bool = True,
 ) -> dict[str, Any]:
-    """Run the built-in rule pack against the case's Event Log artifact.
+    """Run the built-in + optional Sigma rule pack against Event Log artifacts.
 
     Args:
         aq: ``ArtifactQueries`` bound to an open case.
@@ -289,6 +437,11 @@ def hunt_evtx_rules(
             rule severity before execution so noisy low-sev rules can be
             skipped.
         limit_per_rule: Max hits kept per rule (raw count is still reported).
+        include_sigma: When True (default) also load community/case Sigma
+            rules from ``backend/hunt_packs/sigma``. Each carries
+            ``provenance.origin == "sigma-community"``; a Sigma hit is an
+            evidence hint, not a verdict, and unsupported Sigma features are
+            reported (not silently approximated).
 
     Returns a single envelope containing every matched rule with its exact
     criteria attached so the analyst can audit or tune any hit.
@@ -296,9 +449,16 @@ def hunt_evtx_rules(
     sev_order = {"low": 1, "medium": 2, "high": 3, "critical": 4}
     min_rank = sev_order.get((severity_min or "low").lower(), 1)
 
+    rule_pool = list(BUILTIN_RULES)
+    sigma_load: dict[str, Any] | None = None
+    if include_sigma:
+        from core.analysis.sigma_loader import load_sigma_dir
+        sigma_load = load_sigma_dir(_sigma_dir())
+        rule_pool.extend(sigma_load.get("rules", []))
+
     wanted_ids = set(rule_ids or [])
     active: list[dict[str, Any]] = [
-        r for r in BUILTIN_RULES
+        r for r in rule_pool
         if (not wanted_ids or r["id"] in wanted_ids)
         and sev_order.get(r.get("severity", "low"), 1) >= min_rank
     ]
@@ -342,27 +502,41 @@ def hunt_evtx_rules(
             "matchers": {"any": rule.get("any", [])},
             "mitre": rule.get("mitre", []),
             "tags": rule.get("tags", []),
+            "provenance": rule.get("provenance", {"origin": "builtin"}),
             "match_count": len(matched),
             "returned": len(details),
             "details": details,
         })
 
-    # Sort by severity descending then by count.
+    # Sort by severity descending then by count. NOTE: this orders the audit
+    # view; it is NOT a significance ranking. Sigma/builtin hits are evidence
+    # hints — judge each on its details, not its position (CLAUDE.md).
     results.sort(key=lambda r: (-(sev_order.get(r.get("severity", "low"), 1)), -(r.get("match_count", 0))))
 
-    return {
+    notes = [
+        "No network calls. Built-in rules have no dependencies; Sigma rules "
+        "need PyYAML.",
+        "Overlap with find_suspicious is avoided by design — EIDs already "
+        "handled there (1102/4688/4104/7045/...) are NOT in the builtin pack.",
+        "Result order is severity-then-count for auditability, NOT a "
+        "significance ranking. Sigma hits are evidence hints, not verdicts.",
+        "To tune: drop a rule by passing rule_ids=[keep,...] or raise "
+        "severity_min to 'medium' / 'high' for noisy-low rules.",
+    ]
+    out = {
         "ok": True,
-        "rule_pack": "builtin",
-        "rule_pack_version": "2026-04-20",
+        "rule_pack": "builtin+sigma" if include_sigma else "builtin",
+        "rule_pack_version": "2026-06-10",
         "rules_evaluated": len(active),
         "rules_fired": sum(1 for r in results if r.get("ok") and r.get("match_count")),
         "total_hits": total_hits,
         "results": results,
-        "notes": [
-            "Built-in rules only. Dependencies: none. No network calls.",
-            "Overlap with find_suspicious is avoided by design — EIDs already "
-            "handled there (1102/4688/4104/7045/...) are NOT in this rule pack.",
-            "To tune: drop a rule by passing rule_ids=[keep,...] or raise "
-            "severity_min to 'medium' / 'high' for noisy-low rules.",
-        ],
+        "notes": notes,
     }
+    if sigma_load is not None:
+        out["sigma_load"] = {
+            "stats": sigma_load.get("stats", {}),
+            "unsupported_feature_counts": sigma_load.get("unsupported_feature_counts", {}),
+            "skipped": sigma_load.get("skipped", [])[:50],
+        }
+    return out

@@ -17,6 +17,12 @@ from core.analysis.negative_evidence import build_negative_evidence_surface
 DEFAULT_PAGE_SIZE = 2500
 DEFAULT_MAX_PAGES = 20
 
+# Mass-encryption threshold: a single "Encrypted Files" row is normal on a
+# workstation (EFS, password-protected docs); dozens within one case are
+# the churn pattern. Extension needles alone overfit to known campaign
+# suffixes, so the count path covers novel extensions.
+MASS_ENCRYPTION_MIN_ROWS = 25
+
 
 def assess_autonomous_case(
     connector: Any,
@@ -51,7 +57,7 @@ def assess_autonomous_case(
             (".inc", ".locked", "extension churn", "renamed files"),
             artifact_terms=("encrypted files",),
             path_terms=(".inc", ".locked"),
-        ),
+        ) or _count_rows(rows, artifact_terms=("encrypted files",)) >= MASS_ENCRYPTION_MIN_ROWS,
         "cloud_exfil": _has_row(
             rows,
             ("drive.google.com", "googledrivefs", "dropbox", "mega.nz", "cloud sync"),
@@ -59,9 +65,12 @@ def assess_autonomous_case(
         ),
         "usb_exfil": _has_row(
             rows,
-            ("usb", "kingston", "removable", "datatraveler", "e:\\confidential"),
-            artifact_terms=("event logs", "jump list", "shellbags", "lnk files"),
-            field_terms=("device description", "target path", "full path", "event data"),
+            ("usb", "kingston", "removable", "datatraveler", "e:\\confidential",
+             "usbstor", "mountpoints2"),
+            artifact_terms=("event logs", "jump list", "shellbags", "lnk files",
+                            "usb devices"),
+            field_terms=("device description", "target path", "full path", "event data",
+                         "serial number", "friendly name", "mount point"),
         ),
         "sensitive_access": _has_row(
             rows,
@@ -253,6 +262,15 @@ def _has_row(
         if not artifact_terms and not path_terms and not field_terms:
             return True
     return False
+
+
+def _count_rows(rows: list[dict[str, Any]], *, artifact_terms: tuple[str, ...]) -> int:
+    count = 0
+    for row in rows:
+        artifact = str(row.get("artifact_type", "")).lower()
+        if any(term in artifact for term in artifact_terms):
+            count += 1
+    return count
 
 
 def _row_blob(row: dict[str, Any]) -> str:

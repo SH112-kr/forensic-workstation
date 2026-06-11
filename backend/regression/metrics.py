@@ -86,6 +86,25 @@ def uncertainty_cited(final_answer_text: str) -> dict:
     return markers
 
 
+def truncation_discipline(truncated_results: int, paginated_follow_ups: int) -> dict:
+    """M5 — did the analyst paginate after seeing truncated results?
+
+    ``followed_up`` is None when no truncation was encountered (metric not
+    applicable), True when at least one pagination-style follow-up call was
+    made after truncation appeared in the session, False otherwise. Counts
+    are session-wide; the metric does not pair individual results to
+    individual follow-ups.
+    """
+    truncated = int(truncated_results or 0)
+    follow_ups = int(paginated_follow_ups or 0)
+    followed_up = None if truncated == 0 else follow_ups > 0
+    return {
+        "truncated_seen": truncated,
+        "paginated_follow_ups": follow_ups,
+        "followed_up": followed_up,
+    }
+
+
 _REFUTATION_MARKERS = (
     "refuted",
     "refutes",

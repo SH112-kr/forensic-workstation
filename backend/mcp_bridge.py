@@ -24,6 +24,8 @@ import re
 import asyncio
 import hashlib
 import subprocess
+import threading
+import uuid
 from datetime import datetime, timezone
 import inspect
 from typing import Any, Callable
@@ -74,6 +76,12 @@ mcp = FastMCP(
 _connectors: dict[str, Any] = app_state._connectors
 _masker = DataMasker()
 _event_log: list[dict] = []  # Recent events for web UI polling
+
+# Background raw-index jobs. TB-scale $MFT indexing can exceed the synchronous
+# MCP tool timeout, so build_raw_file_index(background=True) runs the build on a
+# daemon thread and returns a job_id immediately; raw_file_index_status polls it.
+_raw_index_jobs: dict[str, dict[str, Any]] = {}
+_raw_index_jobs_lock = threading.Lock()
 
 # Timezone display settings
 _tz_config: dict[str, Any] = {
@@ -205,6 +213,8 @@ def _runtime_status() -> dict[str, Any]:
         if started_mtime is not None and current_mtime > started_mtime:
             stale_files.append(path)
 
+    from core.analysis.bias_remediation import is_bias_remediation_enabled
+
     return {
         "pid": _SERVER_PID,
         "started_at": _SERVER_STARTED_AT.isoformat(),
@@ -215,6 +225,7 @@ def _runtime_status() -> dict[str, Any]:
             datetime.fromtimestamp(latest_seen_mtime, tz=timezone.utc).isoformat()
             if latest_seen_mtime is not None else ""
         ),
+        "guardrails_active": is_bias_remediation_enabled(),
     }
 
 
@@ -1127,6 +1138,8 @@ async def build_raw_file_index(
     cache_root: str = "",
     force_rebuild: bool = False,
     started_at: str = "",
+    background: bool = False,
+    workers: int = 0,
 ) -> dict:
     """Build/open a raw-image sidecar index from the mounted image file listing.
 
@@ -1135,14 +1148,29 @@ async def build_raw_file_index(
     - Existing fingerprint-matched sidecars are reused for repeated search speed.
     - Stale/corrupt sidecars are rebuilt from the mounted image, not treated as zero.
     - AXIOM/KAPE references should remain available until parity is proven.
+
+    Scale controls:
+    - workers: $MFT scan shards across this many worker processes (0 = auto,
+      cpu_count-2). Parsing is the CPU-bound cost; the parent still inserts
+      serially so the index stays consistent.
+    - background=True: run the whole build on a daemon thread and return
+      {status: "indexing_started", job_id} immediately, so TB-scale images
+      never hit the synchronous tool timeout. Poll raw_file_index_status(job_id)
+      for live progress and the final result. The mounted image must stay
+      mounted until the job finishes.
     """
     params = {
         "roots": roots,
         "cache_root": cache_root,
         "force_rebuild": force_rebuild,
+        "background": background,
+        "workers": workers,
     }
+    from core.raw_index.mft_parallel import default_worker_count
 
-    def fn():
+    effective_workers = int(workers) if int(workers) > 0 else default_worker_count()
+
+    def fn(progress=None):
         from core.connectors.raw_image_index import RawImageIndexConnector
         from core.raw_index.file_indexer import index_file_listing
         from core.raw_index.store import RawIndexStore
@@ -1283,6 +1311,8 @@ async def build_raw_file_index(
                         store,
                         roots=root_values,
                         started_at=started_at or datetime.now(timezone.utc).isoformat(),
+                        workers=effective_workers,
+                        progress=progress,
                     )
             except Exception as exc:
                 coverage_gap = {
@@ -1359,12 +1389,165 @@ async def build_raw_file_index(
             },
         }
 
+    if background:
+        job_id = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        with _raw_index_jobs_lock:
+            # Bound the registry: drop the oldest finished jobs (insertion order)
+            # once more than 20 accumulate, so a long-lived server doesn't leak.
+            if len(_raw_index_jobs) >= 20:
+                for old_id, old in list(_raw_index_jobs.items()):
+                    if old.get("status") in ("completed", "failed", "error"):
+                        del _raw_index_jobs[old_id]
+                        if len(_raw_index_jobs) < 20:
+                            break
+            _raw_index_jobs[job_id] = {
+                "job_id": job_id,
+                "tool": "build_raw_file_index",
+                "status": "running",
+                "params": params,
+                "workers": effective_workers,
+                "indexed_files": 0,
+                "gap_count": 0,
+                "started_at": now,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+            }
+
+        def _progress(n, gaps):
+            with _raw_index_jobs_lock:
+                job = _raw_index_jobs.get(job_id)
+                if job is not None:
+                    job["indexed_files"] = int(n)
+                    job["gap_count"] = int(gaps)
+
+        def _run():
+            try:
+                res = fn(_progress)
+                try:
+                    res = _localize_timestamps(res)
+                except Exception:
+                    pass
+                with _raw_index_jobs_lock:
+                    job = _raw_index_jobs.get(job_id)
+                    if job is not None:
+                        job["status"] = (
+                            "completed" if res.get("ok", False) else "failed"
+                        )
+                        job["result"] = res
+                        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                _log_event(
+                    "response", "build_raw_file_index",
+                    result={"job_id": job_id, "status": "background_complete"},
+                )
+            except Exception as exc:  # noqa: BLE001
+                with _raw_index_jobs_lock:
+                    job = _raw_index_jobs.get(job_id)
+                    if job is not None:
+                        job["status"] = "error"
+                        job["error"] = str(exc)
+                        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                _log_event(
+                    "error", "build_raw_file_index",
+                    data={"error": str(exc), "job_id": job_id},
+                )
+
+        threading.Thread(
+            target=_run, name=f"raw-index-{job_id}", daemon=True
+        ).start()
+        _log_event(
+            "request", "build_raw_file_index",
+            params={**params, "job_id": job_id, "mode": "background"},
+        )
+        return {
+            "ok": True,
+            "status": "indexing_started",
+            "job_id": job_id,
+            "workers": effective_workers,
+            "started_at": now,
+            "message": (
+                "Indexing started in background. Poll "
+                f"raw_file_index_status(job_id='{job_id}') for live progress and "
+                "the final result. Keep the image mounted until it completes."
+            ),
+        }
+
     return await _traced(
         "build_raw_file_index",
         params,
         fn,
         timeout_seconds=TIMEOUT_HEAVY,
     )
+
+
+@mcp.tool()
+async def raw_file_index_status(job_id: str = "") -> dict:
+    """Poll a background build_raw_file_index job (started with background=True).
+
+    Returns the job's live status: "running" (with indexed_files / gap_count
+    progress), "completed"/"failed" (with the full build result), or "error".
+    Omit job_id to list all known jobs.
+    """
+    def fn():
+        with _raw_index_jobs_lock:
+            if not job_id:
+                return {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "job_id": j["job_id"],
+                            "status": j["status"],
+                            "indexed_files": j["indexed_files"],
+                            "gap_count": j["gap_count"],
+                            "started_at": j["started_at"],
+                            "finished_at": j["finished_at"],
+                        }
+                        for j in _raw_index_jobs.values()
+                    ],
+                }
+            job = _raw_index_jobs.get(job_id)
+            if job is None:
+                return {
+                    "ok": False,
+                    "status": "not_found",
+                    "error": f"No raw-index job with id {job_id!r}.",
+                    "known_jobs": list(_raw_index_jobs.keys()),
+                }
+            snapshot = dict(job)
+        status = snapshot["status"]
+        out = {
+            "ok": status not in ("error", "failed"),
+            "status": status,
+            "job_id": snapshot["job_id"],
+            "workers": snapshot.get("workers"),
+            "indexed_files": snapshot["indexed_files"],
+            "gap_count": snapshot["gap_count"],
+            "started_at": snapshot["started_at"],
+            "finished_at": snapshot["finished_at"],
+        }
+        if status == "running":
+            out["message"] = (
+                f"Indexing in progress: {snapshot['indexed_files']} files so far. "
+                "Poll again shortly."
+            )
+        if snapshot.get("error"):
+            out["error"] = snapshot["error"]
+        result = snapshot.get("result")
+        if result is not None:
+            # Cap the embedded coverage_gaps: a pathological image can produce
+            # very many MFT record gaps, and returning them all would blow the
+            # status response past the MCP token limit.
+            gaps = result.get("coverage_gaps")
+            if isinstance(gaps, list) and len(gaps) > 50:
+                result = dict(result)
+                result["coverage_gaps_total"] = len(gaps)
+                result["coverage_gaps"] = gaps[:50]
+                result["coverage_gaps_truncated"] = True
+            out["result"] = result
+        return out
+
+    return await _traced("raw_file_index_status", {"job_id": job_id}, fn)
 
 
 def _parse_raw_index_roots(roots: str) -> list[str]:
@@ -1448,6 +1631,132 @@ def _raw_index_db_path(
     roots_material = ",".join(roots or ["/c:"])
     roots_hash = hashlib.sha256(roots_material.encode("utf-8")).hexdigest()[:16]
     return os.path.join(root, fingerprint, f"files-{roots_hash}.sqlite")
+
+
+@mcp.tool()
+async def build_raw_artifact_index(
+    include_evtx: bool = True,
+    include_registry: bool = True,
+    include_motw: bool = True,
+    include_mplog: bool = True,
+    started_at: str = "",
+) -> dict:
+    """Semantically index EVTX + registry artifacts into the raw sidecar.
+
+    Runs after build_raw_file_index. Extracts high-value EVTX channels and
+    SYSTEM/NTUSER hives from the mounted image for READ-ONLY parsing
+    (DO_NOT_EXECUTE marker, temp dir removed afterwards), then indexes:
+      - Windows Event Logs (P1 event set: logons, 7045/4697 services,
+        4698/4702 tasks, 1102/104 log clears, 4103/4104 PowerShell,
+        TerminalServices/RDP session events, BITS, Defender)
+      - System Services / BAM Execution Entries (user-SID execution
+        evidence) / USB Devices (USBSTOR + MountPoints2 + setupapi.dev.log) /
+        AutoRun Items (Run, RunOnce) / Office Trusted Documents
+        (TrustRecords macro-enable) / Office Recent Documents (File MRU)
+      - Mark of the Web (Zone.Identifier ADS) for Downloads/Desktop/Documents
+        — internet-origin + source URL per file (ingress lane)
+      - Defender MPLog Activity (process execution inventory, injection
+        sources, and any real detections from MPLog-*.log; timestamps are
+        device-local strings, not UTC)
+
+    Reading guide for AI consumers:
+    - Every unreadable channel/hive, parse failure, or record-cap stop is a
+      coverage_gap entry — absence of rows is NOT absence of activity.
+    - BAM rows are strong-tier execution evidence; corroborate with
+      Prefetch/SRUM before treating as confirmed.
+    """
+    params = {
+        "include_evtx": include_evtx,
+        "include_registry": include_registry,
+        "include_motw": include_motw,
+        "include_mplog": include_mplog,
+    }
+
+    def fn():
+        from core.connectors.raw_image_index import RawImageIndexConnector
+        from core.raw_index.artifact_indexer import (
+            index_evtx_artifacts,
+            index_motw_artifacts,
+            index_mplog_artifacts,
+            index_registry_artifacts,
+        )
+        from core.raw_index.store import RawIndexStore
+
+        image = _connectors.get("e01")
+        if not image or not image.is_connected():
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "error": "No mounted image. Run mount_image first.",
+                "coverage_gap": {"status": "not_evaluable",
+                                 "reason": "missing_mounted_image"},
+            }
+        raw = _get_raw_index()
+        if not raw:
+            return {
+                "ok": False,
+                "status": "not_evaluable",
+                "error": "No raw index sidecar. Run build_raw_file_index first.",
+                "coverage_gap": {"status": "not_evaluable",
+                                 "reason": "missing_raw_index_sidecar"},
+            }
+        db_path = raw._path
+        stamp = started_at or datetime.now(timezone.utc).isoformat()
+
+        # Single-writer discipline: release the reader connection while the
+        # indexers hold the write batch, then reopen with fresh counts.
+        raw.disconnect()
+        results: dict[str, Any] = {}
+        store = RawIndexStore(db_path)
+        store.open()
+        try:
+            if include_evtx:
+                results["evtx"] = index_evtx_artifacts(image, store, started_at=stamp)
+            if include_registry:
+                results["registry"] = index_registry_artifacts(image, store, started_at=stamp)
+            if include_motw:
+                results["motw"] = index_motw_artifacts(image, store, started_at=stamp)
+            if include_mplog:
+                results["mplog"] = index_mplog_artifacts(image, store, started_at=stamp)
+        finally:
+            store.close()
+
+        connector = RawImageIndexConnector()
+        connector.connect(db_path)
+        app_state.set("raw_index", connector)
+
+        coverage_gaps = [
+            gap
+            for section in results.values()
+            for gap in section.get("coverage_gaps", [])
+        ]
+        ok = any(section.get("ok") for section in results.values()) if results else False
+        section_statuses = [str(s.get("status") or "") for s in results.values()]
+        # Derive the aggregate status from the sections: "completed" must NOT be
+        # returned when nothing was evaluable (no section ok), and any partial /
+        # not_evaluable section degrades the whole run.
+        if not results or not ok:
+            agg_status = "not_evaluable"
+        elif coverage_gaps or any(
+            st in ("partial", "not_evaluable") for st in section_statuses
+        ):
+            agg_status = "partial"
+        else:
+            agg_status = "completed"
+        return _mask({
+            "ok": ok,
+            "status": agg_status,
+            "source_type": "raw_image_sidecar",
+            "db_path": db_path,
+            "sections": results,
+            "indexed_records_total": sum(
+                int(section.get("indexed_records", 0) or 0)
+                for section in results.values()
+            ),
+            "coverage_gaps": coverage_gaps,
+            "artifact_type_counts": connector.get_artifact_type_counts(),
+        })
+    return await _traced("build_raw_artifact_index", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
 @mcp.tool()
@@ -1900,6 +2209,122 @@ async def coverage_explainer(artifact_types: str = "") -> dict:
     return await _traced("coverage_explainer", {"artifact_types": artifact_types}, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
+# ── P0 fetch_all / empty-interpretation helpers ──
+
+_FETCH_ALL_MAX_PAGES = 20
+
+# Compact projection used when fetch_all returns thousands of rows without an
+# explicit field list. The full row stays reachable via get_hit_detail(hit_id).
+_FETCH_ALL_COMPACT_KEYS = ("hit_id", "artifact_type", "timestamp", "source_path", "_matched_keyword")
+
+
+def _fetch_all_pages(fetch_page, *, page_size: int, max_pages: int = _FETCH_ALL_MAX_PAGES):
+    """Drain a paged search via repeated calls to fetch_page(offset, limit).
+
+    Returns (rows, total, pages_read, remaining_count). Rows are deduped by
+    hit_id so overlapping pages cannot double-count. remaining_count > 0
+    means the page budget was exhausted before the result set was — callers
+    must surface that as a gap, never silently drop it.
+    """
+    rows: list[dict] = []
+    seen_ids: set = set()
+    total = None
+    pages_read = 0
+    for page_index in range(max_pages):
+        result = fetch_page(page_index * page_size, page_size) or {}
+        hits = [h for h in (result.get("hits") or []) if isinstance(h, dict)]
+        if total is None:
+            total = int(result.get("total", result.get("total_estimated", 0)) or 0)
+        pages_read += 1
+        for hit in hits:
+            hid = hit.get("hit_id")
+            if hid is not None:
+                if hid in seen_ids:
+                    continue
+                seen_ids.add(hid)
+            rows.append(hit)
+        if not hits or len(hits) < page_size:
+            break
+        if total and len(rows) >= total:
+            break
+    effective_total = total if total else len(rows)
+    remaining = max(0, effective_total - len(rows))
+    return rows, effective_total, pages_read, remaining
+
+
+def _project_hits(hits: list, field_list: list[str]) -> list:
+    if field_list:
+        for hit in hits:
+            if isinstance(hit, dict) and "fields" in hit:
+                hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
+        return hits
+    compact = []
+    for hit in hits:
+        if isinstance(hit, dict):
+            compact.append({k: hit[k] for k in _FETCH_ALL_COMPACT_KEYS if k in hit})
+        else:
+            compact.append(hit)
+    return compact
+
+
+def _empty_search_interpretation(artifact_type: str = "") -> dict:
+    """Single-field reading of an empty result (C-2).
+
+    Distinguishes "this family was never collected" from "the family exists
+    but the filters matched nothing" so an empty list is never read as a
+    clean bill of health by default.
+    """
+    try:
+        connector = _get_raw_index() or _get_axiom()
+        counts = connector.get_artifact_type_counts() or []
+    except Exception as exc:
+        return {"status": "unknown", "basis": f"artifact type counts unavailable: {exc}"}
+
+    def _row_count(row: dict) -> int:
+        try:
+            return int(row.get("hit_count", row.get("count", 0)) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if artifact_type:
+        needle = artifact_type.lower()
+        family_rows = sum(
+            _row_count(row)
+            for row in counts
+            if needle in str(row.get("artifact_name") or row.get("artifact_type") or "").lower()
+        )
+        if family_rows == 0:
+            return {
+                "status": "artifact_not_collected",
+                "basis": (
+                    f"no collected rows for artifact type '{artifact_type}'; "
+                    "verify with get_artifact_types / coverage_explainer before "
+                    "treating this as absence of activity"
+                ),
+            }
+        return {
+            "status": "evaluated_zero_hits",
+            "basis": (
+                f"{family_rows} rows exist for '{artifact_type}' but none matched "
+                "the remaining filters; cross-check by removing date/keyword filters"
+            ),
+        }
+
+    total_rows = sum(_row_count(row) for row in counts)
+    if total_rows == 0:
+        return {
+            "status": "artifact_not_collected",
+            "basis": "case exposes no artifact rows at all; check evidence loading",
+        }
+    return {
+        "status": "evaluated_zero_hits",
+        "basis": (
+            f"case holds {total_rows} artifact rows; the filters matched none — "
+            "cross-check by relaxing filters before concluding absence"
+        ),
+    }
+
+
 @mcp.tool()
 async def search_artifacts(
     keyword: str = "",
@@ -1911,6 +2336,7 @@ async def search_artifacts(
     limit: int = 50,
     offset: int = 0,
     all_cases: bool = False,
+    fetch_all: bool = False,
 ) -> dict:
     """Search artifacts by keyword, type, date range.
 
@@ -1923,18 +2349,97 @@ async def search_artifacts(
         end_date: End date filter (ISO format).
         fields: Comma-separated field names to include in output (reduces size).
                 e.g. "Name,Full Path,Application Name". Empty = all fields.
-        limit: Max results (default 50, max 200).
-        offset: Pagination offset.
+        limit: Max results (default 50, max 200). Ignored when fetch_all=True.
+        offset: Pagination offset. Ignored when fetch_all=True.
         all_cases: When True, fan out the search across every loaded case and
                    return merged hits with per-case provenance
                    (case_id / source_type / source_path on every hit). When
                    False (default), only the active case is searched.
+        fetch_all: When True, drain every result page internally (up to 20
+                   pages x 200 rows) instead of returning a single page.
+                   Hits are projected to compact rows (hit_id / artifact_type
+                   / timestamp / source_path) unless `fields` is set; use
+                   get_hit_detail(hit_id) for full rows. If the page budget
+                   is exhausted first, `truncated` stays true and
+                   `fetch_all.remaining_count` reports the unseen rows.
+                   Not supported together with all_cases.
     """
     params = {"keyword": keyword, "keywords": keywords, "artifact_type": artifact_type,
               "start_date": start_date, "end_date": end_date, "fields": fields, "limit": limit, "offset": offset,
-              "all_cases": all_cases}
+              "all_cases": all_cases, "fetch_all": fetch_all}
     def fn():
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
+        if fetch_all:
+            if all_cases:
+                return {"error": "fetch_all is not supported with all_cases; "
+                                 "run per-case fetch_all searches instead."}
+            field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []
+            page_size = config.search_max_limit
+            base_filters = {"artifact_type": artifact_type,
+                            "start_date": start_date, "end_date": end_date}
+            connector = _get_raw_index() or _get_axiom()
+            source_type = "raw_image_sidecar" if _get_raw_index() else None
+
+            if kw_list:
+                all_rows: list = []
+                seen: set = set()
+                totals: dict[str, int] = {}
+                pages_total = 0
+                remaining_total = 0
+                for kw in kw_list:
+                    rows, total, pages, remaining = _fetch_all_pages(
+                        lambda off, lim, _kw=kw: connector.search(
+                            keyword=_kw, filters=dict(base_filters), limit=lim, offset=off),
+                        page_size=page_size,
+                    )
+                    totals[kw] = total
+                    pages_total += pages
+                    remaining_total += remaining
+                    for hit in rows:
+                        hid = hit.get("hit_id")
+                        if hid is not None and hid in seen:
+                            continue
+                        if hid is not None:
+                            seen.add(hid)
+                        hit["_matched_keyword"] = hit.get("_matched_keyword", kw)
+                        all_rows.append(hit)
+                rows, total = all_rows, sum(totals.values())
+                per_keyword_totals = totals
+            else:
+                rows, total, pages_total, remaining_total = _fetch_all_pages(
+                    lambda off, lim: connector.search(
+                        keyword=keyword, filters=dict(base_filters), limit=lim, offset=off),
+                    page_size=page_size,
+                )
+                per_keyword_totals = {}
+
+            resp = {
+                "total_estimated": total,
+                "returned": len(rows),
+                "truncated": remaining_total > 0,
+                "fetch_all": {
+                    "pages_read": pages_total,
+                    "page_size": page_size,
+                    "max_pages": _FETCH_ALL_MAX_PAGES,
+                    "remaining_count": remaining_total,
+                },
+                "hits": _project_hits(rows, field_list),
+            }
+            if not field_list:
+                resp["projection"] = ("compact rows (fetch_all); call "
+                                      "get_hit_detail(hit_id) or pass `fields` for full rows")
+            if per_keyword_totals:
+                resp["per_keyword_totals"] = per_keyword_totals
+            if remaining_total > 0:
+                resp["pagination_gap"] = (
+                    f"page budget exhausted with {remaining_total} rows unseen; "
+                    "narrow filters (artifact_type / date range) and re-run"
+                )
+            if source_type:
+                resp["source_type"] = source_type
+            if not rows:
+                resp["empty_interpretation"] = _empty_search_interpretation(artifact_type)
+            return _mask(resp)
         if all_cases:
             from state import app_state
             from core.analysis.case_aggregator import search_across_cases
@@ -1972,6 +2477,8 @@ async def search_artifacts(
                 result = dict(result)
                 result["source_type"] = "raw_image_sidecar"
                 result["union_returned"] = result.get("total", result.get("returned", 0))
+                if not page and offset == 0:
+                    result["empty_interpretation"] = _empty_search_interpretation(artifact_type)
                 return _mask(result)
 
             result = raw.search(
@@ -1991,6 +2498,8 @@ async def search_artifacts(
                         hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
             result = dict(result)
             result["source_type"] = "raw_image_sidecar"
+            if not page and offset == 0:
+                result["empty_interpretation"] = _empty_search_interpretation(artifact_type)
             return _mask(result)
 
         axiom = _get_axiom()
@@ -2044,6 +2553,8 @@ async def search_artifacts(
         if per_keyword_totals:
             resp["per_keyword_totals"] = per_keyword_totals
             resp["union_returned"] = union_returned
+        if not page and offset == 0:
+            resp["empty_interpretation"] = _empty_search_interpretation(artifact_type)
         return _mask(resp)
     return await _traced("search_artifacts", params, fn)
 
@@ -2072,6 +2583,7 @@ async def build_timeline(
     limit: int = 200,
     offset: int = 0,
     all_cases: bool = False,
+    fetch_all: bool = False,
 ) -> dict:
     """Build chronological timeline.
 
@@ -2082,16 +2594,69 @@ async def build_timeline(
         keywords: Comma-separated keywords to filter timeline events.
                   Only events whose associated hits contain ANY of these keywords are included.
                   e.g. "SearchHost,sshd,task.vbs" to build a timeline around specific IOCs.
-        limit: Max events (default 200, max 500).
-        offset: Skip first N events (for pagination).
+        limit: Max events (default 200, max 500). Ignored when fetch_all=True.
+        offset: Skip first N events (for pagination). Ignored when fetch_all=True.
+        fetch_all: When True, drain every timeline page internally (up to 20
+                   pages x 500 events) instead of returning a single page.
+                   If the page budget is exhausted first, `truncated` stays
+                   true and `fetch_all.remaining_count` reports unseen
+                   events — narrow the date scope and re-run.
+                   Not supported together with all_cases.
     """
     params = {"start_date": start_date, "end_date": end_date,
               "artifact_types": artifact_types, "keywords": keywords, "limit": limit, "offset": offset,
-              "all_cases": all_cases}
+              "all_cases": all_cases, "fetch_all": fetch_all}
     def fn():
         cap = min(limit, config.timeline_max_limit)
         type_list = [t.strip() for t in artifact_types.split(",") if t.strip()] if artifact_types else None
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords.strip() else []
+
+        if fetch_all and not all_cases:
+            page_size = config.timeline_max_limit
+            raw = _get_raw_index()
+
+            def _page(off: int, lim: int) -> dict:
+                if raw:
+                    result = raw.get_timeline(start_date, end_date, type_list, lim, off,
+                                              keywords=kw_list)
+                elif kw_list:
+                    result = _timeline_with_keywords(
+                        _get_axiom(), start_date, end_date, kw_list, lim, off)
+                else:
+                    result = _get_axiom().get_timeline(
+                        start_date=start_date, end_date=end_date,
+                        artifact_types=type_list, limit=lim, offset=off)
+                result = dict(result or {})
+                # Normalize to the hits/total contract _fetch_all_pages expects.
+                result["hits"] = result.get("entries") or []
+                result.setdefault("total", result.get("total_events", 0))
+                return result
+
+            entries, total, pages_read, remaining = _fetch_all_pages(_page, page_size=page_size)
+            resp = {
+                "total_events": total,
+                "returned": len(entries),
+                "truncated": remaining > 0,
+                "fetch_all": {
+                    "pages_read": pages_read,
+                    "page_size": page_size,
+                    "max_pages": _FETCH_ALL_MAX_PAGES,
+                    "remaining_count": remaining,
+                },
+                "entries": entries,
+            }
+            if remaining > 0:
+                resp["pagination_gap"] = (
+                    f"page budget exhausted with {remaining} events unseen; "
+                    "narrow the date scope or artifact_types and re-run"
+                )
+            if raw:
+                resp["source_type"] = "raw_image_sidecar"
+            if not entries:
+                # The single-family classifier only understands one name.
+                single_type = artifact_types if "," not in artifact_types else ""
+                resp["empty_interpretation"] = _empty_search_interpretation(single_type)
+            return _mask(resp)
 
         if all_cases:
             # Merged timeline across every loaded case. Keyword filtering in
@@ -2592,6 +3157,35 @@ async def initial_triage_pack(
             include_baseline_diff=include_baseline_diff,
             reference_aq=ref_aq,
         )
+        raw = _get_raw_index()
+        if raw:
+            # D-4: when a raw sidecar coexists with the parsed case, report
+            # per-family parity so the analyst knows which families the raw
+            # index can already answer without the parsed reference.
+            from core.analysis.raw_parity import compare_search_parity
+            parity: dict[str, Any] = {}
+            for family in (
+                "Windows Event Logs",
+                "Prefetch Files - Windows 8/10/11",
+                "System Services",
+                "AutoRun Items",
+            ):
+                try:
+                    item = compare_search_parity(
+                        axiom, raw, keyword="", artifact_type=family, limit=1000,
+                    )
+                    parity[family] = {
+                        "parity_status": item.get("parity_status", "not_evaluable"),
+                        "reference_total": item.get("reference_total"),
+                        "raw_total": item.get("raw_total"),
+                        "missing_in_raw_count": len(item.get("missing_in_raw") or []),
+                    }
+                except Exception as exc:
+                    parity[family] = {
+                        "parity_status": "not_evaluable",
+                        "error": str(exc),
+                    }
+            result["raw_parity_status"] = parity
         try:
             from core.analysis.service_persistence import (
                 build_service_persistence_gate as _build_service_gate,
@@ -3556,8 +4150,9 @@ async def hunt_evtx_rules(
     rule_ids: str = "",
     severity_min: str = "low",
     limit_per_rule: int = 100,
+    include_sigma: bool = True,
 ) -> dict:
-    """Run a built-in Sigma-style rule pack against the case's Event Log artifact.
+    """Run the built-in + Sigma rule pack against the case's Event Log artifact.
 
     Lightweight alternative to Hayabusa — no external binary or ruleset
     dependency. Covers EIDs that find_suspicious does not already handle:
@@ -3574,6 +4169,20 @@ async def hunt_evtx_rules(
                       execution.
         limit_per_rule: Max hits kept per rule. Raw match counts are still
                         reported so nothing silently disappears.
+        include_sigma: When True (default) also load community/case Sigma
+                       rules from backend/hunt_packs/sigma (provenance.origin
+                       == "sigma-community"). `sigma_load` reports how many
+                       rules loaded vs. were skipped for unsupported features —
+                       a Sigma hit is an evidence hint, not a verdict, and
+                       result order is auditability, not significance.
+
+    Reading guide for AI consumers:
+        - results[] order is severity-then-count for auditing, NOT a
+          significance ranking. Judge each hit on its details.
+        - Sigma rules carry provenance.origin == "sigma-community"; treat
+          them exactly like builtin hints (no auto-escalation).
+        - Check sigma_load.unsupported_feature_counts — skipped Sigma rules
+          are declined coverage, not evaluated-clean.
     """
     def fn():
         from core.analysis.evtx_rules import BUILTIN_RULES, hunt_evtx_rules as _hunt
@@ -3619,10 +4228,12 @@ async def hunt_evtx_rules(
                 ],
             })
         return _mask(_hunt(_get_axiom().artifact_queries, rule_ids=ids,
-                            severity_min=severity_min, limit_per_rule=limit_per_rule))
+                            severity_min=severity_min, limit_per_rule=limit_per_rule,
+                            include_sigma=include_sigma))
     return await _traced(
         "hunt_evtx_rules",
-        {"rule_ids": rule_ids, "severity_min": severity_min, "limit_per_rule": limit_per_rule},
+        {"rule_ids": rule_ids, "severity_min": severity_min,
+         "limit_per_rule": limit_per_rule, "include_sigma": include_sigma},
         fn,
         timeout_seconds=TIMEOUT_HEAVY,
     )
@@ -4180,11 +4791,18 @@ async def find_suspicious(
     include_provenance: bool = True,
     apply_suppressions: bool = True,
     include_rule_coverage: bool = True,
+    declared_hypothesis: str = "",
 ) -> dict:
     """Run structured threat detection rules.
 
     Args:
         rules: Optional comma-separated rule names. Empty runs every rule.
+        declared_hypothesis: Optional free-text hypothesis you are testing
+            (e.g. "ransomware via RDP", "insider USB exfil"). When set, the
+            response includes a `refutation_hint` pointing at the evidence
+            whose ABSENCE would refute it — a soft nudge, never a gate. Stating
+            it also lets investigation_gap_report track undeclared-hypothesis
+            tool calls.
         score_strength: When True (default) annotate each detail with the
             CLAUDE.md strength tier (confirmed/strong/moderate/weak).
         include_provenance: When True (default) attach supporting_artifacts
@@ -4207,6 +4825,11 @@ async def find_suspicious(
           evidence.
         - If truncated=true on a finding, run find_suspicious with that single
           rule to retrieve all records before using it as a conclusion basis.
+        - Each finding/zero-result carries a `scope`: generic /
+          campaign_specific / region_specific. A 0-result on a
+          campaign_specific or region_specific rule means "this specific
+          campaign/region toolset was not matched" — NOT "the host is clean".
+          Never widen such a 0-result into an all-clear.
     """
     def fn():
         from state import app_state
@@ -4234,12 +4857,55 @@ async def find_suspicious(
         if include_rule_coverage:
             from core.analysis.rule_coverage import attach_rule_coverage
             attach_rule_coverage(payload, app_state._connectors)
+        if not payload.get("findings"):
+            # C-2: one first-reading field for the all-empty case, so the
+            # three-way meaning (not evaluable / clean / uncollected) does
+            # not have to be reassembled from three separate lists.
+            unevaluable = payload.get("unevaluable_rules") or []
+            executed = int(payload.get("rules_executed", 0) or 0)
+            if executed and unevaluable and len(unevaluable) >= executed:
+                payload["empty_interpretation"] = {
+                    "status": "not_evaluable",
+                    "basis": (
+                        "every rule lacked its required artifact families; "
+                        "this is a collection gap, not a clean result — see "
+                        "unevaluable_rules and coverage_explainer"
+                    ),
+                }
+            else:
+                basis = (
+                    f"{executed} rules executed with 0 hits; implemented-rule "
+                    "coverage only — techniques in queries_not_implemented "
+                    "remain unassessed"
+                )
+                if unevaluable:
+                    basis += f"; {len(unevaluable)} rules were additionally unevaluable"
+                payload["empty_interpretation"] = {
+                    "status": "evaluated_zero_hits",
+                    "basis": basis,
+                }
+        if declared_hypothesis.strip():
+            from core.analysis.suspicious import build_refutation_hint
+            hint = build_refutation_hint(declared_hypothesis)
+            if hint:
+                payload["refutation_hint"] = hint
+        else:
+            payload["hypothesis_declaration"] = {
+                "declared": False,
+                "note": (
+                    "No declared_hypothesis was passed. CLAUDE.md asks for a "
+                    "hypothesis before detection calls so tools verify/refute "
+                    "rather than generate it. Pass declared_hypothesis to get a "
+                    "refutation_hint."
+                ),
+            }
         return _mask(payload)
     return await _traced(
         "find_suspicious",
         {"rules": rules, "score_strength": score_strength,
          "include_provenance": include_provenance, "apply_suppressions": apply_suppressions,
-         "include_rule_coverage": include_rule_coverage},
+         "include_rule_coverage": include_rule_coverage,
+         "declared_hypothesis": declared_hypothesis},
         fn, timeout_seconds=TIMEOUT_HEAVY,
     )
 

@@ -105,6 +105,31 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         install_hint="python -m pip install dissect",
         import_names=("dissect",),
     ),
+    DependencySpec(
+        key="python-evtx",
+        display_name="python-evtx",
+        kind="python",
+        required=True,
+        required_for="Raw-image EVTX semantic parsing (build_raw_artifact_index)",
+        blocked_capabilities=[
+            "Raw-image Windows Event Log indexing",
+            "build_raw_artifact_index EVTX channel parsing",
+        ],
+        install_hint="python -m pip install python-evtx",
+        import_names=("Evtx",),
+    ),
+    DependencySpec(
+        key="pyyaml",
+        display_name="PyYAML",
+        kind="python",
+        required=False,
+        required_for="Sigma community rule loading in hunt_evtx_rules",
+        blocked_capabilities=[
+            "Sigma rule evaluation (hunt_evtx_rules include_sigma)",
+        ],
+        install_hint="python -m pip install PyYAML",
+        import_names=("yaml",),
+    ),
 )
 
 _ALIASES = {
@@ -118,6 +143,10 @@ _ALIASES = {
     "pyhidra": "pyhidra",
     "ghidra": "pyhidra",
     "dissect": "dissect",
+    "python-evtx": "python-evtx",
+    "evtx": "python-evtx",
+    "pyyaml": "pyyaml",
+    "yaml": "pyyaml",
 }
 
 
