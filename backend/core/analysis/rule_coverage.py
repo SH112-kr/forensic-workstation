@@ -112,6 +112,11 @@ FAMILY_ALIASES: dict[str, list[str]] = {
         "WMI Subscription",
         "FilterToConsumerBinding",
     ],
+    "IFEO Persistence": [
+        "IFEO Persistence",
+        "Image File Execution Options",
+        "SilentProcessExit",
+    ],
     "Office Recent Documents": [
         "Office Recent Documents",
         "Office File MRU",

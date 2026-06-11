@@ -75,6 +75,20 @@ _RULES: list[dict[str, Any]] = [
     },
     {
         "tier": "strong",
+        "match_artifact": re.compile(
+            r"ifeo|image\s*file\s*execution|silentprocessexit|silent\s*process\s*exit", re.I),
+        "reason": (
+            "IFEO Debugger / SilentProcessExit persistence (T1546.012). A "
+            "Debugger value on an Image File Execution Options key, or a "
+            "SilentProcessExit MonitorProcess, hijacks a target process's "
+            "launch — almost never legitimate. The indexer emits ONLY these "
+            "(benign PerfOptions subkeys are skipped), so any row here is a "
+            "strong persistence lead; confirm the Debugger/MonitorProcess path "
+            "is attacker-controlled."
+        ),
+    },
+    {
+        "tier": "strong",
         "match_artifact": re.compile(r"trusted\s*documents|trust\s*records", re.I),
         "reason": (
             "Office TrustRecords prove the user explicitly trusted a document; "

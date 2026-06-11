@@ -386,6 +386,125 @@ def parse_run_keys(hive: Any, *, hive_label: str) -> list[dict[str, Any]]:
     return entries
 
 
+def _filetime_int_to_ms(filetime: Any) -> tuple[int, str] | None:
+    """Convert a Windows FILETIME integer (regipy header.last_modified) to
+    (epoch_ms, display). FILETIME is 100ns ticks since 1601-01-01 UTC."""
+    try:
+        ticks = int(filetime)
+    except (TypeError, ValueError):
+        return None
+    if ticks <= 0:
+        return None
+    ms = ticks // 10000 - 11644473600000
+    if ms <= 0:
+        return None
+    display = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return ms, display
+
+
+# IFEO subkeys exist on every host (PerfOptions etc.); only a Debugger value or
+# a SilentProcessExit MonitorProcess is persistence — those are emitted, the
+# benign majority are skipped. (Debugger hijack: T1546.012 / SilentProcessExit.)
+_IFEO_PATH = "\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options"
+_SILENT_PROCESS_EXIT_PATH = "\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit"
+
+
+# regipy raises these when a key/subkey legitimately does not exist (a clean
+# host has no SilentProcessExit key, etc.) — that is normal, NOT a gap. Any
+# OTHER error (e.g. RegistryParsingException) is hive corruption and IS a gap.
+# KeyError covers the duck-typed test fake.
+_IFEO_ABSENT_EXC = ("RegistryKeyNotFoundException", "NoRegistrySubkeysException",
+                    "RegistryValueNotFoundException", "KeyError")
+
+
+def parse_ifeo_entries(
+    hive: Any,
+    *,
+    hive_label: str = "SOFTWARE",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse IFEO Debugger / VerifierDlls + SilentProcessExit persistence from a
+    SOFTWARE hive. Returns ``(entries, gaps)``.
+
+    Only suspicious-shaped subkeys are emitted — a ``Debugger`` value (debugger
+    hijack), a ``VerifierDlls`` value (Application Verifier DLL-injection
+    persistence), or a SilentProcessExit ``MonitorProcess``. The benign
+    PerfOptions/Mitigation subkeys that make up the bulk of IFEO are skipped.
+    No-miss: an absent key is normal (no gap), but a corrupt key or an
+    unreadable subkey's values is recorded as a coverage gap.
+    """
+    entries: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+
+    def _subkey_ms(subkey: Any) -> tuple[int, str] | None:
+        header = getattr(subkey, "header", None)
+        if header is None:
+            return None
+        return _filetime_int_to_ms(getattr(header, "last_modified", None))
+
+    def _read_values(subkey: Any) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for value in subkey.iter_values():  # may raise — caller records a gap
+            name = str(getattr(value, "name", "") or "")
+            if name:
+                out[name.lower()] = str(getattr(value, "value", "") or "")
+        return out
+
+    def _scan(path: str, handler) -> None:
+        try:
+            subs = list(hive.get_key(path).iter_subkeys())
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ in _IFEO_ABSENT_EXC:
+                return  # key/subkeys absent — normal
+            gaps.append({
+                "path": path, "status": "coverage_gap",
+                "reason": "ifeo_key_error", "error": str(exc),
+            })
+            return
+        for sub in subs:
+            image = str(getattr(sub, "name", "") or "")
+            try:
+                values = _read_values(sub)
+            except Exception as exc:  # noqa: BLE001 — one bad subkey is a gap
+                gaps.append({
+                    "path": f"{path}\\{image}", "status": "coverage_gap",
+                    "reason": "ifeo_subkey_read_error", "error": str(exc),
+                })
+                continue
+            handler(sub, image, values)
+
+    def _ifeo_handler(sub: Any, image: str, values: dict[str, str]) -> None:
+        ts = _subkey_ms(sub)
+        if values.get("debugger"):
+            entries.append({
+                "kind": "ifeo_debugger", "hive": hive_label, "image": image,
+                "debugger": values["debugger"], "global_flag": values.get("globalflag", ""),
+                "key_path": f"{_IFEO_PATH}\\{image}", "key_last_modified": ts,
+            })
+        if values.get("verifierdlls"):
+            entries.append({
+                "kind": "ifeo_verifier_dll", "hive": hive_label, "image": image,
+                "verifier_dlls": values["verifierdlls"],
+                "global_flag": values.get("globalflag", ""),
+                "key_path": f"{_IFEO_PATH}\\{image}", "key_last_modified": ts,
+            })
+
+    def _spe_handler(sub: Any, image: str, values: dict[str, str]) -> None:
+        if values.get("monitorprocess"):
+            entries.append({
+                "kind": "silent_process_exit", "hive": hive_label, "image": image,
+                "monitor_process": values["monitorprocess"],
+                "reporting_mode": values.get("reportingmode", ""),
+                "key_path": f"{_SILENT_PROCESS_EXIT_PATH}\\{image}",
+                "key_last_modified": ts if (ts := _subkey_ms(sub)) else None,
+            })
+
+    _scan(_IFEO_PATH, _ifeo_handler)
+    _scan(_SILENT_PROCESS_EXIT_PATH, _spe_handler)
+    return entries, gaps
+
+
 # ── Mark of the Web (Zone.Identifier ADS) ──────────────────────────────────
 
 _MOTW_USER_DIRS = ("Downloads", "Desktop", "Documents")
@@ -1033,7 +1152,7 @@ def index_registry_artifacts(
     counts = {"System Services": 0, "BAM Execution Entries": 0,
               "USB Devices": 0, "AutoRun Items": 0,
               "Office Trusted Documents": 0, "Office Recent Documents": 0,
-              "RDP Client Destinations": 0}
+              "RDP Client Destinations": 0, "IFEO Persistence": 0}
 
     def _insert(artifact_type: str, source: str, description: str,
                 strings: dict[str, str], times: dict | None = None) -> None:
@@ -1137,6 +1256,70 @@ def index_registry_artifacts(
                     "path": _SYSTEM_HIVE_PATH,
                     "status": "coverage_gap",
                     "reason": "system_hive_parse_failed",
+                    "error": str(exc),
+                })
+
+        # ── SOFTWARE hive: IFEO Debugger + SilentProcessExit persistence ──
+        software_path = "/c:/Windows/System32/config/SOFTWARE"
+        software_local = os.path.join(tmp, "SOFTWARE")
+        try:
+            extracted = image.extract_file(software_path, software_local) or {}
+            if extracted.get("error"):
+                raise RuntimeError(str(extracted["error"]))
+        except Exception as exc:  # noqa: BLE001
+            coverage_gaps.append({
+                "path": software_path,
+                "status": "coverage_gap",
+                "reason": "software_hive_unavailable",
+                "error": str(exc),
+            })
+        else:
+            try:
+                from regipy.registry import RegistryHive
+
+                software_hive = RegistryHive(software_local)
+                ifeo_entries, ifeo_gaps = parse_ifeo_entries(
+                    software_hive, hive_label="SOFTWARE")
+                coverage_gaps.extend(ifeo_gaps)
+                for ifeo in ifeo_entries:
+                    times = {}
+                    if ifeo.get("key_last_modified"):
+                        times["Key Last Modified"] = ifeo["key_last_modified"]
+                    kind = ifeo["kind"]
+                    image = ifeo["image"]
+                    if kind == "ifeo_debugger":
+                        strings = {
+                            "Kind": kind, "Image": image,
+                            "Debugger": ifeo["debugger"],
+                            "Global Flag": ifeo.get("global_flag", ""),
+                        }
+                        desc = f"IFEO Persistence | Debugger | {image} -> {ifeo['debugger']}"
+                    elif kind == "ifeo_verifier_dll":
+                        strings = {
+                            "Kind": kind, "Image": image,
+                            "Verifier DLLs": ifeo["verifier_dlls"],
+                            "Global Flag": ifeo.get("global_flag", ""),
+                        }
+                        desc = (
+                            f"IFEO Persistence | VerifierDlls | {image} -> "
+                            f"{ifeo['verifier_dlls']}"
+                        )
+                    else:  # silent_process_exit
+                        strings = {
+                            "Kind": kind, "Image": image,
+                            "Monitor Process": ifeo.get("monitor_process", ""),
+                            "Reporting Mode": ifeo.get("reporting_mode", ""),
+                        }
+                        desc = (
+                            f"IFEO Persistence | SilentProcessExit | {image} -> "
+                            f"{ifeo.get('monitor_process', '')}"
+                        )
+                    _insert("IFEO Persistence", ifeo["key_path"], desc, strings, times)
+            except Exception as exc:  # noqa: BLE001
+                coverage_gaps.append({
+                    "path": software_path,
+                    "status": "coverage_gap",
+                    "reason": "software_hive_parse_failed",
                     "error": str(exc),
                 })
 
