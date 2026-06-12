@@ -32,3 +32,57 @@ jobs:
       - name: Run pytest
         working-directory: backend
         run: pytest --tb=short
+
+  backend-pytest-parsers:
+    # The mock job above never exercises the real parser stack: dissect /
+    # regipy / python-evtx imports, ESE parsing, and the SQLite FTS5 trigram
+    # path all skip without their dependencies. This job installs the real
+    # backend requirements so raw-image-index regressions are caught in CI
+    # instead of only on analyst workstations.
+    name: backend pytest (real parsers)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          # BITS qmgr.db parsing imports dissect.esedb directly; make the
+          # dependency explicit instead of relying on dissect.target pulling
+          # it in transitively.
+          pip install pytest dissect.esedb
+
+      - name: Preflight — FTS5 trigram must be available
+        # Without this gate the FTS-path tests silently skip and the job
+        # degrades into a slower copy of the mock job.
+        run: |
+          python -c "import sqlite3; c = sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram')\"); print('fts5 trigram ok')"
+
+      - name: Run raw-index / parser pytest
+        working-directory: backend
+        run: >
+          pytest --tb=short
+          tests/test_raw_index_store.py
+          tests/test_raw_index_schema.py
+          tests/test_raw_index_mcp.py
+          tests/test_raw_image_index_connector.py
+          tests/test_raw_artifact_indexer.py
+          tests/test_raw_artifact_guardrails.py
+          tests/test_raw_file_indexer.py
+          tests/test_raw_mft_indexer.py
+          tests/test_raw_parity.py
+          tests/test_mft_parallel.py
+          tests/test_bits_indexer.py
+          tests/test_com_hijack_indexer.py
+          tests/test_ifeo_indexer.py
+          tests/test_mplog_indexer.py
+          tests/test_evtx_rules.py
+          tests/test_evtx_semantic.py
