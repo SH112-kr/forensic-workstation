@@ -80,4 +80,7 @@ def annotate_parsed_fallback(parsed_result: dict, raw_result: dict) -> dict:
         raw_result.get("status") or ("error" if raw_result.get("error") else "not_evaluable")
     )
     result["raw_index_coverage"] = coverage
+    # The raw sidecar stays connected after a fallback, and id-based detail
+    # lookups consult it first — but these rows carry parsed-case ids.
+    result["hit_id_namespace"] = "parsed_case"
     return result

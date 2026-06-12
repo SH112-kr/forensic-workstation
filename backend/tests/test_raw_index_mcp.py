@@ -2810,3 +2810,156 @@ def test_build_raw_file_index_uses_root_scoped_sidecars(monkeypatch, tmp_path):
     assert second["status"] == "indexed"
     assert search["total"] == 1
     assert search["hits"][0]["fields"]["Path"] == "/d:/d-tool.exe"
+
+
+# ── Parsed-case fallback parity (MCP mirrors api/timeline.py semantics) ──
+
+
+class _RaisingRawConnector:
+    def is_connected(self):
+        return True
+
+    def search(self, *args, **kwargs):
+        raise RuntimeError("sidecar corrupt")
+
+    def get_timeline(self, *args, **kwargs):
+        raise RuntimeError("sidecar corrupt")
+
+
+class _ParsedCaseStub:
+    def is_connected(self):
+        return True
+
+    def search(self, keyword="", filters=None, limit=50, offset=0):
+        return {
+            "total": 1,
+            "hits": [
+                {
+                    "hit_id": 7,
+                    "artifact_type": "Shim Cache",
+                    "fields": {"Path": r"C:\Tools\agent.exe"},
+                }
+            ],
+        }
+
+    def get_timeline(self, *args, **kwargs):
+        return {
+            "total_events": 1,
+            "returned": 1,
+            "entries": [{"hit_id": 7, "timestamp": "2026-06-01T00:00:00Z"}],
+        }
+
+
+def test_search_artifacts_falls_back_to_parsed_when_raw_raises(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.setitem(mcp_bridge._connectors, "axiom", _ParsedCaseStub())
+
+    result = _run(mcp_bridge.search_artifacts(keyword="agent"))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["raw_index_coverage"]["status"] == "not_evaluable"
+    assert result["returned"] == 1
+
+
+def test_search_artifacts_falls_back_when_raw_coverage_not_evaluable(
+    monkeypatch, tmp_path
+):
+    raw = _seed_failed_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "axiom", _ParsedCaseStub())
+
+    result = _run(mcp_bridge.search_artifacts(keyword="agent"))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["returned"] == 1
+
+
+def test_build_timeline_falls_back_to_parsed_when_raw_raises(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.setitem(mcp_bridge._connectors, "axiom", _ParsedCaseStub())
+
+    result = _run(mcp_bridge.build_timeline())
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["entries"]
+
+
+def test_search_artifacts_surfaces_hydration_failure_without_parsed_case(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "_HYDRATION_STATE", {})
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.delitem(mcp_bridge._connectors, "axiom", raising=False)
+    missing = str(tmp_path / "missing-case.mfdb")
+    monkeypatch.setattr(mcp_bridge, "load_active_case", lambda: {"path": missing})
+
+    result = _run(mcp_bridge.search_artifacts(keyword="agent"))
+
+    # No parsed case could hydrate, so the degraded raw result is returned —
+    # but the configured-yet-unloadable parsed case must be called out.
+    assert result["status"] == "not_evaluable"
+    assert "does not exist" in result["parsed_case_hydration_error"]
+
+
+def test_search_artifacts_fetch_all_surfaces_raw_failure_without_parsed_case(
+    monkeypatch,
+):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "_HYDRATION_STATE", {})
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.delitem(mcp_bridge._connectors, "axiom", raising=False)
+    monkeypatch.setattr(mcp_bridge, "load_active_case", lambda: {})
+
+    result = _run(mcp_bridge.search_artifacts(keyword="agent", fetch_all=True))
+
+    # The drain must not flatten the raw failure into an empty success.
+    assert result["status"] == "not_evaluable"
+    assert result["error"]
+    assert result["coverage_gap"]["reason"] == "raw_index_exception"
+
+
+def test_search_artifacts_fetch_all_falls_back_to_parsed(monkeypatch):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.setitem(mcp_bridge._connectors, "axiom", _ParsedCaseStub())
+
+    result = _run(mcp_bridge.search_artifacts(keyword="agent", fetch_all=True))
+
+    assert result["fallback_source"] == "parsed_case"
+    assert result["raw_index_status"] == "not_evaluable"
+    assert result["returned"] == 1
+    # Compact rows must not point at get_hit_detail: those hit_ids belong to
+    # the parsed case while the raw sidecar stays first in line.
+    assert "do NOT use get_hit_detail" in result["projection"]
+
+
+def test_build_timeline_fetch_all_surfaces_raw_failure_without_parsed_case(
+    monkeypatch,
+):
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "_HYDRATION_STATE", {})
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", _RaisingRawConnector())
+    monkeypatch.delitem(mcp_bridge._connectors, "axiom", raising=False)
+    monkeypatch.setattr(mcp_bridge, "load_active_case", lambda: {})
+
+    result = _run(mcp_bridge.build_timeline(fetch_all=True))
+
+    assert result["status"] == "not_evaluable"
+    assert result["error"]
+
+
+def test_raw_coverage_summary_exposes_search_index_backend(monkeypatch, tmp_path):
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    coverage = raw.get_coverage()
+
+    assert coverage["search_index_backend"] in {"fts5_trigram", "materialized_like"}
+    metadata = raw.get_metadata()
+    assert metadata["search_index_backend"] == coverage["search_index_backend"]

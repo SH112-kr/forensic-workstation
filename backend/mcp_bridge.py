@@ -44,6 +44,7 @@ from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
 from core.config import config
 from core.dependencies import dependency_report, diagnose_exception
+from api.raw_support import annotate_parsed_fallback, raw_exception_result
 from state import (
     IMAGE_EXTENSIONS,
     app_state,
@@ -74,6 +75,14 @@ mcp = FastMCP(
 # alias, open_case populated mcp_bridge._connectors while case_health read
 # app_state._connectors (empty) and silently reported case_count=0.
 _connectors: dict[str, Any] = app_state._connectors
+# Last .active_case.json hydration outcome. "last_error" is set when the file
+# named parseable cases but none could be loaded — tools surface it so a
+# hydration failure never silently reads as "no parsed case exists".
+_HYDRATION_STATE: dict[str, str] = {}
+# Serializes hydration: workers publish per-case aliases (axiom:<id>) before
+# the active "axiom" alias exists, and a concurrent reader must not observe
+# that intermediate state as a fully hydrated case set.
+_HYDRATION_LOCK = threading.Lock()
 _masker = DataMasker()
 _event_log: list[dict] = []  # Recent events for web UI polling
 
@@ -438,19 +447,45 @@ def _ensure_cases_hydrated() -> None:
     Idempotent: early-exits when at least one connected ``axiom:*`` case
     already sits in ``_connectors``.
     """
+    with _HYDRATION_LOCK:
+        _ensure_cases_hydrated_locked()
+
+
+def _repair_active_case_alias() -> None:
+    """Point the active "axiom" alias at any connected per-case connector.
+
+    ``_load_case_from_path`` publishes ``axiom:<id>`` from worker threads
+    before the caller sets the ``axiom`` alias; if a previous hydration was
+    interrupted in that window, repair instead of leaving tools unable to
+    resolve the active case.
+    """
+    if _connectors.get("axiom") is not None:
+        return
+    for name, connector in list(_connectors.items()):
+        if (
+            name.startswith("axiom:")
+            and getattr(connector, "is_connected", lambda: False)()
+        ):
+            _connectors["axiom"] = connector
+            return
+
+
+def _ensure_cases_hydrated_locked() -> None:
     has_loaded = any(
         name.startswith("axiom:") and getattr(c, "is_connected", lambda: False)()
         for name, c in _connectors.items()
     )
     if has_loaded:
-        return
-    state_file = os.path.join(os.path.dirname(__file__), ".active_case.json")
-    if not os.path.exists(state_file):
+        _repair_active_case_alias()
         return
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            info = json.load(f)
+        info = load_active_case()
     except Exception:
+        return
+    if not info:
+        # No configured parsed case — a stale hydration failure from an
+        # earlier .active_case.json must not survive its removal.
+        _HYDRATION_STATE.pop("last_error", None)
         return
     all_cases = info.get("all_cases", [])
     targets = [
@@ -466,6 +501,7 @@ def _ensure_cases_hydrated() -> None:
         primary_path = info.get("path", "")
         last_c = None
         primary_c = None
+        load_errors: list[str] = []
         with ThreadPoolExecutor(max_workers=min(4, len(targets))) as ex:
             futures = {
                 ex.submit(_load_case_from_path, p, cid): (p, cid)
@@ -475,7 +511,8 @@ def _ensure_cases_hydrated() -> None:
                 p, _cid = futures[fut]
                 try:
                     loaded = fut.result()
-                except Exception:
+                except Exception as exc:
+                    load_errors.append(f"{p}: {exc}")
                     continue
                 last_c = loaded
                 if p == primary_path:
@@ -483,6 +520,13 @@ def _ensure_cases_hydrated() -> None:
         chosen = primary_c or last_c
         if chosen and "axiom" not in _connectors:
             _connectors["axiom"] = chosen
+        if last_c is None and load_errors:
+            _HYDRATION_STATE["last_error"] = (
+                "parsed case(s) configured in .active_case.json could not be "
+                "loaded: " + "; ".join(load_errors)
+            )[:2000]
+        else:
+            _HYDRATION_STATE.pop("last_error", None)
         return
     # Fallback: single-path info (older layouts).
     path = info.get("path", "")
@@ -490,8 +534,18 @@ def _ensure_cases_hydrated() -> None:
         try:
             c = _load_case_from_path(path)
             _connectors["axiom"] = c
-        except Exception:
-            pass
+            _HYDRATION_STATE.pop("last_error", None)
+        except Exception as exc:
+            _HYDRATION_STATE["last_error"] = (
+                f"parsed case configured in .active_case.json could not be "
+                f"loaded: {path}: {exc}"
+            )[:2000]
+    elif path:
+        _HYDRATION_STATE["last_error"] = (
+            f"parsed case configured in .active_case.json does not exist: {path}"
+        )[:2000]
+    else:
+        _HYDRATION_STATE.pop("last_error", None)
 
 
 def _get_axiom() -> AxiomMfdbConnector:
@@ -502,6 +556,15 @@ def _get_axiom() -> AxiomMfdbConnector:
     c = _connectors.get("axiom")
     if c and c.is_connected():
         return c
+    # Hydration publishes per-case aliases (axiom:<id>) from worker threads
+    # before the active alias; any connected case is a valid answer here.
+    for name, connector in list(_connectors.items()):
+        if (
+            name.startswith("axiom:")
+            and getattr(connector, "is_connected", lambda: False)()
+        ):
+            _connectors["axiom"] = connector
+            return connector
     raise RuntimeError("케이스가 열려있지 않습니다. open_case를 먼저 실행하세요.")
 
 
@@ -520,6 +583,52 @@ def _parsed_case_loaded() -> bool:
         and getattr(connector, "is_connected", lambda: False)()
         for name, connector in _connectors.items()
     )
+
+
+def _parsed_case_available() -> bool:
+    """True when a parsed case is loaded or can be hydrated from .active_case.json.
+
+    Raw-gated tools used to consult only ``_parsed_case_loaded()``, so a parsed
+    case sitting unloaded on disk (cross-process ``.active_case.json`` sync)
+    made them answer not_evaluable — the LLM then read "no parsed evidence"
+    where evidence existed. Hydrate first, then answer.
+    """
+    if _parsed_case_loaded():
+        return True
+    _ensure_cases_hydrated()
+    return _parsed_case_loaded()
+
+
+def _should_fallback_to_parsed(raw_result: Any) -> bool:
+    """MCP-side mirror of api.raw_support.should_fallback_to_parsed_case.
+
+    The API helper only checks already-loaded connectors; in the MCP process a
+    parsed case may exist on disk but not be hydrated yet, so consult
+    ``_parsed_case_available()`` (which hydrates) instead.
+    """
+    if not isinstance(raw_result, dict):
+        return False
+    degraded = (
+        str(raw_result.get("status") or "") == "not_evaluable"
+        or bool(raw_result.get("error"))
+    )
+    if not degraded:
+        return False
+    return _parsed_case_available()
+
+
+def _annotate_hydration_failure(raw_result: dict) -> dict:
+    """Attach the parsed-case hydration failure to a degraded raw result.
+
+    Covers the silent corner where the raw sidecar is degraded, a parsed case
+    is configured in .active_case.json, but hydrating it failed — without this
+    note the consumer cannot distinguish "no parsed case exists" from "a
+    parsed case exists but could not be loaded".
+    """
+    if _HYDRATION_STATE.get("last_error"):
+        raw_result = dict(raw_result)
+        raw_result["parsed_case_hydration_error"] = _HYDRATION_STATE["last_error"]
+    return raw_result
 
 
 def _raw_find_suspicious_not_evaluable(
@@ -973,6 +1082,14 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
         result = _localize_timestamps(result)
         result = _attach_dependency_status(result, tool_name=tool_name)
         result = _attach_runtime_warning(result, tool_name=tool_name)
+        # Single choke point for every raw-gated tool: a degraded response
+        # while a parsed case is configured-but-unloadable must say so, or
+        # the LLM reads "no parsed evidence exists" where evidence exists.
+        if isinstance(result, dict) and (
+            str(result.get("status") or "") == "not_evaluable"
+            or bool(result.get("error"))
+        ):
+            result = _annotate_hydration_failure(result)
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
         return result
@@ -1803,7 +1920,7 @@ async def get_evidence_context() -> dict:
 async def get_summary() -> dict:
     """Get case overview."""
     def fn():
-        if not _parsed_case_loaded():
+        if not _parsed_case_available():
             raw = _get_raw_index()
             if raw:
                 coverage = raw.get_coverage()
@@ -2175,7 +2292,7 @@ async def explain_zero_results(
         from core.analysis.zero_results import explain_zero_results as _explain
         _ensure_cases_hydrated()
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_explain_raw_zero_results(
                 raw,
                 tool_name=tool_name,
@@ -2217,7 +2334,7 @@ async def coverage_explainer(artifact_types: str = "") -> dict:
         _ensure_cases_hydrated()
         requested = [a.strip() for a in artifact_types.split(",") if a.strip()] if artifact_types else None
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_raw_index_coverage_report(raw, requested))
         # Pass only the axiom:* connectors — coverage never touches E01/Vol/Ghidra.
         axiom_conns = {k: v for k, v in app_state._connectors.items() if k.startswith("axiom:")}
@@ -2284,15 +2401,19 @@ def _project_hits(hits: list, field_list: list[str]) -> list:
     return compact
 
 
-def _empty_search_interpretation(artifact_type: str = "") -> dict:
+def _empty_search_interpretation(artifact_type: str = "", connector: Any = None) -> dict:
     """Single-field reading of an empty result (C-2).
 
     Distinguishes "this family was never collected" from "the family exists
     but the filters matched nothing" so an empty list is never read as a
     clean bill of health by default.
+
+    ``connector`` pins the interpretation to the source that actually
+    answered the query — required on parsed-fallback paths, where the raw
+    sidecar is still connected but the empty page came from the parsed case.
     """
     try:
-        connector = _get_raw_index() or _get_axiom()
+        connector = connector or _get_raw_index() or _get_axiom()
         counts = connector.get_artifact_type_counts() or []
     except Exception as exc:
         return {"status": "unknown", "basis": f"artifact type counts unavailable: {exc}"}
@@ -2394,8 +2515,48 @@ async def search_artifacts(
             page_size = config.search_max_limit
             base_filters = {"artifact_type": artifact_type,
                             "start_date": start_date, "end_date": end_date}
-            connector = _get_raw_index() or _get_axiom()
-            source_type = "raw_image_sidecar" if _get_raw_index() else None
+            raw = _get_raw_index()
+            connector = raw or _get_axiom()
+            raw_degraded = None
+            raw_unrecoverable = None
+            probe_done = False
+
+            def _connector_search(off: int, lim: int, kw_arg: str) -> dict:
+                # First raw page is probed before draining: _fetch_all_pages
+                # keeps only hits/total, so a degraded raw response would
+                # otherwise be flattened into an empty "successful" drain.
+                # The probe runs exactly once — a raw failure on a later page
+                # still raises (mixing raw and parsed hit_id namespaces
+                # mid-drain would corrupt dedup and get_hit_detail pivots).
+                nonlocal connector, raw_degraded, probe_done, raw_unrecoverable
+                if raw_unrecoverable is not None:
+                    return {"hits": [], "total": 0}
+                if raw is not None and connector is raw and not probe_done:
+                    probe_done = True
+                    try:
+                        result = raw.search(
+                            keyword=kw_arg, filters=dict(base_filters),
+                            limit=lim, offset=off)
+                    except Exception as raw_error:
+                        result = raw_exception_result(raw_error)
+                    degraded = isinstance(result, dict) and (
+                        str(result.get("status") or "") == "not_evaluable"
+                        or bool(result.get("error"))
+                    )
+                    if not degraded:
+                        return result
+                    if _parsed_case_available():
+                        raw_degraded = result
+                        connector = _get_axiom()
+                    else:
+                        # No parsed case to fall back to: stop the drain and
+                        # surface the raw failure itself instead of an empty
+                        # "successful" result.
+                        raw_unrecoverable = _annotate_hydration_failure(result)
+                        return {"hits": [], "total": 0}
+                return connector.search(
+                    keyword=kw_arg, filters=dict(base_filters),
+                    limit=lim, offset=off)
 
             if kw_list:
                 all_rows: list = []
@@ -2405,8 +2566,7 @@ async def search_artifacts(
                 remaining_total = 0
                 for kw in kw_list:
                     rows, total, pages, remaining = _fetch_all_pages(
-                        lambda off, lim, _kw=kw: connector.search(
-                            keyword=_kw, filters=dict(base_filters), limit=lim, offset=off),
+                        lambda off, lim, _kw=kw: _connector_search(off, lim, _kw),
                         page_size=page_size,
                     )
                     totals[kw] = total
@@ -2424,11 +2584,13 @@ async def search_artifacts(
                 per_keyword_totals = totals
             else:
                 rows, total, pages_total, remaining_total = _fetch_all_pages(
-                    lambda off, lim: connector.search(
-                        keyword=keyword, filters=dict(base_filters), limit=lim, offset=off),
+                    lambda off, lim: _connector_search(off, lim, keyword),
                     page_size=page_size,
                 )
                 per_keyword_totals = {}
+
+            if raw_unrecoverable is not None:
+                return _mask(raw_unrecoverable)
 
             resp = {
                 "total_estimated": total,
@@ -2443,8 +2605,19 @@ async def search_artifacts(
                 "hits": _project_hits(rows, field_list),
             }
             if not field_list:
-                resp["projection"] = ("compact rows (fetch_all); call "
-                                      "get_hit_detail(hit_id) or pass `fields` for full rows")
+                if raw_degraded is not None:
+                    # get_hit_detail consults the raw sidecar first, but these
+                    # hit_ids belong to the parsed case — pointing the LLM at
+                    # it would resolve wrong or missing rows.
+                    resp["projection"] = (
+                        "compact rows (fetch_all, parsed-case fallback); "
+                        "re-run with `fields` for full rows — do NOT use "
+                        "get_hit_detail(hit_id) on these rows: it queries the "
+                        "raw sidecar first and these hit_ids belong to the "
+                        "parsed case")
+                else:
+                    resp["projection"] = ("compact rows (fetch_all); call "
+                                          "get_hit_detail(hit_id) or pass `fields` for full rows")
             if per_keyword_totals:
                 resp["per_keyword_totals"] = per_keyword_totals
             if remaining_total > 0:
@@ -2452,10 +2625,14 @@ async def search_artifacts(
                     f"page budget exhausted with {remaining_total} rows unseen; "
                     "narrow filters (artifact_type / date range) and re-run"
                 )
-            if source_type:
-                resp["source_type"] = source_type
+            if raw is not None and raw_degraded is None:
+                resp["source_type"] = "raw_image_sidecar"
             if not rows:
-                resp["empty_interpretation"] = _empty_search_interpretation(artifact_type)
+                resp["empty_interpretation"] = _empty_search_interpretation(
+                    artifact_type,
+                    connector=connector if raw_degraded is not None else None)
+            if raw_degraded is not None:
+                resp = annotate_parsed_fallback(resp, raw_degraded)
             return _mask(resp)
         if all_cases:
             from state import app_state
@@ -2472,20 +2649,33 @@ async def search_artifacts(
             ))
         cap = min(limit, config.search_max_limit)
         raw = _get_raw_index()
+        raw_degraded = None
         if raw:
             field_list = [f.strip() for f in fields.split(",") if f.strip()] if fields.strip() else []
+            raw_filters = {
+                "artifact_type": artifact_type,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+            raw_keyword = keyword
             if kw_list:
+                raw_filters["keywords"] = kw_list
+                raw_keyword = ""
+            try:
                 result = raw.search(
-                    keyword="",
-                    filters={
-                        "artifact_type": artifact_type,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "keywords": kw_list,
-                    },
+                    keyword=raw_keyword,
+                    filters=raw_filters,
                     limit=cap,
                     offset=offset,
                 )
+            except Exception as raw_error:
+                result = raw_exception_result(raw_error)
+            if _should_fallback_to_parsed(result):
+                # Degraded raw sidecar + parsed case available: mirror the
+                # FastAPI layer (api/timeline.py) and answer from the parsed
+                # case, annotating the raw degradation instead of hiding it.
+                raw_degraded = result
+            else:
                 page = result.get("hits", [])
                 if field_list:
                     for hit in page:
@@ -2493,31 +2683,13 @@ async def search_artifacts(
                             hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
                 result = dict(result)
                 result["source_type"] = "raw_image_sidecar"
-                result["union_returned"] = result.get("total", result.get("returned", 0))
+                if kw_list:
+                    result["union_returned"] = result.get("total", result.get("returned", 0))
                 if not page and offset == 0:
                     result["empty_interpretation"] = _empty_search_interpretation(artifact_type)
+                if isinstance(result.get("error"), str) or str(result.get("status") or "") == "not_evaluable":
+                    result = _annotate_hydration_failure(result)
                 return _mask(result)
-
-            result = raw.search(
-                keyword=keyword,
-                filters={
-                    "artifact_type": artifact_type,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                },
-                limit=cap,
-                offset=offset,
-            )
-            page = result.get("hits", [])
-            if field_list:
-                for hit in page:
-                    if "fields" in hit:
-                        hit["fields"] = {k: v for k, v in hit["fields"].items() if k in field_list}
-            result = dict(result)
-            result["source_type"] = "raw_image_sidecar"
-            if not page and offset == 0:
-                result["empty_interpretation"] = _empty_search_interpretation(artifact_type)
-            return _mask(result)
 
         axiom = _get_axiom()
 
@@ -2571,7 +2743,10 @@ async def search_artifacts(
             resp["per_keyword_totals"] = per_keyword_totals
             resp["union_returned"] = union_returned
         if not page and offset == 0:
-            resp["empty_interpretation"] = _empty_search_interpretation(artifact_type)
+            resp["empty_interpretation"] = _empty_search_interpretation(
+                artifact_type, connector=axiom if raw_degraded is not None else None)
+        if raw_degraded is not None:
+            resp = annotate_parsed_fallback(resp, raw_degraded)
         return _mask(resp)
     return await _traced("search_artifacts", params, fn)
 
@@ -2631,15 +2806,50 @@ async def build_timeline(
         if fetch_all and not all_cases:
             page_size = config.timeline_max_limit
             raw = _get_raw_index()
+            raw_degraded = None
+            raw_unrecoverable = None
+            probe_done = False
 
             def _page(off: int, lim: int) -> dict:
+                # Probe the first raw page before draining: _fetch_all_pages
+                # keeps only hits/total, so a degraded raw response would be
+                # flattened into an empty "successful" drain. Probe once only
+                # — switching sources mid-drain would mix raw and parsed
+                # entries in one timeline.
+                nonlocal raw, raw_degraded, probe_done, raw_unrecoverable
+                if raw_unrecoverable is not None:
+                    return {"hits": [], "total": 0}
                 if raw:
-                    result = raw.get_timeline(start_date, end_date, type_list, lim, off,
-                                              keywords=kw_list)
-                elif kw_list:
+                    if not probe_done:
+                        probe_done = True
+                        try:
+                            result = raw.get_timeline(
+                                start_date, end_date, type_list, lim, off,
+                                keywords=kw_list)
+                        except Exception as raw_error:
+                            result = raw_exception_result(raw_error)
+                        degraded = isinstance(result, dict) and (
+                            str(result.get("status") or "") == "not_evaluable"
+                            or bool(result.get("error"))
+                        )
+                        if degraded:
+                            if _parsed_case_available():
+                                raw_degraded = result
+                                raw = None
+                            else:
+                                # No parsed case to fall back to: stop the
+                                # drain and surface the raw failure itself
+                                # instead of an empty "successful" result.
+                                raw_unrecoverable = _annotate_hydration_failure(result)
+                                return {"hits": [], "total": 0}
+                    else:
+                        result = raw.get_timeline(
+                            start_date, end_date, type_list, lim, off,
+                            keywords=kw_list)
+                if raw is None and kw_list:
                     result = _timeline_with_keywords(
                         _get_axiom(), start_date, end_date, kw_list, lim, off)
-                else:
+                elif raw is None:
                     result = _get_axiom().get_timeline(
                         start_date=start_date, end_date=end_date,
                         artifact_types=type_list, limit=lim, offset=off)
@@ -2650,6 +2860,8 @@ async def build_timeline(
                 return result
 
             entries, total, pages_read, remaining = _fetch_all_pages(_page, page_size=page_size)
+            if raw_unrecoverable is not None:
+                return _mask(raw_unrecoverable)
             resp = {
                 "total_events": total,
                 "returned": len(entries),
@@ -2672,7 +2884,11 @@ async def build_timeline(
             if not entries:
                 # The single-family classifier only understands one name.
                 single_type = artifact_types if "," not in artifact_types else ""
-                resp["empty_interpretation"] = _empty_search_interpretation(single_type)
+                resp["empty_interpretation"] = _empty_search_interpretation(
+                    single_type,
+                    connector=_get_axiom() if raw_degraded is not None else None)
+            if raw_degraded is not None:
+                resp = annotate_parsed_fallback(resp, raw_degraded)
             return _mask(resp)
 
         if all_cases:
@@ -2693,24 +2909,40 @@ async def build_timeline(
             ))
 
         raw = _get_raw_index()
+        raw_degraded = None
         if raw:
-            result = raw.get_timeline(
-                start_date,
-                end_date,
-                type_list,
-                cap,
-                offset,
-                keywords=kw_list,
-            )
-            result = dict(result)
-            result["source_type"] = "raw_image_sidecar"
-            return _mask(result)
+            try:
+                result = raw.get_timeline(
+                    start_date,
+                    end_date,
+                    type_list,
+                    cap,
+                    offset,
+                    keywords=kw_list,
+                )
+            except Exception as raw_error:
+                result = raw_exception_result(raw_error)
+            if _should_fallback_to_parsed(result):
+                # Degraded raw sidecar + parsed case available: mirror the
+                # FastAPI layer (api/timeline.py) and answer from the parsed
+                # case, annotating the raw degradation instead of hiding it.
+                raw_degraded = result
+            else:
+                result = dict(result)
+                result["source_type"] = "raw_image_sidecar"
+                if isinstance(result.get("error"), str) or str(result.get("status") or "") == "not_evaluable":
+                    result = _annotate_hydration_failure(result)
+                return _mask(result)
 
         axiom = _get_axiom()
         if kw_list:
-            return _mask(_timeline_with_keywords(axiom, start_date, end_date, kw_list, cap, offset))
+            parsed = _timeline_with_keywords(axiom, start_date, end_date, kw_list, cap, offset)
         else:
-            return _mask(axiom.get_timeline(start_date, end_date, type_list, cap, offset))
+            parsed = axiom.get_timeline(start_date, end_date, type_list, cap, offset)
+        parsed = dict(parsed or {})
+        if raw_degraded is not None:
+            parsed = annotate_parsed_fallback(parsed, raw_degraded)
+        return _mask(parsed)
     return await _traced("build_timeline", params, fn, timeout_seconds=TIMEOUT_HEAVY)
 
 
@@ -2736,7 +2968,7 @@ async def date_anchor_triage(
 
     def fn():
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask({
                 "ok": False,
                 "status": "not_evaluable",
@@ -3488,7 +3720,7 @@ async def extract_iocs(ioc_types: str = "", exclude_private_ips: bool = True, ex
     def fn():
         from core.analysis.ioc_extractor import extract_iocs as _extract
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             raw_coverage = raw.get_coverage()
             return _mask({
                 "ok": False,
@@ -3668,7 +3900,7 @@ async def build_entity_graph(
             )
         else:
             raw = _get_raw_index()
-            if raw and not _parsed_case_loaded():
+            if raw and not _parsed_case_available():
                 raw_coverage = raw.get_coverage()
                 result = {
                     "ok": False,
@@ -3758,7 +3990,7 @@ async def baseline_diff(
         from core.analysis.baseline_diff import baseline_diff as _diff
         cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             raw_coverage = raw.get_coverage()
             return _mask({
                 "ok": False,
@@ -4205,7 +4437,7 @@ async def hunt_evtx_rules(
         from core.analysis.evtx_rules import BUILTIN_RULES, hunt_evtx_rules as _hunt
         ids = [r.strip() for r in rule_ids.split(",") if r.strip()] if rule_ids else None
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             requested_ids = ids or [str(rule.get("id", "")) for rule in BUILTIN_RULES]
             raw_coverage = raw.get_coverage()
             return _mask({
@@ -4300,7 +4532,7 @@ async def detect_anti_forensics(max_details_per_rule: int = 50) -> dict:
     def fn():
         from core.analysis.anti_forensics import detect_anti_forensics as _run
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             raw_coverage = raw.get_coverage()
             return _mask({
                 "ok": False,
@@ -4377,7 +4609,7 @@ async def assess_evidence_strength(findings_json: str = "") -> dict:
                 return {"error": f"findings_json must be valid JSON"}
         else:
             raw = _get_raw_index()
-            if raw and not _parsed_case_loaded():
+            if raw and not _parsed_case_available():
                 from core.analysis.suspicious import RULE_CATEGORY_MAP
                 payload = _raw_find_suspicious_not_evaluable(
                     raw,
@@ -4458,7 +4690,7 @@ async def investigation_gap_report(
             if k.startswith("axiom:")
         }
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_raw_investigation_gap_not_evaluable(
                 raw,
                 findings_json,
@@ -4548,7 +4780,7 @@ async def behavioral_delta_pack(
         from core.analysis.behavioral_delta import behavioral_delta as _delta
         seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             raw_coverage = raw.get_coverage()
             if str(raw_coverage.get("status") or "") == "not_evaluable":
                 return _mask(_raw_behavioral_delta_not_evaluable(
@@ -4668,7 +4900,7 @@ async def entity_story_pack(
         from core.analysis.entity_story import entity_story as _story
         seeds = [s.strip() for s in seed_keywords.split(",") if s.strip()] if seed_keywords else []
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             raw_coverage = raw.get_coverage()
             if str(raw_coverage.get("status") or "") == "not_evaluable":
                 return _mask(_raw_entity_story_not_evaluable(
@@ -4770,7 +5002,7 @@ async def auto_seed_entities_pack(
     def fn():
         from core.analysis.auto_seed_entities import auto_seed_entities
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_raw_auto_seed_not_evaluable(
                 raw,
                 start_date=start_date,
@@ -4855,7 +5087,7 @@ async def find_suspicious(
             find_suspicious as _find,
         )
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_raw_find_suspicious_not_evaluable(
                 raw,
                 rules,
@@ -4980,7 +5212,7 @@ async def correlate(
         raw = _get_raw_index()
 
         if kw_list:
-            if raw and not _parsed_case_loaded():
+            if raw and not _parsed_case_available():
                 raw_coverage = raw.get_coverage()
                 if str(raw_coverage.get("status") or "") == "not_evaluable":
                     return _mask(_raw_correlate_not_evaluable(
@@ -5018,7 +5250,7 @@ async def correlate(
                 return _mask(result)
             return _mask(_correlate_keywords(_get_axiom(), kw_list, start_date, end_date, window_minutes, limit, offset))
         elif pivot_field and pivot_value:
-            if raw and not _parsed_case_loaded():
+            if raw and not _parsed_case_available():
                 return _mask(_raw_correlate_not_evaluable(
                     raw,
                     reason="raw_correlate_pivot_unsupported",
@@ -5068,7 +5300,7 @@ async def map_to_mitre(custom_findings: str = "") -> dict:
         from core.analysis.mitre_mapper import get_attack_narrative
 
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask(_raw_mitre_mapping_result(raw, custom_findings))
 
         # Auto-detected findings
@@ -5090,7 +5322,7 @@ async def get_tagged_hits(tag_name: str = "") -> dict:
     """Get investigator-tagged hits."""
     def fn():
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask({
                 "ok": False,
                 "status": "not_evaluable",
@@ -5132,7 +5364,7 @@ async def search_by_hash(hash_value: str, limit: int = 50, offset: int = 0) -> d
     """Find artifacts by hash."""
     def fn():
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask({
                 "ok": False,
                 "status": "not_evaluable",
@@ -5166,7 +5398,7 @@ async def generate_report(output_path: str = "") -> dict:
     """Generate HTML investigation report."""
     def fn():
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask({
                 "ok": False,
                 "status": "not_evaluable",
@@ -6504,7 +6736,7 @@ async def compare_case_image_entity(
     }
     def fn():
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             hints = [x.strip() for x in image_path_hints.split(",") if x.strip()]
             return _mask({
                 "ok": False,
@@ -8259,7 +8491,7 @@ async def srum_by_process(
         if not names:
             return {"error": "Provide process_name or process_names"}
         raw = _get_raw_index()
-        if raw and not _parsed_case_loaded():
+        if raw and not _parsed_case_available():
             return _mask({
                 "ok": False,
                 "status": "not_evaluable",

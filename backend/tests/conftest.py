@@ -17,6 +17,22 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_active_case_file(monkeypatch, tmp_path):
+    """Point cross-process case hydration at an empty per-test file.
+
+    MCP tools hydrate parsed cases from ``backend/.active_case.json``
+    (via ``state.load_active_case``). On an analyst workstation that file
+    can name real evidence; without isolation a raw-only test would load a
+    real case and become nondeterministic.
+    """
+    import state as _state
+
+    monkeypatch.setattr(
+        _state, "_ACTIVE_CASE_FILE", str(tmp_path / ".active_case.json")
+    )
+
+
 class MockConnector:
     """Minimal connector that mimics the AxiomMfdbConnector / KapeCsvConnector
     surface used by aggregator / coverage / scoring / timeline modules.
