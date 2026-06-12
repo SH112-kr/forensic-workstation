@@ -329,6 +329,34 @@ def test_initial_triage_bridge_requires_incident_central_multi_axis_window():
     assert result["precursor_context"]["bridged_precursors"]
 
 
+def test_initial_triage_bridge_tokens_are_not_tied_to_one_incident_tool():
+    """Behavior-class check: the bridge pipeline must work for any remote
+    tool in the generic token list, not just the one ("bomgar") that appeared
+    in the incident the original fixtures were modeled on."""
+    connector = _StubConnector(
+        metadata={
+            "date_range_start": "2026-04-01T00:00:00Z",
+            "date_range_end": "2026-04-15T00:00:00Z",
+        },
+        artifact_counts=[
+            {"artifact_type": "System Services", "count": 2},
+            {"artifact_type": "Windows Event Logs", "count": 25},
+        ],
+        timeline_entries=[
+            _timeline_entry(601, "2026-04-09T20:31:10Z", "System Services", "RustDesk remote desktop service active"),
+            _timeline_entry(602, "2026-04-12T02:50:03Z", "System Services", "RustDesk remote desktop service reconnected"),
+        ],
+        search_map={},
+        artifact_queries=_ArtifactQueryStub(services=["rustdesk remote desktop"]),
+    )
+
+    result = initial_triage(connector)
+
+    assert result["precursor_context"]["bridge_tokens"] == ["rustdesk"]
+    assert result["precursor_context"]["status"] == "candidate_bridge"
+    assert result["precursor_context"]["bridged_precursors"]
+
+
 def test_initial_triage_blocks_claims_when_core_families_are_missing():
     connector = _baro_like_connector()
     connector._artifact_counts = [

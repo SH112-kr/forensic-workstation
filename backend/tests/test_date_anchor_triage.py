@@ -94,3 +94,66 @@ def test_date_anchor_triage_surfaces_raw_high_value_sections():
     assert len(suspicious_hits) == 1
     assert suspicious_hits[0]["snippet"].endswith(r"Path=C:\Windows\System32\enamgr.dll")
     assert "does not assign intent" in result["notes"][0]
+
+
+class _UnrelatedIncidentStubConnector:
+    """Shapes from a different (fictional) incident than the enamgr.dll case.
+
+    The system_like filter must key on path tokens (System32 / ProgramData /
+    Public / AppData / Temp), never on file names memorized from past
+    incidents — this stub would fail if any rule hardcoded enamgr/uploadmgr.
+    """
+
+    def search(self, keyword="", filters=None, limit=50, offset=0):
+        filters = filters or {}
+        if filters.get("artifact_type") == "Shim Cache":
+            return {
+                "total": 4,
+                "hits": [
+                    {
+                        "hit_id": 10,
+                        "artifact_type": "Shim Cache",
+                        "timestamp": "2026-03-05T09:10:00Z",
+                        "fields": {"Path": r"C:\ProgramData\updchk.exe"},
+                    },
+                    {
+                        "hit_id": 11,
+                        "artifact_type": "Shim Cache",
+                        "timestamp": "2026-03-05T09:11:00Z",
+                        "fields": {"Path": r"C:\Users\user\AppData\Local\Temp\stage2.dll"},
+                    },
+                    {
+                        "hit_id": 12,
+                        "artifact_type": "Shim Cache",
+                        "timestamp": "2026-03-05T09:12:00Z",
+                        "fields": {"Path": r"C:\Users\Public\helper.exe"},
+                    },
+                    {
+                        "hit_id": 13,
+                        "artifact_type": "Shim Cache",
+                        "timestamp": "2026-03-05T09:13:00Z",
+                        "fields": {"Path": r"C:\Users\user\Documents\report.docx"},
+                    },
+                ],
+            }
+        return {"total": 0, "hits": []}
+
+
+def test_date_anchor_triage_path_filter_is_name_agnostic():
+    result = date_anchor_triage(
+        _UnrelatedIncidentStubConnector(),
+        start_date="2026-03-05",
+        end_date="2026-03-05",
+        limit_per_query=5,
+    )
+
+    sections = {section["section_id"]: section for section in result["sections"]}
+    shim_hits = sections["suspicious_file_drops"]["queries"][3]["hits"]
+    surfaced = {hit["snippet"].rsplit("=", 1)[-1] for hit in shim_hits}
+
+    # All three system-like drop locations surface regardless of file name…
+    assert r"C:\ProgramData\updchk.exe" in surfaced
+    assert r"C:\Users\user\AppData\Local\Temp\stage2.dll" in surfaced
+    assert r"C:\Users\Public\helper.exe" in surfaced
+    # …and a user-document path is excluded by location, not by name.
+    assert r"C:\Users\user\Documents\report.docx" not in surfaced
