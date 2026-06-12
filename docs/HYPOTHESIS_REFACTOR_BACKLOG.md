@@ -1,5 +1,9 @@
 # Hypothesis Refactor Backlog
 
+> **상태: 백로그 (IR-001 ~ IR-005 전체 미착수)** — 구현 일정/PR 없음.
+> `auto_triage.top_findings` 는 여전히 legacy severity-sorted 출력이고
+> first-class hypothesis payload 는 아직 어떤 도구에도 없다. (2026-06-12 기준)
+
 This backlog tracks the migration from rule-driven narrative anchoring to
 evidence-first, hypothesis-driven analysis.
 

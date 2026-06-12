@@ -1,5 +1,10 @@
 # Bias Remediation Spec
 
+> **상태: 구현 완료** — Patch 1–3 머지됨 (`backend/core/analysis/bias_remediation.py`,
+> `lane_state_board` / `candidate_axes`). 후속 보완은
+> [BIAS_REMEDIATION_PATCH2_SPEC.md](BIAS_REMEDIATION_PATCH2_SPEC.md) →
+> [BIAS_REMEDIATION_PATCH2_FIX.md](BIAS_REMEDIATION_PATCH2_FIX.md) 순서로 읽는다.
+
 이 문서는 분석 파이프라인의 지배 축 편향을 줄이기 위한 구체 구현 스펙이다.
 Codex 가 이 스펙에 따라 3 개 패치로 구현한다. 각 패치는 독립 PR 로 머지 가능하고
 revert 단위도 분리된다.

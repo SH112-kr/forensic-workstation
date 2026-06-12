@@ -1,5 +1,9 @@
 # LLM Consumer Hygiene Spec
 
+> **상태: 구현 완료** — 9개 핵심 MCP 도구의 "Reading guide for AI consumers"
+> docstring 반영, `backend/tests/test_mcp_docstring_hygiene.py` 로 잠금.
+> 단, 나머지 도구로의 reading guide 확대는 미착수 (확대 정책 미정).
+
 이 프로젝트는 LLM 단독 분석 도구 (Claude / Codex) 로 사용된다. UI 는
 감사용 참조다. LLM 이 MCP 도구를 통해 분석을 수행하므로, 보호
 메커니즘은 세 곳에만 존재할 수 있다: (a) MCP 도구 docstring,

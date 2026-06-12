@@ -4,7 +4,9 @@ Local-first DFIR workstation for Windows endpoint investigations. The project co
 
 Korean documentation: [README.ko.md](README.ko.md)
 
-Privacy and MCP disclosure gate proposal: [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+Privacy and MCP disclosure gate proposal (NOT yet implemented — MCP responses currently reach the LLM with masking only): [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+
+Documentation index with per-spec implementation status: [docs/README.md](docs/README.md)
 
 ## What It Does
 

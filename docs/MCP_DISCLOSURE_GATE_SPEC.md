@@ -1,5 +1,10 @@
 # MCP Disclosure Gate Spec
 
+> **상태: 제안 (미구현)** — Phase 0 (정적 docstring 감사) 일부만 반영됨.
+> Phase 1–4 (`backend/core/disclosure.py`, pending_disclosures 큐, UI
+> DisclosurePanel) 는 미착수. 현재 MCP 응답은 마스킹(`enable_masking`)
+> 외의 공개 게이트 없이 LLM 컨텍스트로 전달된다. (2026-06-12 기준)
+
 ## 목적
 
 Forensic Workstation은 로컬 DFIR 도구지만, Claude Code/Codex MCP로 사용할 때 MCP 도구의 응답(`RES`)이 LLM 컨텍스트로 전달될 수 있다. 이때 파일 경로, 사용자명, 호스트명, IP, registry value, event detail, browser history, credential, secret이 클라우드 모델 쪽으로 올라갈 수 있다.

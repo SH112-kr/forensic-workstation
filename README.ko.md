@@ -4,7 +4,9 @@ Windows 엔드포인트 침해사고 대응과 디지털 포렌식을 위한 로
 
 English documentation: [README.md](README.md)
 
-MCP 민감정보 공개 게이트 제안서: [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+MCP 민감정보 공개 게이트 제안서 (미구현 — 현재 MCP 응답은 마스킹 외 게이트 없이 LLM에 전달됨): [docs/MCP_DISCLOSURE_GATE_SPEC.md](docs/MCP_DISCLOSURE_GATE_SPEC.md)
+
+문서 인덱스 (스펙별 구현 상태): [docs/README.md](docs/README.md)
 
 ## 주요 기능
 

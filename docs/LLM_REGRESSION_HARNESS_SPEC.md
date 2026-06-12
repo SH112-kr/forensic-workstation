@@ -1,5 +1,10 @@
 # LLM Regression Harness Spec (Tier A5) — Manual Edition
 
+> **상태: Phase 1 구현 완료 (수동 실행)** — fixtures / ground truth / 메트릭 /
+> ingest CLI 는 `backend/regression/` 에 구현됨. LLM 실행 자체는 CI 밖
+> 수동 워크플로우 (baseline: [regression_baseline_2026-04-23.md](regression_baseline_2026-04-23.md)).
+> Phase 2 (자동 실행) 미착수.
+
 이 프로젝트는 LLM 단독 분석 도구다. 소비자가 Claude Code CLI 를
 통해서만 LLM 에 접근하므로, `anthropic` SDK + API key 직접 호출 방식은
 이 환경에서 작동하지 않는다. 이 스펙은 **수동 실행 harness** 로

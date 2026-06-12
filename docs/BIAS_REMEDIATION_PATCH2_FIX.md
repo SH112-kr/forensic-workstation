@@ -1,5 +1,8 @@
 # Bias Remediation Patch 2 Fix — lane_state_board Double-Call Cleanup
 
+> **상태: 구현 완료** — Bias Remediation 3부작의 마지막 문서.
+> 읽기 순서: SPEC → PATCH2_SPEC → PATCH2_FIX (이 문서).
+
 Patch 2 사후 리뷰에서 발견된 설계 이탈을 교정하는 짧은 후속 작업이다.
 변경량은 백엔드 1 줄 삭제 + 프런트엔드 1 줄 수정 + 테스트 assertion
 조정 1–2 줄.

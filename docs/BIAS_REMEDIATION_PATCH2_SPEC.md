@@ -1,5 +1,8 @@
 # Bias Remediation Patch 2 Spec
 
+> **상태: 구현 완료** — [BIAS_REMEDIATION_SPEC.md](BIAS_REMEDIATION_SPEC.md) 의
+> 후속 2단계. 잔여 이슈는 [BIAS_REMEDIATION_PATCH2_FIX.md](BIAS_REMEDIATION_PATCH2_FIX.md) 로 마감됨.
+
 Patch 1 과 Patch 3 으로 백엔드 응답 스키마와 `lane_state_board` /
 `candidate_axes` 생성은 완료됐다. Patch 2 는 이 데이터를 UI 지배 축에
 도달시키는 단계다. 동시에 Patch 3 후속 리뷰에서 발견된 두 개 gap 을
