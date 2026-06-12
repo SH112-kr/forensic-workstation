@@ -683,6 +683,7 @@ def index_motw_artifacts(
     indexed = 0
     files_checked = 0
     ads_read_errors = 0
+    ads_decode_errors = 0
 
     with store.batch():
         try:
@@ -735,6 +736,14 @@ def index_motw_artifacts(
                         continue
                     if not content:
                         continue
+                    if isinstance(content, (bytes, bytearray)):
+                        try:
+                            bytes(content).decode("utf-8")
+                        except UnicodeDecodeError:
+                            # parse_zone_identifier decodes with
+                            # errors="replace"; count the lossy decode so it
+                            # surfaces as a gap instead of silent corruption.
+                            ads_decode_errors += 1
                     fields = parse_zone_identifier(content)
                     if not fields:
                         continue
@@ -761,6 +770,17 @@ def index_motw_artifacts(
                     )
                     indexed += 1
 
+    if ads_decode_errors:
+        coverage_gaps.append({
+            "path": users_root,
+            "status": "coverage_gap",
+            "reason": "zone_identifier_decode_errors",
+            "error": (
+                f"{ads_decode_errors} Zone.Identifier stream(s) held invalid "
+                "UTF-8; replacement characters were substituted — affected "
+                "Referrer/Host URLs may be partially corrupted"
+            ),
+        })
     if files_checked > 0 and ads_read_errors >= files_checked:
         coverage_gaps.append({
             "path": users_root,
@@ -968,7 +988,22 @@ def index_mplog_artifacts(
                 })
             if raw:
                 encoding = "utf-16-le" if raw[:2] == b"\xff\xfe" else "utf-8"
-                text = raw.decode(encoding, errors="replace")
+                try:
+                    text = raw.decode(encoding)
+                except UnicodeDecodeError:
+                    text = raw.decode(encoding, errors="replace")
+                    coverage_gaps.append({
+                        "path": path, "status": "coverage_gap",
+                        "reason": "mplog_decode_errors",
+                        "error": (
+                            f"{encoding} decode errors; "
+                            f"{text.count(chr(0xFFFD))} replacement "
+                            "character(s) substituted — affected log lines "
+                            "may be partially corrupted (a single trailing "
+                            "error is expected when the read cap cut a "
+                            "multi-byte character)"
+                        ),
+                    })
             else:
                 text = ""
             records, capped = parse_mplog(text)
@@ -1632,6 +1667,18 @@ def index_registry_artifacts(
                 raise RuntimeError(str(extracted["error"]))
             with open(setupapi_local, "r", encoding="utf-8", errors="replace") as fh:
                 setupapi_text = fh.read()
+            decode_errors = setupapi_text.count("�")
+            if decode_errors:
+                coverage_gaps.append({
+                    "path": setupapi_internal,
+                    "status": "coverage_gap",
+                    "reason": "setupapi_decode_errors",
+                    "error": (
+                        f"utf-8 decode errors; {decode_errors} replacement "
+                        "character(s) substituted — affected device-install "
+                        "lines may be partially corrupted"
+                    ),
+                })
             for dev in parse_setupapi_device_installs(setupapi_text):
                 times = {}
                 if dev.get("first_install"):

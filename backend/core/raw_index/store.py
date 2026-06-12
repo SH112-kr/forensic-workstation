@@ -658,7 +658,7 @@ class RawIndexStore:
             """
         ).fetchall()
         if not rows:
-            return self._cache_coverage_summary({
+            summary = {
                 "status": "not_evaluable",
                 "gaps": [{
                     "status": "not_evaluable",
@@ -666,7 +666,9 @@ class RawIndexStore:
                     "error": "No parser runs are recorded in this raw index.",
                 }],
                 "parser_runs": 0,
-            }, conn=conn)
+            }
+            self._attach_search_backend_meta(summary, conn=conn)
+            return self._cache_coverage_summary(summary, conn=conn)
         gaps = []
         for row in rows:
             coverage_status = str(row["coverage_status"] or "")
@@ -691,11 +693,43 @@ class RawIndexStore:
                 summary_status = "not_evaluable"
             else:
                 summary_status = "coverage_gap"
-        return self._cache_coverage_summary({
+        summary = {
             "status": summary_status,
             "gaps": gaps,
             "parser_runs": len(rows),
-        }, conn=conn)
+        }
+        self._attach_search_backend_meta(summary, conn=conn)
+        return self._cache_coverage_summary(summary, conn=conn)
+
+    def _attach_search_backend_meta(
+        self,
+        summary: dict[str, Any],
+        *,
+        conn: sqlite3.Connection,
+    ) -> None:
+        """Expose the search backend on coverage summaries.
+
+        A silent FTS5→materialized-LIKE downgrade must be visible, but it is
+        a performance note — LIKE scans are complete, just slower — so it is
+        deliberately NOT added to ``gaps`` and never changes ``status``
+        (aggregators treat coverage_gap as a degraded raw case).
+        """
+        try:
+            row = conn.execute(
+                "SELECT value FROM raw_index_metadata"
+                " WHERE key = 'search_index_backend'"
+            ).fetchone()
+        except sqlite3.Error:
+            return
+        backend = str(row["value"]) if row and row["value"] is not None else ""
+        if not backend:
+            return
+        summary["search_index_backend"] = backend
+        if backend != "fts5_trigram":
+            summary["search_backend_note"] = (
+                "FTS5 trigram index unavailable; keyword search uses a full "
+                "LIKE scan — complete but slower on large indexes."
+            )
 
     def _cache_coverage_summary(
         self,

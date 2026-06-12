@@ -158,3 +158,32 @@ def test_index_mplog_unreadable_dir_is_gap(tmp_path):
         store.close()
     assert result["status"] == "not_evaluable"
     assert any(g.get("reason") == "mplog_dir_unavailable" for g in result["coverage_gaps"])
+
+
+def test_index_mplog_invalid_encoding_is_gap_not_silent(tmp_path):
+    class _BadEncodingImage:
+        def list_directory(self, path):
+            return [{"name": "MPLog-1.log", "path": f"{path}/MPLog-1.log",
+                     "is_dir": False}]
+
+        def read_file_content(self, path, max_size=0):
+            # No BOM → utf-8 path; trailing 0xFF bytes are invalid UTF-8.
+            return (
+                b"2026-05-01T06:35:38.766 ProcessImageName: updater.exe, "
+                b"Pid: 1116, TotalTime: 10, Count: 2\n\xff\xff"
+            )
+
+    store = _open(tmp_path)
+    try:
+        result = index_mplog_artifacts(_BadEncodingImage(), store,
+                                       started_at="2026-06-12T00:00:00Z")
+    finally:
+        store.close()
+
+    gaps = [g for g in result["coverage_gaps"]
+            if g.get("reason") == "mplog_decode_errors"]
+    assert len(gaps) == 1
+    assert "replacement" in gaps[0]["error"]
+    # The lossy decode is reported, not fatal: the readable prefix is parsed.
+    assert result["files_parsed"] == 1
+    assert result["indexed_records"] >= 1

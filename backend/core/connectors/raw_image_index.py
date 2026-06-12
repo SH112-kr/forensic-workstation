@@ -329,13 +329,26 @@ class RawImageIndexConnector(BaseConnector):
                 "stale raw index roots mismatch: expected "
                 f"{expected_index_roots}, found {index_roots or 'missing'}"
             )
-        return {
+        metadata = {
             "source_type": "raw_image_sidecar",
             "source_path": self._path,
             "schema_version": version,
             "raw_image_fingerprint": fingerprint,
             "index_roots": index_roots,
         }
+        # Surface the search backend so a silent FTS5→LIKE downgrade is
+        # visible to consumers. materialized_like is complete but slower —
+        # a performance note, NOT an evidence coverage gap.
+        search_backend = str(meta.get("search_index_backend") or "")
+        if search_backend:
+            metadata["search_index_backend"] = search_backend
+            if search_backend != "fts5_trigram":
+                metadata["search_backend_note"] = (
+                    "FTS5 trigram index unavailable in this SQLite build; "
+                    "keyword search falls back to a full LIKE scan. Results "
+                    "are complete but large-index searches are slower."
+                )
+        return metadata
 
     def _require_store(self) -> RawIndexStore:
         if self._store is None:
