@@ -1,69 +1,72 @@
 import { useState } from 'react';
 import { useStore } from '../hooks/useStore';
+import { useI18n } from '../i18n/useI18n';
+import type { TranslationKey } from '../i18n/translations';
 
 interface NavItem {
   id: string;
-  label: string;
+  labelKey: TranslationKey;
   code: string;
 }
 
 interface NavSection {
-  title: string;
+  titleKey: TranslationKey;
   items: NavItem[];
   defaultCollapsed?: boolean;
 }
 
 const SECTIONS: NavSection[] = [
   {
-    title: 'Investigation',
+    titleKey: 'nav.investigation',
     items: [
-      { id: 'dashboard', label: 'Dashboard', code: 'DASH' },
-      { id: 'detection', label: 'Detections', code: 'DET' },
-      { id: 'timeline', label: 'Timeline', code: 'TIME' },
-      { id: 'coverage', label: 'Coverage', code: 'COV' },
-      { id: 'pivot', label: 'Pivot', code: 'PIV' },
-      { id: 'compare', label: 'Compare', code: 'CMP' },
+      { id: 'dashboard', labelKey: 'nav.dashboard', code: 'DASH' },
+      { id: 'detection', labelKey: 'nav.detections', code: 'DET' },
+      { id: 'timeline', labelKey: 'nav.timeline', code: 'TIME' },
+      { id: 'coverage', labelKey: 'nav.coverage', code: 'COV' },
+      { id: 'pivot', labelKey: 'nav.pivot', code: 'PIV' },
+      { id: 'compare', labelKey: 'nav.compare', code: 'CMP' },
     ],
   },
   {
-    title: 'Artifacts',
+    titleKey: 'nav.artifacts',
     items: [
-      { id: 'artifacts', label: 'Artifact Browser', code: 'ART' },
-      { id: 'ioc', label: 'IOC Tracker', code: 'IOC' },
-      { id: 'logs', label: 'EVTX Logs', code: 'EVT' },
-      { id: 'registry', label: 'Registry', code: 'REG' },
-      { id: 'network', label: 'Network', code: 'NET' },
+      { id: 'artifacts', labelKey: 'nav.artifactBrowser', code: 'ART' },
+      { id: 'ioc', labelKey: 'nav.iocTracker', code: 'IOC' },
+      { id: 'logs', labelKey: 'nav.evtxLogs', code: 'EVT' },
+      { id: 'registry', labelKey: 'nav.registry', code: 'REG' },
+      { id: 'network', labelKey: 'nav.network', code: 'NET' },
     ],
   },
   {
-    title: 'Advanced Tools',
+    titleKey: 'nav.advancedTools',
     defaultCollapsed: true,
     items: [
-      { id: 'memory', label: 'Memory', code: 'MEM' },
-      { id: 'binary', label: 'Binary', code: 'BIN' },
-      { id: 'yara', label: 'YARA', code: 'YARA' },
+      { id: 'memory', labelKey: 'nav.memory', code: 'MEM' },
+      { id: 'binary', labelKey: 'nav.binary', code: 'BIN' },
+      { id: 'yara', labelKey: 'nav.yara', code: 'YARA' },
     ],
   },
   {
-    title: 'Output',
+    titleKey: 'nav.output',
     items: [
-      { id: 'report', label: 'Report', code: 'RPT' },
-      { id: 'kape', label: 'KAPE', code: 'KAPE' },
-      { id: 'settings', label: 'Settings', code: 'SET' },
+      { id: 'report', labelKey: 'nav.report', code: 'RPT' },
+      { id: 'kape', labelKey: 'nav.kape', code: 'KAPE' },
+      { id: 'settings', labelKey: 'nav.settings', code: 'SET' },
     ],
   },
 ];
 
 export default function Sidebar() {
   const { activeView, setActiveView, caseInfo } = useStore();
+  const { t } = useI18n();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
-    SECTIONS.forEach(s => { if (s.defaultCollapsed) init[s.title] = true; });
+    SECTIONS.forEach(s => { if (s.defaultCollapsed) init[s.titleKey] = true; });
     return init;
   });
 
-  const toggleSection = (title: string) => {
-    setCollapsed(prev => ({ ...prev, [title]: !prev[title] }));
+  const toggleSection = (titleKey: TranslationKey) => {
+    setCollapsed(prev => ({ ...prev, [titleKey]: !prev[titleKey] }));
   };
 
   return (
@@ -88,10 +91,12 @@ export default function Sidebar() {
           whiteSpace: 'nowrap',
           paddingRight: 16,
         }}>
-          {caseInfo?.case_name || 'No case loaded'}
+          {caseInfo?.case_name || t('sidebar.noCaseLoaded')}
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-          {caseInfo?.source_type ? `${caseInfo.source_type.toUpperCase()} case` : 'Workspace'}
+          {caseInfo?.source_type
+            ? t('sidebar.sourceCase', { source: caseInfo.source_type.toUpperCase() })
+            : t('common.workspace')}
           {caseInfo?.case_mode ? ` | ${caseInfo.case_mode.toUpperCase()}` : ''}
         </div>
         <span style={{
@@ -109,9 +114,9 @@ export default function Sidebar() {
 
       <nav style={{ flex: 1, overflowY: 'auto', paddingTop: 4 }}>
         {SECTIONS.map(section => (
-          <div key={section.title} style={{ marginTop: 4 }}>
+          <div key={section.titleKey} style={{ marginTop: 4 }}>
             <button
-              onClick={() => toggleSection(section.title)}
+              onClick={() => toggleSection(section.titleKey)}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -129,17 +134,17 @@ export default function Sidebar() {
                 fontWeight: 700,
               }}
             >
-              <span>{section.title}</span>
+              <span>{t(section.titleKey)}</span>
               <span style={{
                 fontFamily: 'var(--mono)',
                 fontSize: 9,
-                transform: collapsed[section.title] ? 'rotate(-90deg)' : 'none',
+                transform: collapsed[section.titleKey] ? 'rotate(-90deg)' : 'none',
                 transition: 'transform 100ms',
               }}>
                 v
               </span>
             </button>
-            {!collapsed[section.title] && section.items.map(item => {
+            {!collapsed[section.titleKey] && section.items.map(item => {
               const active = activeView === item.id;
               return (
                 <button
@@ -169,7 +174,7 @@ export default function Sidebar() {
                   }}>
                     {item.code}
                   </span>
-                  <span>{item.label}</span>
+                  <span>{t(item.labelKey)}</span>
                 </button>
               );
             })}
@@ -182,13 +187,13 @@ export default function Sidebar() {
           <div style={{ borderTop: '1px solid var(--border)', margin: '0 12px' }} />
           <div style={{ padding: '10px 16px', fontSize: 11 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ color: 'var(--text-subtle)' }}>Artifacts</span>
+              <span style={{ color: 'var(--text-subtle)' }}>{t('common.artifacts')}</span>
               <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-muted)' }}>
                 {caseInfo.total_hits?.toLocaleString()}
               </span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--text-subtle)' }}>Families</span>
+              <span style={{ color: 'var(--text-subtle)' }}>{t('common.families')}</span>
               <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-muted)' }}>
                 {caseInfo.artifact_type_count}
               </span>

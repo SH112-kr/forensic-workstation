@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../hooks/useStore';
 import { get, post } from '../hooks/useApi';
+import { useI18n } from '../i18n/useI18n';
 
 interface OpenCase {
   case_id: string;
@@ -28,6 +29,7 @@ export default function Header() {
     theme, toggleTheme, copilotOpen, toggleCopilot, caseInfo, setCaseInfo,
     setDetection, setKapeDiagnostics, setCaseManagerOpen, setActiveView,
   } = useStore();
+  const { language, setLanguage, t } = useI18n();
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [cases, setCases] = useState<OpenCase[]>([]);
   const [activeCase, setActiveCase] = useState('');
@@ -72,8 +74,8 @@ export default function Header() {
 
   const activeCaseName = cases.find(c => c.case_id === activeCase)?.case_name || caseInfo?.case_name || '-';
   const statusLabel = caseInfo?.case_mode
-    ? `${caseInfo.case_mode.toUpperCase()} DIRECT MODE`
-    : 'LOCAL ANALYSIS READY';
+    ? t('header.directMode', { mode: caseInfo.case_mode.toUpperCase() })
+    : t('header.localAnalysisReady');
 
   return (
     <header style={{
@@ -89,7 +91,7 @@ export default function Header() {
     }}>
       <button
         onClick={() => setActiveView('dashboard')}
-        title="Dashboard"
+        title={t('header.dashboardTitle')}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -122,9 +124,9 @@ export default function Header() {
 
       {caseInfo && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-          <Meta label="Case" value={activeCaseName} />
-          <Meta label="Artifacts" value={(caseInfo.total_hits || 0).toLocaleString()} />
-          <Meta label="Types" value={String(caseInfo.artifact_type_count || 0)} />
+          <Meta label={t('common.case')} value={activeCaseName} />
+          <Meta label={t('common.artifacts')} value={(caseInfo.total_hits || 0).toLocaleString()} />
+          <Meta label={t('common.types')} value={String(caseInfo.artifact_type_count || 0)} />
 
           {cases.length > 0 && (
             <div style={{ display: 'flex', gap: 4, alignItems: 'center', minWidth: 0 }}>
@@ -159,12 +161,12 @@ export default function Header() {
             </div>
           )}
 
-          <button className="btn btn-sm" onClick={() => setCaseManagerOpen(true)} title="Open another case">
-            Add Case
+          <button className="btn btn-sm" onClick={() => setCaseManagerOpen(true)} title={t('header.openAnotherCase')}>
+            {t('header.addCase')}
           </button>
           {cases.length >= 2 && (
-            <button className="btn btn-sm" onClick={() => setActiveView('compare')} title="Compare loaded cases">
-              Compare
+            <button className="btn btn-sm" onClick={() => setActiveView('compare')} title={t('header.compareLoaded')}>
+              {t('common.compare')}
             </button>
           )}
         </div>
@@ -194,7 +196,7 @@ export default function Header() {
       <div style={{ width: 1, height: 18, background: 'var(--border)' }} />
 
       <div style={{ position: 'relative' }}>
-        <button className="btn btn-sm" onClick={() => setShowShortcuts(!showShortcuts)} title="Keyboard shortcuts">
+        <button className="btn btn-sm" onClick={() => setShowShortcuts(!showShortcuts)} title={t('header.keyboardShortcuts')}>
           ?
         </button>
         {showShortcuts && (
@@ -213,20 +215,48 @@ export default function Header() {
             minWidth: 210,
             boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
           }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>Keyboard Shortcuts</div>
-            <Shortcut keys="Ctrl+1-9" label="Switch views" />
-            <Shortcut keys="Ctrl+K" label="Search artifacts" />
-            <Shortcut keys="Ctrl+B" label="MCP monitor" />
-            <Shortcut keys="Esc" label="Close panels" />
+            <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>{t('header.keyboardShortcuts')}</div>
+            <Shortcut keys="Ctrl+1-9" label={t('header.switchViews')} />
+            <Shortcut keys="Ctrl+K" label={t('header.searchArtifacts')} />
+            <Shortcut keys="Ctrl+B" label={t('header.mcpMonitor')} />
+            <Shortcut keys="Esc" label={t('header.closePanels')} />
           </div>
         )}
       </div>
 
-      <button className="btn btn-sm" onClick={toggleTheme} title="Toggle theme">
-        {theme === 'dark' ? 'Light' : 'Dark'}
+      <div
+        title={t('language.toggleTitle')}
+        style={{
+          display: 'flex',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          overflow: 'hidden',
+        }}
+      >
+        {(['en', 'ko'] as const).map((lang) => (
+          <button
+            key={lang}
+            onClick={() => setLanguage(lang)}
+            style={{
+              border: 0,
+              padding: '4px 7px',
+              fontSize: 10,
+              fontFamily: 'var(--mono)',
+              cursor: 'pointer',
+              background: language === lang ? 'var(--surface-2)' : 'transparent',
+              color: language === lang ? 'var(--text)' : 'var(--text-muted)',
+            }}
+          >
+            {lang.toUpperCase()}
+          </button>
+        ))}
+      </div>
+
+      <button className="btn btn-sm" onClick={toggleTheme} title={t('header.toggleTheme')}>
+        {theme === 'dark' ? t('header.light') : t('header.dark')}
       </button>
-      <button className={`btn btn-sm ${copilotOpen ? 'btn-primary' : ''}`} onClick={toggleCopilot} title="Toggle MCP monitor">
-        MCP Monitor
+      <button className={`btn btn-sm ${copilotOpen ? 'btn-primary' : ''}`} onClick={toggleCopilot} title={t('header.toggleMcpMonitor')}>
+        {t('header.mcpMonitor')}
       </button>
     </header>
   );
