@@ -1,5 +1,14 @@
 import { create } from 'zustand';
 
+export type Language = 'en' | 'ko';
+
+const readInitialLanguage = (): Language => {
+  const saved = localStorage.getItem('language');
+  return saved === 'ko' || saved === 'en' ? saved : 'en';
+};
+
+document.documentElement.setAttribute('lang', readInitialLanguage());
+
 interface CaseInfo {
   case_name: string;
   source_type?: string;
@@ -36,6 +45,10 @@ interface AppState {
   // Theme
   theme: 'light' | 'dark';
   toggleTheme: () => void;
+
+  // Language
+  language: Language;
+  setLanguage: (language: Language) => void;
 
   // Status bar
   lastAction: string;
@@ -88,6 +101,14 @@ export const useStore = create<AppState>((set) => ({
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
       return { theme: next };
+    }),
+
+  language: readInitialLanguage(),
+  setLanguage: (language) =>
+    set(() => {
+      localStorage.setItem('language', language);
+      document.documentElement.setAttribute('lang', language);
+      return { language };
     }),
 
   lastAction: '',
