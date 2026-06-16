@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 import ZeroResultsHint from './ZeroResultsHint';
+import { useI18n } from '../i18n/useI18n';
 
 export default function TimelineView() {
   const { caseInfo } = useStore();
+  const { t } = useI18n();
   const [entries, setEntries] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -72,14 +74,14 @@ export default function TimelineView() {
         padding: '10px 16px', display: 'flex', gap: 8, borderBottom: '1px solid var(--border)',
         background: 'var(--surface)', alignItems: 'center', flexWrap: 'wrap',
       }}>
-        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>From</label>
+        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('timeline.from')}</label>
         <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
           style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
-        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>To</label>
+        <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('timeline.to')}</label>
         <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
           style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12 }} />
         <button className="btn btn-primary btn-sm" onClick={() => load()} disabled={loading}>
-          {loading ? 'Loading...' : 'Load Timeline'}
+          {loading ? t('timeline.loadingTimeline') : t('timeline.loadTimeline')}
         </button>
         {caseCount >= 2 && (
           <label
@@ -90,24 +92,24 @@ export default function TimelineView() {
               border: '1px solid var(--border)',
               background: allCases ? 'var(--accent-light)' : 'transparent',
             }}
-            title="Merge timeline events from every loaded case"
+            title={t('timeline.mergeAllCases')}
           >
             <input type="checkbox" checked={allCases} onChange={(e) => setAllCases(e.target.checked)} style={{ margin: 0 }} />
-            All cases
+            {t('common.allCases')}
           </label>
         )}
         <div style={{ flex: 1 }} />
-        <input type="text" placeholder="Filter events..." value={filter} onChange={e => setFilter(e.target.value)}
+        <input type="text" placeholder={t('timeline.filterPlaceholder')} value={filter} onChange={e => setFilter(e.target.value)}
           style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 12, width: 200 }} />
         <button
           onClick={() => setShowSlice(!showSlice)}
           className="btn btn-sm"
-          title="Per-user / process / host / path filters"
+          title={t('timeline.sliceTitle')}
           style={{ borderColor: sliceActive ? 'var(--accent)' : undefined, color: sliceActive ? 'var(--accent)' : undefined }}>
-          {showSlice ? '▾' : '▸'} Slice{sliceActive ? ' ●' : ''}
+          {showSlice ? '▾' : '▸'} {t('timeline.slice')}{sliceActive ? ' ●' : ''}
         </button>
         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-          {filtered.length}/{total} events
+          {t('timeline.eventsCount', { shown: filtered.length, total })}
         </span>
       </div>
 
@@ -118,19 +120,19 @@ export default function TimelineView() {
           borderBottom: '1px solid var(--border)', background: 'var(--surface)',
           alignItems: 'center',
         }}>
-          <span className="help-text">Substring filters applied to description + fields:</span>
-          <input placeholder="user" value={sliceUser} onChange={e => setSliceUser(e.target.value)}
+          <span className="help-text">{t('timeline.sliceHelp')}</span>
+          <input placeholder={t('timeline.user')} value={sliceUser} onChange={e => setSliceUser(e.target.value)}
             className="input input-sm" style={{ width: 120 }} />
-          <input placeholder="process" value={sliceProcess} onChange={e => setSliceProcess(e.target.value)}
+          <input placeholder={t('timeline.process')} value={sliceProcess} onChange={e => setSliceProcess(e.target.value)}
             className="input input-sm" style={{ width: 140 }} />
-          <input placeholder="host" value={sliceHost} onChange={e => setSliceHost(e.target.value)}
+          <input placeholder={t('timeline.host')} value={sliceHost} onChange={e => setSliceHost(e.target.value)}
             className="input input-sm" style={{ width: 120 }} />
-          <input placeholder="path" value={slicePath} onChange={e => setSlicePath(e.target.value)}
+          <input placeholder={t('timeline.path')} value={slicePath} onChange={e => setSlicePath(e.target.value)}
             className="input input-sm" style={{ width: 160 }} />
           {sliceActive && (
             <button className="btn btn-sm"
               onClick={() => { setSliceUser(''); setSliceProcess(''); setSliceHost(''); setSlicePath(''); }}>
-              Clear
+              {t('common.clear')}
             </button>
           )}
         </div>
@@ -141,13 +143,13 @@ export default function TimelineView() {
         {filtered.length === 0 && !loading && (
           <>
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
-              {entries.length === 0 ? 'No timeline events found. Adjust the date range and try again.' : 'No events match the filter.'}
+              {entries.length === 0 ? t('timeline.noEvents') : t('timeline.noFilterMatches')}
             </div>
             {entries.length === 0 && (
               <ZeroResultsHint
                 toolName="build_timeline"
                 params={{ start_date: startDate, end_date: endDate, all_cases: allCases }}
-                message="build_timeline returned 0 events — diagnostic below"
+                message={t('timeline.zeroDiagnostic')}
                 onRetryFullRange={() => {
                   setStartDate("");
                   setEndDate("");
@@ -160,7 +162,7 @@ export default function TimelineView() {
         {loading && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-dim)' }}>
             <div style={{ width: 20, height: 20, border: '3px solid var(--border)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
-            Building timeline...
+            {t('timeline.building')}
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
         )}

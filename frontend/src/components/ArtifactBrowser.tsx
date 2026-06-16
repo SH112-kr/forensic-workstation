@@ -4,6 +4,7 @@ import { AllCommunityModule, ModuleRegistry, type ColDef } from 'ag-grid-communi
 import { post, get } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 import ZeroResultsHint from './ZeroResultsHint';
+import { useI18n } from '../i18n/useI18n';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -11,6 +12,7 @@ const PAGE_SIZE = 100;
 
 export default function ArtifactBrowser() {
   const { caseInfo } = useStore();
+  const { t } = useI18n();
   const gridRef = useRef<AgGridReact>(null);
   const [detail, setDetail] = useState<any>(null);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -77,18 +79,18 @@ export default function ArtifactBrowser() {
   }, [searchKeyword, artifactType, fetchRows]);
 
   const columnDefs: ColDef[] = [
-    { field: 'hit_id', headerName: 'ID', width: 90, sortable: true },
+    { field: 'hit_id', headerName: t('common.id'), width: 90, sortable: true },
     ...(allCases ? [{
       field: 'case_id',
-      headerName: 'Case',
+      headerName: t('common.case'),
       width: 140,
       sortable: true,
       cellStyle: { fontWeight: 600, color: '#60a5fa' },
     } as ColDef] : []),
-    { field: 'artifact_type', headerName: 'Type', width: 200, sortable: true },
+    { field: 'artifact_type', headerName: t('common.type'), width: 200, sortable: true },
     {
       field: 'fields',
-      headerName: 'Summary',
+      headerName: t('common.summary'),
       flex: 1,
       valueFormatter: (p) => {
         if (!p.value) return '';
@@ -98,7 +100,7 @@ export default function ArtifactBrowser() {
     },
     {
       field: 'timestamps',
-      headerName: 'Timestamp',
+      headerName: t('common.timestamp'),
       width: 180,
       valueFormatter: (p) => {
         if (!p.value) return '';
@@ -130,7 +132,7 @@ export default function ArtifactBrowser() {
       }}>
         <input
           type="text"
-          placeholder="Search artifacts..."
+          placeholder={t('artifacts.searchPlaceholder')}
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && search()}
@@ -149,15 +151,15 @@ export default function ArtifactBrowser() {
             color: 'var(--text)', fontSize: 12, maxWidth: 250,
           }}
         >
-          <option value="">All Types</option>
+          <option value="">{t('common.allTypes')}</option>
           {types.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <input
           type="date"
           value={startDate}
           onChange={(e) => setStartDate(e.target.value)}
-          placeholder="Start date"
-          title="Start date"
+          placeholder={t('artifacts.startDate')}
+          title={t('artifacts.startDate')}
           style={{
             padding: '6px 12px', borderRadius: 6,
             border: '1px solid var(--border)', background: 'var(--bg)',
@@ -168,15 +170,15 @@ export default function ArtifactBrowser() {
           type="date"
           value={endDate}
           onChange={(e) => setEndDate(e.target.value)}
-          placeholder="End date"
-          title="End date"
+          placeholder={t('artifacts.endDate')}
+          title={t('artifacts.endDate')}
           style={{
             padding: '6px 12px', borderRadius: 6,
             border: '1px solid var(--border)', background: 'var(--bg)',
             color: 'var(--text)', fontSize: 12,
           }}
         />
-        <button className="btn btn-sm" onClick={search}>Search</button>
+        <button className="btn btn-sm" onClick={search}>{t('common.search')}</button>
 
         {/* Date range presets — smart defaults so analysts don't guess
             numbers. Case-window button only renders when caseInfo exposes
@@ -196,17 +198,17 @@ export default function ArtifactBrowser() {
           const caseEnd = (caseInfo?.date_range_end || "").slice(0, 10);
           return (
             <span style={{ display: 'flex', gap: 4, alignItems: 'center', marginLeft: 6 }}>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Preset:</span>
+              <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{t('artifacts.preset')}</span>
               <button className="btn btn-sm" onClick={() => applyRange(weekAgo, today)}
-                style={{ fontSize: 10, padding: '3px 8px' }}>지난 7일</button>
+                style={{ fontSize: 10, padding: '3px 8px' }}>{t('artifacts.lastSevenDays')}</button>
               {caseStart && caseEnd && (
                 <button className="btn btn-sm" onClick={() => applyRange(caseStart, caseEnd)}
                   style={{ fontSize: 10, padding: '3px 8px' }} title={`${caseStart} ~ ${caseEnd}`}>
-                  사건 기간
+                  {t('artifacts.caseRange')}
                 </button>
               )}
               <button className="btn btn-sm" onClick={() => applyRange("", "")}
-                style={{ fontSize: 10, padding: '3px 8px' }}>전체</button>
+                style={{ fontSize: 10, padding: '3px 8px' }}>{t('artifacts.allRange')}</button>
             </span>
           );
         })()}
@@ -219,7 +221,7 @@ export default function ArtifactBrowser() {
               border: '1px solid var(--border)',
               background: allCases ? 'var(--accent-light)' : 'transparent',
             }}
-            title="Search every loaded case and tag each row with its case_id"
+            title={t('artifacts.allCasesTitle')}
           >
             <input
               type="checkbox"
@@ -227,7 +229,7 @@ export default function ArtifactBrowser() {
               onChange={(e) => setAllCases(e.target.checked)}
               style={{ margin: 0 }}
             />
-            All cases
+            {t('common.allCases')}
           </label>
         )}
       </div>
@@ -247,7 +249,7 @@ export default function ArtifactBrowser() {
                 borderTopColor: 'var(--accent)', borderRadius: '50%',
                 animation: 'spin 0.8s linear infinite',
               }} />
-              Loading artifacts...
+              {t('artifacts.loading')}
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
@@ -260,7 +262,7 @@ export default function ArtifactBrowser() {
                   fontSize: 12, color: 'var(--text-dim)',
                 }}
               >
-                No artifacts match the current filter.
+                {t('artifacts.noMatches')}
               </div>
               <ZeroResultsHint
                 toolName="search_artifacts"
@@ -269,7 +271,7 @@ export default function ArtifactBrowser() {
                   start_date: startDate, end_date: endDate,
                   all_cases: allCases,
                 }}
-                message="search_artifacts returned 0 rows — diagnostic below"
+                message={t('artifacts.zeroDiagnostic')}
                 onRetryFullRange={() => {
                   setStartDate("");
                   setEndDate("");
@@ -299,18 +301,18 @@ export default function ArtifactBrowser() {
               disabled={offset === 0 || loading}
               onClick={() => fetchRows(Math.max(0, offset - PAGE_SIZE))}
             >
-              Previous
+              {t('common.previous')}
             </button>
-            <span>Page {currentPage} of {totalPages}</span>
+            <span>{t('common.pageOf', { page: currentPage, total: totalPages })}</span>
             <button
               className="btn btn-sm"
               disabled={offset + PAGE_SIZE >= totalRows || loading}
               onClick={() => fetchRows(offset + PAGE_SIZE)}
             >
-              Next
+              {t('common.next')}
             </button>
             <div style={{ flex: 1 }} />
-            <span>{totalRows.toLocaleString()} total artifacts</span>
+            <span>{totalRows.toLocaleString()} {t('common.totalArtifacts')}</span>
           </div>
         </div>
 
@@ -321,15 +323,15 @@ export default function ArtifactBrowser() {
             padding: 16, background: 'var(--surface)', fontSize: 12,
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-              <strong>Hit #{detail.hit_id}</strong>
-              <button className="btn btn-sm" onClick={() => setDetail(null)}>Close</button>
+              <strong>{t('artifacts.hit', { id: detail.hit_id })}</strong>
+              <button className="btn btn-sm" onClick={() => setDetail(null)}>{t('common.close')}</button>
             </div>
             <div style={{ marginBottom: 8 }}>
               <span className="badge badge-info">{detail.artifact_type}</span>
             </div>
 
             {/* Fields */}
-            <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>Fields</h4>
+            <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>{t('common.fields')}</h4>
             {Object.entries(detail.fields || {}).map(([k, v]) => (
               <div key={k} style={{ padding: '3px 0', borderBottom: '1px solid var(--border-light)' }}>
                 <span style={{ color: 'var(--text-dim)' }}>{k}:</span>{' '}
@@ -338,7 +340,7 @@ export default function ArtifactBrowser() {
             ))}
 
             {/* Timestamps */}
-            <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>Timestamps</h4>
+            <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>{t('common.timestamps')}</h4>
             {Object.entries(detail.timestamps || {}).map(([k, v]) => (
               <div key={k} style={{ padding: '3px 0', fontFamily: 'var(--mono)', fontSize: 11 }}>
                 <span style={{ color: 'var(--text-dim)' }}>{k}:</span> {String(v)}
@@ -347,7 +349,7 @@ export default function ArtifactBrowser() {
 
             {detail.hash && (
               <>
-                <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>Hash</h4>
+                <h4 style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 12, marginBottom: 6, textTransform: 'uppercase' }}>{t('common.hash')}</h4>
                 <div style={{ fontFamily: 'var(--mono)', fontSize: 11, wordBreak: 'break-all' }}>{detail.hash}</div>
               </>
             )}

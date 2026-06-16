@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import { useI18n } from '../i18n/useI18n';
 
 interface Cause {
   cause: string;
@@ -44,6 +45,7 @@ export default function ZeroResultsHint({
   onRetryFullRange,
 }: ZeroResultsHintProps) {
   const { setActiveView } = useStore();
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [causes, setCauses] = useState<Cause[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -59,7 +61,7 @@ export default function ZeroResultsHint({
         setCauses(r.likely_causes || []);
         setSuggestions(r.suggested_queries || []);
       })
-      .catch((e) => !cancelled && setError(e?.message || 'Failed to diagnose'))
+      .catch((e) => !cancelled && setError(e?.message || t('zero.failed')))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   // Re-run when the query signature changes.
@@ -76,23 +78,23 @@ export default function ZeroResultsHint({
         <span style={{ fontSize: 16 }}>{icon}</span>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>
-            {message || 'Why zero results?'}
+            {message || t('zero.why')}
           </div>
           <div className="help-text" style={{ marginTop: 2 }}>
-            Offline diagnosis — structural gaps, filter conflicts, or date-range mismatches.
+            {t('zero.offlineDiagnosis')}
           </div>
         </div>
         <button className="btn btn-sm" onClick={() => setActiveView('coverage')}>
-          Open coverage →
+          {t('zero.openCoverage')}
         </button>
       </div>
 
-      {loading && <div className="help-text">Diagnosing…</div>}
+      {loading && <div className="help-text">{t('zero.diagnosing')}</div>}
       {error && <div className="field-error">{error}</div>}
 
       {!loading && !error && causes.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div className="label" style={{ marginBottom: 6 }}>Likely causes</div>
+          <div className="label" style={{ marginBottom: 6 }}>{t('zero.likelyCauses')}</div>
           {causes.map((c, i) => (
             <div key={i} style={{
               padding: '8px 10px', background: 'var(--bg)',
@@ -132,17 +134,17 @@ export default function ZeroResultsHint({
               delete clean.end_date;
               onRetryFullRange(clean);
             }}>
-            ⟳ 전체 범위로 재검색
+            {t('zero.retryFullRange')}
           </button>
           <span className="help-text" style={{ marginLeft: 8 }}>
-            기존 필터 유지, 날짜 필터만 제거하고 다시 실행
+            {t('zero.retryFullRangeHint')}
           </span>
         </div>
       )}
 
       {!loading && !error && suggestions.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          <div className="label" style={{ marginBottom: 6 }}>Suggested next queries</div>
+          <div className="label" style={{ marginBottom: 6 }}>{t('zero.suggestedNextQueries')}</div>
           {suggestions.map((s, i) => (
             <div key={i} style={{
               padding: '8px 10px', background: 'var(--bg)',
