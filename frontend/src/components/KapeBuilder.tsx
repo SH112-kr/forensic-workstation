@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
+import { useI18n } from '../i18n/useI18n';
 
 interface KapeItem {
   name: string;
@@ -12,6 +13,7 @@ interface KapeItem {
 
 export default function KapeBuilder() {
   const { evidenceDir } = useStore();
+  const { t } = useI18n();
   const [targets, setTargets] = useState<KapeItem[]>([]);
   const [modules, setModules] = useState<KapeItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,7 +110,7 @@ export default function KapeBuilder() {
 
   const handleRun = async () => {
     if (!source.trim() || !outputDir.trim()) {
-      setResult({ error: 'Source Drive and Output Directory are required' });
+      setResult({ error: t('kape.requiredError') });
       return;
     }
     setRunning(true);
@@ -188,8 +190,8 @@ export default function KapeBuilder() {
     fontWeight: 600, cursor: 'pointer',
   };
 
-  if (loading) return <div style={{ padding: 24, color: 'var(--text-dim)' }}>Loading KAPE options...</div>;
-  if (error) return <div style={{ padding: 24, color: '#ef4444' }}>Error: {error}</div>;
+  if (loading) return <div style={{ padding: 24, color: 'var(--text-dim)' }}>{t('kape.loading')}</div>;
+  if (error) return <div style={{ padding: 24, color: '#ef4444' }}>{t('kape.errorPrefix')} {error}</div>;
 
   // Collect all items included by selected compounds
   const includedByCompoundTargets = new Set<string>();
@@ -210,36 +212,36 @@ export default function KapeBuilder() {
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
-      <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700 }}>KAPE Command Builder</h2>
+      <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700 }}>{t('kape.title')}</h2>
 
       {/* Source & Output */}
       <div style={sectionStyle}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: 12, marginBottom: 12 }}>
           <div>
             <label style={{ fontSize: 11, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>
-              Source Drive
+              {t('kape.sourceDrive')}
             </label>
             <input style={inputStyle} placeholder="G:" value={source} onChange={e => setSource(e.target.value)} />
           </div>
           <div>
             <label style={{ fontSize: 11, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>
-              Case Name
+              {t('kape.caseName')}
             </label>
             <input style={inputStyle} placeholder="case" value={caseName} onChange={e => handleCaseNameChange(e.target.value)} />
           </div>
           <div>
             <label style={{ fontSize: 11, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>
-              Output Directory
+              {t('kape.outputDirectory')}
             </label>
             <input style={inputStyle} value={outputDir} onChange={e => setOutputDir(e.target.value)} />
           </div>
         </div>
         <div style={{ display: 'flex', gap: 16, fontSize: 13 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="checkbox" checked={vss} onChange={e => setVss(e.target.checked)} /> VSS (Volume Shadow Copies)
+            <input type="checkbox" checked={vss} onChange={e => setVss(e.target.checked)} /> {t('kape.vss')}
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="checkbox" checked={vd} onChange={e => setVd(e.target.checked)} /> Deduplicate
+            <input type="checkbox" checked={vd} onChange={e => setVd(e.target.checked)} /> {t('kape.deduplicate')}
           </label>
         </div>
       </div>
@@ -250,12 +252,12 @@ export default function KapeBuilder() {
         <div style={sectionStyle}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
-              Targets <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>({selectedTargets.size} selected)</span>
+              {t('kape.targets')} <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>({t('kape.selected', { count: selectedTargets.size })})</span>
             </h3>
           </div>
           <input
             style={{ ...inputStyle, marginBottom: 8 }}
-            placeholder="Filter targets..."
+            placeholder={t('kape.filterTargets')}
             value={filterTarget}
             onChange={e => setFilterTarget(e.target.value)}
           />
@@ -285,10 +287,10 @@ export default function KapeBuilder() {
                           {item.name}
                           {item.is_compound && (
                             <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3,
-                              background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>COMPOUND</span>
+                              background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>{t('kape.compound')}</span>
                           )}
                           {includedByParent && !selected && (
-                            <span style={{ fontSize: 9, color: '#4ade80' }}>included</span>
+                            <span style={{ fontSize: 9, color: '#4ade80' }}>{t('kape.included')}</span>
                           )}
                         </div>
                         {item.description && (
@@ -309,12 +311,12 @@ export default function KapeBuilder() {
         <div style={sectionStyle}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
-              Modules <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>({selectedModules.size} selected)</span>
+              {t('kape.modules')} <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>({t('kape.selected', { count: selectedModules.size })})</span>
             </h3>
           </div>
           <input
             style={{ ...inputStyle, marginBottom: 8 }}
-            placeholder="Filter modules..."
+            placeholder={t('kape.filterModules')}
             value={filterModule}
             onChange={e => setFilterModule(e.target.value)}
           />
@@ -344,10 +346,10 @@ export default function KapeBuilder() {
                           {item.name}
                           {item.is_compound && (
                             <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3,
-                              background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>COMPOUND</span>
+                              background: 'rgba(96,165,250,0.15)', color: '#60a5fa' }}>{t('kape.compound')}</span>
                           )}
                           {includedByParent && !selected && (
-                            <span style={{ fontSize: 9, color: '#4ade80' }}>included</span>
+                            <span style={{ fontSize: 9, color: '#4ade80' }}>{t('kape.included')}</span>
                           )}
                         </div>
                         {item.description && (
@@ -367,7 +369,7 @@ export default function KapeBuilder() {
 
       {/* Generated Command Preview */}
       <div style={sectionStyle}>
-        <h3 style={{ margin: '0 0 8px', fontSize: 14, fontWeight: 600 }}>Command Preview</h3>
+        <h3 style={{ margin: '0 0 8px', fontSize: 14, fontWeight: 600 }}>{t('kape.commandPreview')}</h3>
         <div style={{
           padding: 12, borderRadius: 6, background: 'rgba(0,0,0,0.3)',
           fontFamily: 'monospace', fontSize: 12, color: '#4ade80',
@@ -386,18 +388,18 @@ export default function KapeBuilder() {
             onClick={handleRun}
             disabled={running || !source.trim() || !outputDir.trim()}
           >
-            {running ? 'Running...' : 'Execute'}
+            {running ? t('kape.running') : t('kape.execute')}
           </button>
           {running && (
             <button style={{ ...btnStyle, background: '#ef4444' }} onClick={handleStop}>
-              Stop
+              {t('kape.stop')}
             </button>
           )}
           <button
             style={{ ...btnStyle, background: 'var(--border)', color: 'var(--text)' }}
             onClick={() => navigator.clipboard?.writeText(buildCommand())}
           >
-            Copy Command
+            {t('kape.copyCommand')}
           </button>
         </div>
       </div>
@@ -420,7 +422,7 @@ export default function KapeBuilder() {
               </span>
               {parsedStats && (
                 <span style={{ color: 'var(--text-dim)', marginLeft: 'auto', fontSize: 12 }}>
-                  {parsedStats.files} files ({parsedStats.size_mb} MB)
+                  {t('kape.files', { count: parsedStats.files, size: parsedStats.size_mb })}
                 </span>
               )}
             </div>
@@ -433,7 +435,7 @@ export default function KapeBuilder() {
               color: result.error ? '#ef4444' : '#4ade80',
               fontWeight: 600, fontSize: 13,
             }}>
-              {result.error ? `Error: ${result.error}` : `Complete (${result.duration_s}s)`}
+              {result.error ? `${t('kape.errorPrefix')} ${result.error}` : t('kape.complete', { seconds: result.duration_s })}
             </div>
           )}
 
