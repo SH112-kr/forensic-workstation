@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { get } from '../hooks/useApi';
+import { useI18n } from '../i18n/useI18n';
 
 interface DependencyItem {
   key: string;
@@ -7,7 +8,8 @@ interface DependencyItem {
   kind: string;
   available: boolean;
   required: boolean;
-  severity: 'ok' | 'blocked' | 'degraded';
+  affects_overall_status: boolean;
+  severity: 'ok' | 'blocked' | 'degraded' | 'optional';
   required_for: string;
   blocked_capabilities: string[];
   install_hint: string;
@@ -24,6 +26,7 @@ interface DependencyReport {
     available: number;
     missing_required: number;
     missing_optional: number;
+    missing_affecting_overall: number;
   };
 }
 
@@ -32,6 +35,7 @@ interface Props {
 }
 
 export default function DependencyStatusPanel({ compact = false }: Props) {
+  const { t } = useI18n();
   const [report, setReport] = useState<DependencyReport | null>(null);
   const [expanded, setExpanded] = useState(!compact);
 
@@ -45,12 +49,12 @@ export default function DependencyStatusPanel({ compact = false }: Props) {
 
   const missing = report.dependencies.filter((d) => !d.available);
   const blocked = missing.filter((d) => d.required);
-  const degraded = missing.filter((d) => !d.required);
-  const tone = blocked.length > 0
-    ? { bg: 'var(--critical-bg)', border: 'var(--critical-border)', color: 'var(--critical)', label: 'Blocked' }
-    : degraded.length > 0
-      ? { bg: 'var(--high-bg)', border: 'var(--high)', color: 'var(--high)', label: 'Degraded' }
-      : { bg: 'var(--low-bg)', border: 'var(--low)', color: 'var(--low)', label: 'Ready' };
+  const degraded = missing.filter((d) => !d.required && d.affects_overall_status !== false);
+  const tone = report.overall_status === 'blocked' || blocked.length > 0
+    ? { bg: 'var(--critical-bg)', border: 'var(--critical-border)', color: 'var(--critical)', label: t('common.blocked') }
+    : report.overall_status === 'degraded' || degraded.length > 0
+      ? { bg: 'var(--high-bg)', border: 'var(--high)', color: 'var(--high)', label: t('common.degraded') }
+      : { bg: 'var(--low-bg)', border: 'var(--low)', color: 'var(--low)', label: t('common.ready') };
 
   return (
     <div style={{
@@ -62,10 +66,10 @@ export default function DependencyStatusPanel({ compact = false }: Props) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ fontWeight: 700, fontSize: compact ? 13 : 15, color: tone.color }}>
-          Analysis Dependencies: {tone.label}
+          {t('dependency.title', { status: tone.label })}
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-          {report.summary.available}/{report.summary.total} available
+          {report.summary.available}/{report.summary.total} {t('common.available')}
         </div>
         <div style={{ flex: 1 }} />
         {compact && missing.length > 0 && (
@@ -74,20 +78,20 @@ export default function DependencyStatusPanel({ compact = false }: Props) {
             onClick={() => setExpanded(!expanded)}
             style={{ fontSize: 10, padding: '3px 8px' }}
           >
-            {expanded ? 'Hide' : 'Details'}
+            {expanded ? t('common.hide') : t('common.details')}
           </button>
         )}
       </div>
 
       {missing.length === 0 && !compact && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-dim)' }}>
-          All tracked Python modules and external binaries are available.
+          {t('dependency.allAvailable')}
         </div>
       )}
 
       {missing.length > 0 && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.55 }}>
-          Missing dependencies can make an MCP call look like a failed analysis. The blocked capabilities below show what will not work until the dependency is installed.
+          {t('dependency.missingHint')}
         </div>
       )}
 
@@ -104,18 +108,22 @@ export default function DependencyStatusPanel({ compact = false }: Props) {
                 <span style={{
                   fontSize: 10,
                   fontWeight: 700,
-                  color: dep.required ? 'var(--critical)' : 'var(--high)',
-                  border: `1px solid ${dep.required ? 'var(--critical-border)' : 'var(--high)'}`,
+                  color: dep.required
+                    ? 'var(--critical)'
+                    : dep.affects_overall_status === false ? 'var(--text-dim)' : 'var(--high)',
+                  border: `1px solid ${dep.required
+                    ? 'var(--critical-border)'
+                    : dep.affects_overall_status === false ? 'var(--border)' : 'var(--high)'}`,
                   borderRadius: 3,
                   padding: '1px 5px',
                 }}>
-                  {dep.required ? 'REQUIRED' : 'OPTIONAL'}
+                  {dep.required ? t('common.required') : t('common.optional')}
                 </span>
                 <span style={{ fontWeight: 700, fontSize: 13 }}>{dep.display_name}</span>
                 <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{dep.required_for}</span>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>
-                Blocks: {dep.blocked_capabilities.join(', ')}
+                {t('dependency.blocks')} {dep.blocked_capabilities.join(', ')}
               </div>
               <code style={{
                 display: 'block',
@@ -137,7 +145,7 @@ export default function DependencyStatusPanel({ compact = false }: Props) {
 
       {!compact && (
         <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--mono)', wordBreak: 'break-all' }}>
-          Python: {report.python_executable}
+          {t('dependency.python')} {report.python_executable}
         </div>
       )}
     </div>

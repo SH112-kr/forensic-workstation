@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import DependencyStatusPanel from './DependencyStatusPanel';
+import { useI18n } from '../i18n/useI18n';
 
 interface ToolStatus {
   key: string;
@@ -28,6 +29,7 @@ const TRIAGE_LANE_COLORS: Record<string, { bg: string; color: string }> = {
 };
 
 export default function Settings() {
+  const { t } = useI18n();
   const [tools, setTools] = useState<ToolStatus[]>([]);
   const [scanDir, setScanDir] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -179,7 +181,7 @@ export default function Settings() {
 
   return (
     <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
-      <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700 }}>Settings</h2>
+      <h2 style={{ margin: '0 0 20px', fontSize: 20, fontWeight: 700 }}>{t('settings.title')}</h2>
 
       <DependencyStatusPanel />
 
@@ -199,10 +201,10 @@ export default function Settings() {
       {/* Auto Scan */}
       <div style={sectionStyle}>
         <h3 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>
-          Tool Auto-Detection
+          {t('settings.toolAutoDetection')}
         </h3>
         <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--text-dim)' }}>
-          Point to your tools folder and automatically detect KAPE, Ghidra, Hayabusa, etc.
+          {t('settings.toolAutoDetectionDesc')}
         </p>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
@@ -213,7 +215,7 @@ export default function Settings() {
             onKeyDown={e => e.key === 'Enter' && handleScan()}
           />
           <button style={btnStyle} onClick={handleScan} disabled={scanning}>
-            {scanning ? 'Scanning...' : 'Scan'}
+            {scanning ? t('settings.scanning') : t('settings.scan')}
           </button>
         </div>
         {scanResult?.found?.length > 0 && (
@@ -235,9 +237,9 @@ export default function Settings() {
       {/* Tool Paths */}
       <div style={sectionStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Tool Paths</h3>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{t('settings.toolPaths')}</h3>
           <button style={btnSecondary} onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Changes'}
+            {saving ? t('settings.saving') : t('settings.saveChanges')}
           </button>
         </div>
 
@@ -263,13 +265,13 @@ export default function Settings() {
               <input
                 style={inputStyle}
                 type={tool.is_api_key ? 'password' : 'text'}
-                placeholder={tool.is_api_key ? 'Enter API key...' : 'Path to tool...'}
+                placeholder={tool.is_api_key ? t('settings.apiKeyPlaceholder') : t('settings.pathPlaceholder')}
                 value={editValues[tool.key] || ''}
                 onChange={e => setEditValues(prev => ({ ...prev, [tool.key]: e.target.value }))}
               />
               {tool.auto_path && (
                 <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 4 }}>
-                  Auto-detected: {tool.auto_path}
+                  {t('settings.autoDetected')} {tool.auto_path}
                 </div>
               )}
             </div>
@@ -280,17 +282,16 @@ export default function Settings() {
       {/* Auto Triage */}
       <div style={sectionStyle}>
         <h3 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>
-          Auto Triage
+          {t('settings.triage')}
         </h3>
         <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--text-dim)' }}>
-          Run full pipeline: KAPE collect/parse + case analysis + IOC extraction + report generation.
-          Requires KAPE configured above and admin privileges.
+          {t('settings.triageDesc')}
         </p>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
           <div style={{ flex: 1 }}>
             <label style={{ fontSize: 11, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>
-              Source Drive (mounted image)
+              {t('settings.sourceDrive')}
             </label>
             <input
               style={inputStyle}
@@ -301,7 +302,7 @@ export default function Settings() {
           </div>
           <div style={{ flex: 1 }}>
             <label style={{ fontSize: 11, color: 'var(--text-dim)', display: 'block', marginBottom: 4 }}>
-              Case Name (optional)
+              {t('settings.caseName')}
             </label>
             <input
               style={inputStyle}
@@ -322,11 +323,11 @@ export default function Settings() {
             onClick={handleTriage}
             disabled={triageRunning || !triageSource.trim()}
           >
-            {triageRunning ? 'Running...' : 'Start Auto Triage'}
+            {triageRunning ? t('settings.running') : t('settings.runTriage')}
           </button>
           {triageRunning && (
             <button style={{ ...btnSecondary }} onClick={handleTriageStop}>
-              Stop
+              {t('settings.stopTriage')}
             </button>
           )}
         </div>
@@ -349,7 +350,7 @@ export default function Settings() {
               </span>
               {triageStats && (
                 <span style={{ color: 'var(--text-dim)', marginLeft: 'auto' }}>
-                  {triageStats.files} CSV files ({triageStats.size_mb} MB)
+                  {t('settings.csvFiles', { count: triageStats.files, size: triageStats.size_mb })}
                 </span>
               )}
             </div>
@@ -395,11 +396,11 @@ export default function Settings() {
             fontSize: 12,
           }}>
             {triageResult.error ? (
-              <div style={{ color: '#ef4444' }}>Error: {triageResult.error}</div>
+              <div style={{ color: '#ef4444' }}>{t('settings.error')} {triageResult.error}</div>
             ) : (
               <>
                 <div style={{ fontWeight: 700, marginBottom: 8, color: '#4ade80' }}>
-                  Triage Complete ({triageResult.total_duration_s}s)
+                  {t('settings.triageComplete', { seconds: triageResult.total_duration_s })}
                 </div>
                 {triageResult.lane_state_board?.error ? (
                   <div style={{
@@ -410,12 +411,12 @@ export default function Settings() {
                     border: '1px solid var(--border)',
                     color: 'var(--text-dim)',
                   }}>
-                    <strong style={{ color: 'var(--text)' }}>Lane state unavailable.</strong> {triageResult.lane_state_board.error}
+                    <strong style={{ color: 'var(--text)' }}>{t('settings.laneStateUnavailable')}</strong> {triageResult.lane_state_board.error}
                   </div>
                 ) : triageResult.lane_state_board && (
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                      <span style={{ fontWeight: 600 }}>Lane state:</span>
+                      <span style={{ fontWeight: 600 }}>{t('settings.laneState')}</span>
                       {triageResult.lane_state_board.allow_strong_conclusion === false && (
                         <span style={{
                           padding: '2px 8px',
@@ -453,19 +454,19 @@ export default function Settings() {
                   </div>
                 )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 16px' }}>
-                  <span>Total Artifacts:</span>
+                  <span>{t('settings.totalArtifacts')}</span>
                   <span style={{ fontWeight: 600 }}>{triageResult.total_hits?.toLocaleString()}</span>
-                  <span>Suspicious Findings:</span>
+                  <span>{t('settings.suspiciousFindings')}</span>
                   <span style={{ fontWeight: 600, color: triageResult.summary?.suspicious_findings > 0 ? '#ef4444' : 'inherit' }}>
                     {triageResult.summary?.suspicious_findings}
                   </span>
-                  <span>IOCs Extracted:</span>
+                  <span>{t('settings.iocsExtracted')}</span>
                   <span style={{ fontWeight: 600 }}>{triageResult.summary?.iocs_extracted}</span>
-                  <span>Timeline Events:</span>
+                  <span>{t('settings.timelineEvents')}</span>
                   <span style={{ fontWeight: 600 }}>{triageResult.summary?.timeline_events?.toLocaleString()}</span>
-                  <span>MITRE Techniques:</span>
+                  <span>{t('settings.mitreTechniques')}</span>
                   <span style={{ fontWeight: 600 }}>{triageResult.summary?.mitre_techniques}</span>
-                  <span>Output:</span>
+                  <span>{t('settings.output')}</span>
                   <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{triageResult.output_dir}</span>
                 </div>
                 {triageResult.autonomous_assessment && !triageResult.autonomous_assessment.error && (
@@ -478,17 +479,17 @@ export default function Settings() {
                     fontSize: 12,
                   }}>
                     <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                      Autonomous decision: {String(triageResult.autonomous_assessment.decision || 'unknown').replace(/_/g, ' ')}
+                      {t('settings.autonomousDecision')} {String(triageResult.autonomous_assessment.decision || 'unknown').replace(/_/g, ' ')}
                     </div>
                     <div style={{ color: 'var(--text-dim)' }}>
                       {String(triageResult.autonomous_assessment.verdict || 'unknown').replace(/_/g, ' ')}
-                      {' '}| confidence {triageResult.autonomous_assessment.confidence || 'unknown'}
+                      {' '}| {t('settings.confidence')} {triageResult.autonomous_assessment.confidence || 'unknown'}
                     </div>
                   </div>
                 )}
                 {(triageResult.alert_summary?.key_findings || triageResult.top_findings || []).length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Key Findings:</div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{t('settings.keyFindings')}</div>
                     {(triageResult.alert_summary?.key_findings || triageResult.top_findings || []).map((f: any, i: number) => {
                       const tier = f.priority_tier || f.severity || 'info';
                       const label = f.rule_name || f.rule || 'finding';

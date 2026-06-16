@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { get, post } from '../hooks/useApi';
 import { useStore } from '../hooks/useStore';
 import DependencyStatusPanel from './DependencyStatusPanel';
+import { useI18n } from '../i18n/useI18n';
 
 const KILL_CHAIN_PHASES = [
   'Reconnaissance', 'Resource Development', 'Initial Access', 'Execution',
@@ -43,6 +44,7 @@ function downgradeRiskLevel(level: string | null, allowStrongConclusion: boolean
 }
 
 export default function Dashboard() {
+  const { t } = useI18n();
   const {
     caseInfo,
     detection,
@@ -136,15 +138,15 @@ export default function Dashboard() {
   // Disk / memory direct-analysis mode — no AXIOM artifacts available
   if (isDirectMode) {
     const isE01 = caseInfo.case_mode === 'e01';
-    const modeLabel = isE01 ? 'Disk Image' : 'Memory Dump';
+    const modeLabel = isE01 ? t('dashboard.diskImage') : t('dashboard.memoryDump');
     const quickActions: { label: string; view: string; desc: string }[] = isE01
       ? [
-          { label: 'Binary Analysis', view: 'binary', desc: 'Extract & Ghidra-analyze files from image' },
-          { label: 'Registry Analysis', view: 'registry', desc: 'Browse NTFS registry hives' },
-          { label: 'Auto Triage', view: 'settings', desc: 'Run KAPE on mounted image to unlock full analysis' },
+          { label: t('dashboard.binaryAnalysis'), view: 'binary', desc: t('dashboard.binaryAnalysisDesc') },
+          { label: t('dashboard.registryAnalysis'), view: 'registry', desc: t('dashboard.registryAnalysisDesc') },
+          { label: t('dashboard.autoTriage'), view: 'settings', desc: t('dashboard.autoTriageDesc') },
         ]
       : [
-          { label: 'Memory Analysis', view: 'memory', desc: 'Run Volatility plugins against this dump' },
+          { label: t('dashboard.memoryAnalysis'), view: 'memory', desc: t('dashboard.memoryAnalysisDesc') },
         ];
     return (
       <div style={{ padding: 24, overflowY: 'auto', height: '100%' }}>
@@ -155,17 +157,15 @@ export default function Dashboard() {
           background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
         }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: '#f59e0b', marginBottom: 6 }}>
-            Direct Image Analysis — {modeLabel}
+            {t('dashboard.directImageAnalysis', { mode: modeLabel })}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
-            {isE01
-              ? 'The E01 image is mounted via dissect. Artifact-level detection (Prefetch, SRUM, Event Logs) requires KAPE output. Use Binary Analysis to extract and examine individual files, or run Auto Triage to generate a full KAPE-parsed case.'
-              : 'Memory dump loaded. Use Memory Analysis for Volatility-based process and artifact extraction.'}
+            {isE01 ? t('dashboard.e01DirectHint') : t('dashboard.memoryDirectHint')}
           </div>
         </div>
 
         <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          Available actions
+          {t('dashboard.availableActions')}
         </h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 24 }}>
           {quickActions.map((a) => (
@@ -189,7 +189,7 @@ export default function Dashboard() {
         {isE01 && (
           <>
             <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              To enable full artifact detection
+              {t('dashboard.enableFullDetection')}
             </h3>
             <div style={{
               padding: '14px 18px', borderRadius: 10,
@@ -197,16 +197,16 @@ export default function Dashboard() {
               fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.7,
             }}>
               <div style={{ marginBottom: 6 }}>
-                <span style={{ color: 'var(--text)', fontWeight: 600 }}>1.</span> Mount the E01 with Arsenal Image Mounter or similar — obtain a drive letter (e.g. <code style={{ fontFamily: 'monospace' }}>G:</code>)
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>1.</span> {t('dashboard.mountStep')} (e.g. <code style={{ fontFamily: 'monospace' }}>G:</code>)
               </div>
               <div style={{ marginBottom: 6 }}>
                 <span style={{ color: 'var(--text)', fontWeight: 600 }}>2.</span> Go to <span
                   onClick={() => setActiveView('settings')}
                   style={{ color: 'var(--accent)', cursor: 'pointer', fontWeight: 600 }}
-                >Settings → Auto Triage</span> and enter that drive letter
+                >{t('dashboard.settingsStep')}</span>
               </div>
               <div>
-                <span style={{ color: 'var(--text)', fontWeight: 600 }}>3.</span> KAPE collects + parses artifacts → full detection, MITRE, timeline become available
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>3.</span> {t('dashboard.kapeStep')}
               </div>
             </div>
           </>
@@ -309,7 +309,7 @@ export default function Dashboard() {
               {antiForensics.rules_fired} rule{antiForensics.rules_fired > 1 ? 's' : ''} fired, {antiForensics.total_hits} total hit{antiForensics.total_hits === 1 ? '' : 's'}
             </div>
           </div>
-          <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>Review</span>
+          <span style={{ color: 'var(--critical)', fontSize: 12, fontWeight: 600 }}>{t('dashboard.review')}</span>
         </div>
       )}
 
@@ -346,7 +346,7 @@ export default function Dashboard() {
             color: autonomousAssessment.investigation_incomplete ? 'var(--high)' : 'var(--accent)',
             fontSize: 12,
             fontWeight: 600,
-          }}>Details</span>
+          }}>{t('dashboard.details')}</span>
         </div>
       )}
 
@@ -473,7 +473,7 @@ export default function Dashboard() {
               {coverageSummary.case_format === 'kape' && <> | KAPE-only case</>}
             </div>
           </div>
-          <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>Details</span>
+          <span style={{ color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>{t('dashboard.details')}</span>
         </div>
       )}
 
@@ -562,7 +562,7 @@ export default function Dashboard() {
                 cursor: 'pointer',
               }}
             >
-              Run KAPE health check
+              {t('dashboard.runKapeHealthCheck')}
             </button>
           </div>
         </div>
@@ -570,11 +570,11 @@ export default function Dashboard() {
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
         <div className="card" style={{ width: 190, flexShrink: 0 }}>
-          <div className="card-label">Risk Level</div>
+          <div className="card-label">{t('dashboard.riskLevel')}</div>
           {loading ? (
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10 }}>
               <span className="spinner" />
-              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Running detection</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t('dashboard.runningDetection')}</span>
             </div>
           ) : riskLevel ? (
             <>
@@ -591,20 +591,20 @@ export default function Dashboard() {
                 {riskLabels[riskLevel]}
               </div>
               <div style={{ fontSize: 10, color: 'var(--text-subtle)', marginTop: 4 }}>
-                {riskDowngraded ? 'Strong conclusion blocked by lane state' : `${findings.length} detection rules triggered`}
+                {riskDowngraded ? t('dashboard.strongConclusionBlocked') : t('dashboard.detectionRulesTriggered', { count: findings.length })}
               </div>
             </>
           ) : (
-            <div style={{ color: 'var(--text-muted)', marginTop: 10 }}>Not assessed</div>
+            <div style={{ color: 'var(--text-muted)', marginTop: 10 }}>{t('dashboard.notAssessed')}</div>
           )}
         </div>
 
         <div className="card" style={{ flex: 1, minWidth: 260 }}>
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-            <div className="card-label">Finding Distribution</div>
+            <div className="card-label">{t('dashboard.findingDistribution')}</div>
             <div style={{ flex: 1 }} />
             <button className="btn btn-sm" onClick={() => setActiveView('detection')}>
-              View all {findings.length}
+              {t('dashboard.viewAll', { count: findings.length })}
             </button>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, height: 58, alignItems: 'end' }}>
@@ -625,13 +625,13 @@ export default function Dashboard() {
         </div>
 
         <div className="card" style={{ width: 230, flexShrink: 0 }}>
-          <div className="card-label" style={{ marginBottom: 6 }}>Case Metadata</div>
+          <div className="card-label" style={{ marginBottom: 6 }}>{t('dashboard.caseMetadata')}</div>
           {[
-            ['Source', caseInfo.source_type || caseInfo.case_mode || 'case'],
-            ['Artifacts', (caseInfo.total_hits || 0).toLocaleString()],
-            ['Types', String(caseInfo.artifact_type_count || 0)],
-            ['Opened', (caseInfo.date_range_start || '?').slice(0, 10)],
-            ['Status', allowStrongConclusion ? 'reviewable' : 'incomplete'],
+            [t('dashboard.source'), caseInfo.source_type || caseInfo.case_mode || 'case'],
+            [t('common.artifacts'), (caseInfo.total_hits || 0).toLocaleString()],
+            [t('common.types'), String(caseInfo.artifact_type_count || 0)],
+            [t('dashboard.opened'), (caseInfo.date_range_start || '?').slice(0, 10)],
+            [t('dashboard.status'), allowStrongConclusion ? t('dashboard.statusReviewable') : t('dashboard.statusIncomplete')],
           ].map(([label, value]) => (
             <div key={label} style={{
               display: 'flex',
@@ -652,10 +652,10 @@ export default function Dashboard() {
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-          <div className="card-label">MITRE ATT&CK Kill Chain Coverage</div>
+          <div className="card-label">{t('dashboard.killChainCoverage')}</div>
           <div style={{ flex: 1 }} />
-          <LegendDot color="var(--high)" label="seen" />
-          <LegendDot color="var(--text-subtle)" label="not seen" />
+          <LegendDot color="var(--high)" label={t('dashboard.seen')} />
+          <LegendDot color="var(--text-subtle)" label={t('dashboard.notSeen')} />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(84px, 1fr))', gap: 4 }}>
           {KILL_CHAIN_PHASES.map((phase, index) => {
@@ -693,7 +693,7 @@ export default function Dashboard() {
 
       {hasLaneBoard && !laneError && (
         <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-label" style={{ marginBottom: 10 }}>Investigative Lanes</div>
+          <div className="card-label" style={{ marginBottom: 10 }}>{t('dashboard.investigativeLanes')}</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             {LANE_ORDER.map((lane) => {
               const entry = laneBoard?.[lane] || {};
@@ -748,7 +748,7 @@ export default function Dashboard() {
       )}
 
       <h3 style={{ fontSize: 13, fontWeight: 600, margin: '24px 0 10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-        Key findings (balanced)
+        {t('dashboard.keyFindingsBalanced')}
       </h3>
       {keyFindings.slice(0, 10).map((finding: any, index: number) => (
         <div
