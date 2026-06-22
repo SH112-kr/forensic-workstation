@@ -144,6 +144,71 @@ def _seed_failed_raw_connector(db_path):
     return connector
 
 
+def _seed_srum_raw_connector(db_path):
+    from core.connectors.raw_image_index import RawImageIndexConnector
+    from core.raw_index.store import RawIndexStore
+
+    store = RawIndexStore(str(db_path))
+    store.open()
+    run_id = store.start_parser_run(
+        "srum_indexer",
+        "/c:/Windows/System32/sru/SRUDB.dat",
+        started_at="2026-06-04T00:00:00Z",
+    )
+    store.insert_artifact(
+        artifact_type="SRUM Network Usage",
+        source_ref="/c:/Windows/System32/sru/SRUDB.dat",
+        source_path="/c:/Windows/System32/sru/SRUDB.dat:{network}",
+        primary_path="C:\\Tools\\agent.exe",
+        description="SRUM Network Usage | C:\\Tools\\agent.exe",
+        strings={
+            "Application Name": "C:\\Tools\\agent.exe",
+            "User ID": "S-1-5-21-1111",
+            "Bytes Sent": "4096",
+            "Bytes Received": "8192",
+        },
+        times={"Timestamp": (1779160440000, "2026-05-19T03:14:00Z")},
+        parser_run_id=run_id,
+    )
+    store.insert_artifact(
+        artifact_type="SRUM Network Usage",
+        source_ref="/c:/Windows/System32/sru/SRUDB.dat",
+        source_path="/c:/Windows/System32/sru/SRUDB.dat:{network}",
+        primary_path="C:\\Tools\\agent.exe",
+        description="SRUM Network Usage | C:\\Tools\\agent.exe",
+        strings={
+            "Application Name": "C:\\Tools\\agent.exe",
+            "Bytes Sent": "100",
+            "Bytes Received": "200",
+        },
+        times={"Timestamp": (1779160500000, "2026-05-19T03:15:00Z")},
+        parser_run_id=run_id,
+    )
+    store.insert_artifact(
+        artifact_type="SRUM Application Resource Usage",
+        source_ref="/c:/Windows/System32/sru/SRUDB.dat",
+        source_path="/c:/Windows/System32/sru/SRUDB.dat:{app}",
+        primary_path="C:\\Tools\\agent.exe",
+        description="SRUM Application Resource Usage | C:\\Tools\\agent.exe",
+        strings={
+            "Application Name": "C:\\Tools\\agent.exe",
+            "Foreground Cycle Time": "120",
+        },
+        times={"Timestamp": (1779160470000, "2026-05-19T03:14:30Z")},
+        parser_run_id=run_id,
+    )
+    store.finish_parser_run(
+        run_id,
+        status="completed",
+        coverage_status="searched",
+        finished_at="2026-06-04T00:00:01Z",
+    )
+    store.close()
+    connector = RawImageIndexConnector()
+    connector.connect(str(db_path))
+    return connector
+
+
 def test_open_raw_index_sets_raw_connector(monkeypatch, tmp_path):
     from core.raw_index.store import RawIndexStore
 
@@ -207,6 +272,305 @@ def test_open_raw_index_reports_missing_sidecar_as_not_evaluable(monkeypatch, tm
     assert result["source_type"] == "raw_image_sidecar"
     assert result["coverage_gap"]["reason"] == "missing_raw_index_sidecar"
     assert "raw_index" not in state.captured
+
+
+def test_build_raw_artifact_index_can_run_appcompat_sections(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import artifact_indexer
+
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    class _FakeE01:
+        def is_connected(self):
+            return True
+
+    class _State:
+        def set(self, name, connector):
+            monkeypatch.setitem(mcp_bridge._connectors, name, connector)
+
+    def _section(name):
+        def _fn(_image, _store, *, started_at):
+            return {
+                "ok": True,
+                "status": "completed",
+                "indexed_records": 1,
+                "coverage_gaps": [],
+                "parser_run_id": 1,
+                "section": name,
+            }
+        return _fn
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", _State())
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _FakeE01())
+    monkeypatch.setattr(artifact_indexer, "index_amcache_artifacts", _section("amcache"))
+    monkeypatch.setattr(artifact_indexer, "index_userassist_artifacts", _section("userassist"))
+    monkeypatch.setattr(artifact_indexer, "index_shimcache_artifacts", _section("shimcache"))
+
+    result = _run(mcp_bridge.build_raw_artifact_index(
+        include_evtx=False,
+        include_registry=False,
+        include_motw=False,
+        include_mplog=False,
+        include_wmi=False,
+        include_bits=False,
+        include_tasks=False,
+        include_pca=False,
+        include_activities=False,
+        include_browser=False,
+        include_lnk=False,
+        include_srum=False,
+        include_amcache=True,
+        include_userassist=True,
+        include_shimcache=True,
+        include_recyclebin=False,
+        include_usnjrnl=False,
+        include_logfile=False,
+        started_at="2026-06-10T00:00:00Z",
+    ))
+
+    assert result["ok"] is True
+    assert result["sections"]["amcache"]["section"] == "amcache"
+    assert result["sections"]["userassist"]["section"] == "userassist"
+    assert result["sections"]["shimcache"]["section"] == "shimcache"
+
+
+def test_build_raw_artifact_index_can_run_browser_section(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import artifact_indexer
+
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    class _FakeE01:
+        def is_connected(self):
+            return True
+
+    class _State:
+        def set(self, name, connector):
+            monkeypatch.setitem(mcp_bridge._connectors, name, connector)
+
+    def _browser(_image, _store, *, started_at):
+        return {
+            "ok": True,
+            "status": "completed",
+            "indexed_records": 2,
+            "coverage_gaps": [],
+            "parser_run_id": 1,
+            "section": "browser",
+        }
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", _State())
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _FakeE01())
+    monkeypatch.setattr(artifact_indexer, "index_browser_artifacts", _browser)
+
+    result = _run(mcp_bridge.build_raw_artifact_index(
+        include_evtx=False,
+        include_registry=False,
+        include_motw=False,
+        include_mplog=False,
+        include_wmi=False,
+        include_bits=False,
+        include_tasks=False,
+        include_pca=False,
+        include_activities=False,
+        include_lnk=False,
+        include_srum=False,
+        include_amcache=False,
+        include_userassist=False,
+        include_shimcache=False,
+        include_recyclebin=False,
+        include_usnjrnl=False,
+        include_logfile=False,
+        include_browser=True,
+        started_at="2026-06-10T00:00:00Z",
+    ))
+
+    assert result["ok"] is True
+    assert result["sections"]["browser"]["section"] == "browser"
+
+
+def test_build_raw_artifact_index_can_run_recyclebin_section(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import artifact_indexer
+
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    class _FakeE01:
+        def is_connected(self):
+            return True
+
+    class _State:
+        def set(self, name, connector):
+            monkeypatch.setitem(mcp_bridge._connectors, name, connector)
+
+    def _recyclebin(_image, _store, *, started_at):
+        return {
+            "ok": True,
+            "status": "completed",
+            "indexed_records": 1,
+            "coverage_gaps": [],
+            "parser_run_id": 1,
+            "section": "recyclebin",
+        }
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", _State())
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _FakeE01())
+    monkeypatch.setattr(
+        artifact_indexer, "index_recycle_bin_artifacts", _recyclebin)
+
+    result = _run(mcp_bridge.build_raw_artifact_index(
+        include_evtx=False,
+        include_registry=False,
+        include_motw=False,
+        include_mplog=False,
+        include_wmi=False,
+        include_bits=False,
+        include_tasks=False,
+        include_pca=False,
+        include_activities=False,
+        include_browser=False,
+        include_lnk=False,
+        include_srum=False,
+        include_amcache=False,
+        include_userassist=False,
+        include_shimcache=False,
+        include_recyclebin=True,
+        include_usnjrnl=False,
+        include_logfile=False,
+        started_at="2026-06-10T00:00:00Z",
+    ))
+
+    assert result["ok"] is True
+    assert result["sections"]["recyclebin"]["section"] == "recyclebin"
+
+
+def test_build_raw_artifact_index_can_run_usnjrnl_section(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import artifact_indexer
+
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    class _FakeE01:
+        def is_connected(self):
+            return True
+
+    class _State:
+        def set(self, name, connector):
+            monkeypatch.setitem(mcp_bridge._connectors, name, connector)
+
+    def _usnjrnl(_image, _store, *, started_at):
+        return {
+            "ok": True,
+            "status": "completed",
+            "indexed_records": 1,
+            "coverage_gaps": [],
+            "parser_run_id": 1,
+            "section": "usnjrnl",
+        }
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", _State())
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _FakeE01())
+    monkeypatch.setattr(
+        artifact_indexer, "index_usn_journal_artifacts", _usnjrnl)
+
+    result = _run(mcp_bridge.build_raw_artifact_index(
+        include_evtx=False,
+        include_registry=False,
+        include_motw=False,
+        include_mplog=False,
+        include_wmi=False,
+        include_bits=False,
+        include_tasks=False,
+        include_pca=False,
+        include_activities=False,
+        include_browser=False,
+        include_lnk=False,
+        include_srum=False,
+        include_amcache=False,
+        include_userassist=False,
+        include_shimcache=False,
+        include_recyclebin=False,
+        include_usnjrnl=True,
+        include_logfile=False,
+        started_at="2026-06-10T00:00:00Z",
+    ))
+
+    assert result["ok"] is True
+    assert result["sections"]["usnjrnl"]["section"] == "usnjrnl"
+
+
+def test_build_raw_artifact_index_can_run_logfile_section(
+    monkeypatch,
+    tmp_path,
+):
+    from core.raw_index import artifact_indexer
+
+    raw = _seed_raw_connector(tmp_path / "raw-index.sqlite")
+
+    class _FakeE01:
+        def is_connected(self):
+            return True
+
+    class _State:
+        def set(self, name, connector):
+            monkeypatch.setitem(mcp_bridge._connectors, name, connector)
+
+    def _logfile(_image, _store, *, started_at):
+        return {
+            "ok": True,
+            "status": "completed",
+            "indexed_records": 1,
+            "coverage_gaps": [],
+            "parser_run_id": 1,
+            "section": "logfile",
+        }
+
+    monkeypatch.setattr(mcp_bridge, "_traced", _passthrough)
+    monkeypatch.setattr(mcp_bridge, "app_state", _State())
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+    monkeypatch.setitem(mcp_bridge._connectors, "e01", _FakeE01())
+    monkeypatch.setattr(
+        artifact_indexer, "index_logfile_artifacts", _logfile)
+
+    result = _run(mcp_bridge.build_raw_artifact_index(
+        include_evtx=False,
+        include_registry=False,
+        include_motw=False,
+        include_mplog=False,
+        include_wmi=False,
+        include_bits=False,
+        include_tasks=False,
+        include_pca=False,
+        include_activities=False,
+        include_browser=False,
+        include_lnk=False,
+        include_srum=False,
+        include_amcache=False,
+        include_userassist=False,
+        include_shimcache=False,
+        include_recyclebin=False,
+        include_usnjrnl=False,
+        include_logfile=True,
+        started_at="2026-06-10T00:00:00Z",
+    ))
+
+    assert result["ok"] is True
+    assert result["sections"]["logfile"]["section"] == "logfile"
 
 
 def test_get_summary_uses_active_raw_index(monkeypatch, tmp_path):
@@ -1283,7 +1647,7 @@ def test_generate_report_preserves_raw_index_not_evaluable_coverage(
     assert not report_path.exists()
 
 
-def test_srum_by_process_reports_raw_index_unsupported_as_not_evaluable(
+def test_srum_by_process_reports_unindexed_raw_srum_as_not_evaluable(
     monkeypatch,
     tmp_path,
 ):
@@ -1307,8 +1671,39 @@ def test_srum_by_process_reports_raw_index_unsupported_as_not_evaluable(
     assert result["source_type"] == "raw_image_sidecar"
     assert result["processes"] == ["agent.exe"]
     assert result["results"] == {}
-    assert result["coverage_gap"]["reason"] == "raw_srum_unsupported"
+    assert result["coverage_gap"]["reason"] == "raw_srum_not_indexed"
     assert result["raw_index_coverage"]["status"] == "searched"
+
+
+def test_srum_by_process_queries_raw_index_when_srum_records_exist(
+    monkeypatch,
+    tmp_path,
+):
+    raw = _seed_srum_raw_connector(tmp_path / "raw-index.sqlite")
+    monkeypatch.setattr(mcp_bridge, "_traced", _catching_passthrough)
+    for key in list(mcp_bridge._connectors):
+        if key == "axiom" or key.startswith("axiom:"):
+            monkeypatch.delitem(mcp_bridge._connectors, key, raising=False)
+    monkeypatch.setitem(mcp_bridge._connectors, "raw_index", raw)
+
+    result = _run(mcp_bridge.srum_by_process(
+        process_name="agent.exe",
+        start_date="2026-05-19",
+        end_date="2026-05-19",
+        limit=1,
+    ))
+
+    assert result["source_type"] == "raw_image_sidecar"
+    assert result["processes"] == ["agent.exe"]
+    proc = result["results"]["agent.exe"]
+    assert proc["cpu_io_records"] == 1
+    assert proc["network_records"] == 2
+    assert proc["total_bytes_sent"] == 4196
+    assert proc["total_bytes_received"] == 8392
+    assert proc["returned_app_records"] == 1
+    assert proc["returned_net_records"] == 1
+    assert proc["network_usage"][0]["artifact_type"] == "SRUM Network Usage"
+    assert proc["network_usage"][0]["fields"]["Bytes Sent"] == "4096"
 
 
 def test_srum_by_process_preserves_raw_index_not_evaluable_coverage(
@@ -1327,7 +1722,7 @@ def test_srum_by_process_preserves_raw_index_not_evaluable_coverage(
     assert result.get("ok") is False
     assert result["status"] == "not_evaluable"
     assert result["processes"] == ["agent.exe", "helper.exe"]
-    assert result["coverage_gap"]["reason"] == "raw_srum_unsupported"
+    assert result["coverage_gap"]["reason"] == "raw_srum_not_indexed"
     assert result["raw_index_coverage"]["status"] == "not_evaluable"
     assert result["raw_index_coverage"]["gaps"][0]["error"] == (
         "simulated parser failure"

@@ -238,7 +238,7 @@ class E01ImageConnector(BaseConnector):
         (unallocated/invalid slots are skipped, not reported as gaps).
 
         Yields one dict per file/dir record:
-            {segment, path, name, is_dir, in_use, size,
+            {segment, sequence, path, name, is_dir, in_use, size,
              created/modified/changed/accessed (epoch ms or None)}
         Per-record failures are yielded as {"error": ..., "segment": ...}
         rather than raised, so one bad record never aborts the stream.
@@ -285,6 +285,7 @@ class E01ImageConnector(BaseConnector):
                     size = -1
                 entry = {
                     "segment": record.segment,
+                    "sequence": self._mft_sequence_number(record),
                     "path": path,
                     "name": path.rsplit("/", 1)[-1],
                     "is_dir": is_dir,
@@ -295,6 +296,24 @@ class E01ImageConnector(BaseConnector):
                 yield entry
             except Exception as exc:  # noqa: BLE001 — one record must not abort the stream
                 yield {"error": str(exc), "segment": getattr(record, "segment", -1)}
+
+    @staticmethod
+    def _mft_sequence_number(record: Any) -> int | None:
+        """Best-effort FILE record sequence number extraction."""
+        for owner in (getattr(record, "header", None), record):
+            if owner is None:
+                continue
+            for attr in ("sequence_number", "sequence", "seq"):
+                try:
+                    value = getattr(owner, attr)
+                except Exception:
+                    continue
+                if value is not None:
+                    try:
+                        return int(value)
+                    except Exception:
+                        continue
+        return None
 
     @staticmethod
     def _mft_timestamps(record: Any) -> dict[str, Any]:
@@ -460,11 +479,248 @@ class E01ImageConnector(BaseConnector):
         except Exception as e:
             return {"path": str(fp), "error": str(e)}
 
+    def list_alternate_data_streams(
+        self,
+        path: str = "/",
+        pattern: str = "*",
+        keyword: str = "",
+        recursive: bool = True,
+        limit: int = 100,
+        max_files: int = 5000,
+    ) -> dict[str, Any]:
+        """Bounded NTFS alternate data stream discovery.
+
+        Returns named $DATA streams only. The unnamed default data stream and
+        NTFS internal utility streams are ignored.
+        """
+        if self._fat_fallback:
+            return {
+                "ok": True,
+                "source": "alternate_data_streams",
+                "path": path,
+                "streams": [],
+                "returned": 0,
+                "scanned_files": 0,
+                "visited_dirs": 0,
+                "truncated": False,
+                "coverage": {
+                    "status": "not_supported_on_fat_fallback",
+                    "note": "FAT fallback images do not expose NTFS alternate data streams.",
+                },
+            }
+
+        root_path = path or "/"
+        pattern_lc = str(pattern or "*").lower()
+        keyword_lc = str(keyword or "").lower().strip()
+        safe_limit = max(1, min(int(limit or 100), 2000))
+        safe_max_files = max(1, min(int(max_files or 5000), 200000))
+        root = self._target.fs.path(self._normalize_path(root_path))
+        if not root.exists():
+            return {
+                "ok": False,
+                "source": "alternate_data_streams",
+                "path": root_path,
+                "error": f"Path not found: {root_path}",
+                "streams": [],
+                "returned": 0,
+                "scanned_files": 0,
+                "visited_dirs": 0,
+                "truncated": False,
+            }
+
+        streams: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        stack = [root]
+        scanned_files = 0
+        visited_dirs = 0
+        max_dirs = 50000
+        truncated = False
+
+        def add_skip(path_obj: Any, exc: Exception) -> None:
+            if len(skipped) < 50:
+                skipped.append({"path": str(path_obj), "error": str(exc)})
+
+        while stack and len(streams) < safe_limit:
+            current = stack.pop()
+            try:
+                is_dir = current.is_dir()
+            except Exception as exc:  # noqa: BLE001
+                add_skip(current, exc)
+                continue
+
+            if is_dir:
+                visited_dirs += 1
+                if visited_dirs > max_dirs:
+                    truncated = True
+                    break
+                if recursive or current == root:
+                    try:
+                        children = list(current.iterdir())
+                    except Exception as exc:  # noqa: BLE001
+                        add_skip(current, exc)
+                        continue
+                    stack.extend(reversed(children))
+                continue
+
+            scanned_files += 1
+            if scanned_files > safe_max_files:
+                truncated = True
+                break
+
+            current_path = str(current)
+            current_name = str(getattr(current, "name", "") or os.path.basename(current_path))
+            file_matches = (
+                fnmatch.fnmatchcase(current_name.lower(), pattern_lc)
+                or fnmatch.fnmatchcase(current_path.lower(), pattern_lc)
+            )
+            try:
+                file_streams = self._alternate_data_streams_for_path(current)
+            except Exception as exc:  # noqa: BLE001
+                add_skip(current, exc)
+                continue
+
+            for stream in file_streams:
+                stream_name = str(stream.get("stream_name", "") or "")
+                blob = " ".join([
+                    current_path,
+                    current_name,
+                    stream_name,
+                    str(stream.get("ads_path", "")),
+                ]).lower()
+                if pattern_lc not in {"", "*"} and not file_matches and not fnmatch.fnmatchcase(stream_name.lower(), pattern_lc):
+                    continue
+                if keyword_lc and keyword_lc not in blob:
+                    continue
+                streams.append({
+                    "path": current_path,
+                    "name": current_name,
+                    **stream,
+                })
+                if len(streams) >= safe_limit:
+                    truncated = True
+                    break
+
+        return {
+            "ok": True,
+            "source": "alternate_data_streams",
+            "path": root_path,
+            "searched": {
+                "path": root_path,
+                "pattern": pattern,
+                "keyword": keyword,
+                "recursive": bool(recursive),
+                "limit": safe_limit,
+                "max_files": safe_max_files,
+            },
+            "returned": len(streams),
+            "streams": streams,
+            "scanned_files": scanned_files,
+            "visited_dirs": visited_dirs,
+            "skipped_paths": skipped,
+            "skipped_path_count": len(skipped),
+            "truncated": truncated or bool(stack),
+            "coverage": {
+                "max_files": safe_max_files,
+                "max_dirs": max_dirs,
+                "note": "ADS discovery is bounded. Zero returned streams means no named stream was found within the scanned paths and limits, not proof of absence.",
+            },
+        }
+
+    def _alternate_data_streams_for_path(self, path_obj: Any) -> list[dict[str, Any]]:
+        entry = path_obj.get()
+        attr_map = entry.attr() if hasattr(entry, "attr") else {}
+        data_attrs = attr_map.get(0x80, []) if hasattr(attr_map, "get") else []
+        rows: list[dict[str, Any]] = []
+        for attr in data_attrs:
+            stream_name = str(getattr(attr, "name", "") or "")
+            if not stream_name:
+                continue
+            header = getattr(attr, "header", None)
+            size = getattr(header, "size", None)
+            if size is None:
+                try:
+                    size = len(getattr(attr, "data", b"") or b"")
+                except Exception:
+                    size = 0
+            path_text = str(path_obj)
+            rows.append({
+                "stream_name": stream_name,
+                "ads_path": f"{path_text}:{stream_name}",
+                "size": int(size or 0),
+                "resident": bool(getattr(attr, "resident", False)),
+                "attribute_type": "$DATA",
+                "mft_record": str(getattr(attr, "record", "")),
+            })
+        return rows
+
+    def get_alternate_data_stream_info(self, internal_path: str, stream_name: str) -> dict[str, Any]:
+        """Return metadata for a named NTFS $DATA stream on a host file."""
+        try:
+            fp, attr = self._alternate_data_stream_attribute(internal_path, stream_name)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc), "path": internal_path, "stream_name": stream_name}
+        header = getattr(attr, "header", None)
+        size = getattr(header, "size", None)
+        if size is None:
+            try:
+                size = len(getattr(attr, "data", b"") or b"")
+            except Exception:
+                size = 0
+        info = self.get_file_info(internal_path)
+        actual_name = str(getattr(attr, "name", "") or stream_name)
+        return {
+            "path": str(fp),
+            "host_path": internal_path,
+            "stream_name": actual_name,
+            "ads_path": f"{str(fp)}:{actual_name}",
+            "size": int(size or 0),
+            "resident": bool(getattr(attr, "resident", False)),
+            "attribute_type": "$DATA",
+            "mft_record": str(getattr(attr, "record", "")),
+            "host_info": info,
+        }
+
+    def read_alternate_data_stream_content(self, internal_path: str, stream_name: str, max_size: int = 1048576) -> bytes:
+        """Read a named NTFS $DATA stream from the image without executing it."""
+        _fp, attr = self._alternate_data_stream_attribute(internal_path, stream_name)
+        chunks = []
+        total = 0
+        with attr.open() as src:
+            while total < max_size:
+                chunk = src.read(min(65536, max_size - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+        return b"".join(chunks)
+
+    def _alternate_data_stream_attribute(self, internal_path: str, stream_name: str) -> tuple[Any, Any]:
+        norm = self._normalize_path(internal_path)
+        fp = self._target.fs.path(norm)
+        if not fp.exists():
+            raise FileNotFoundError(f"File not found in image: {internal_path} (tried {norm})")
+        if fp.is_dir():
+            raise IsADirectoryError(f"ADS host path is a directory: {internal_path}")
+        requested = str(stream_name or "").strip()
+        if not requested:
+            raise ValueError("stream_name is required.")
+        entry = fp.get()
+        attr_map = entry.attr() if hasattr(entry, "attr") else {}
+        data_attrs = attr_map.get(0x80, []) if hasattr(attr_map, "get") else []
+        for attr in data_attrs:
+            name = str(getattr(attr, "name", "") or "")
+            if name.lower() == requested.lower():
+                return fp, attr
+        raise FileNotFoundError(f"ADS stream not found: {internal_path}:{requested}")
+
     def get_capabilities(self) -> list[str]:
         return [
             "search",
             "list_directory",
             "find_files",
+            "list_alternate_data_streams",
+            "read_alternate_data_stream_content",
+            "get_alternate_data_stream_info",
             "extract_file",
             "list_vss_snapshots",
             "vss_list_directory",

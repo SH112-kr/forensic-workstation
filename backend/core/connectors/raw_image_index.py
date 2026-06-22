@@ -289,6 +289,75 @@ class RawImageIndexConnector(BaseConnector):
     def get_artifact_type_counts(self) -> list[dict]:
         return self._require_store().get_artifact_type_counts()
 
+    def srum_network_aggregate(
+        self,
+        process_keyword: str,
+        start_date: str = "",
+        end_date: str = "",
+    ) -> dict:
+        """Aggregate raw-sidecar SRUM records without page limits."""
+        store = self._require_store()
+        conn = store._conn()
+        store._ensure_search_text_current(conn=conn)
+        like = f"%{process_keyword}%"
+        date_sql = ""
+        date_params: list[Any] = []
+        if start_date or end_date:
+            start_ms = _iso_date_to_ms(start_date, is_end=False) if start_date else 0
+            end_ms = (
+                _iso_date_to_ms(end_date, is_end=True)
+                if end_date else 9999999999999
+            )
+            date_sql = """
+              AND EXISTS (
+                  SELECT 1
+                  FROM raw_index_artifact_times t_range
+                  WHERE t_range.artifact_id = a.artifact_id
+                    AND t_range.unix_timestamp_ms BETWEEN ? AND ?
+              )
+            """
+            date_params = [start_ms, end_ms]
+
+        net_row = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT a.artifact_id) AS total_records,
+                   COALESCE(SUM(
+                       CASE WHEN s.field_name = 'Bytes Sent'
+                            THEN CAST(s.value AS INTEGER) ELSE 0 END
+                   ), 0) AS total_bytes_sent,
+                   COALESCE(SUM(
+                       CASE WHEN s.field_name = 'Bytes Received'
+                            THEN CAST(s.value AS INTEGER) ELSE 0 END
+                   ), 0) AS total_bytes_received
+            FROM raw_index_artifacts a
+            JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id
+            LEFT JOIN raw_index_artifact_strings s ON s.artifact_id = a.artifact_id
+            WHERE a.artifact_type = 'SRUM Network Usage'
+              AND st.search_text LIKE ?
+              {date_sql}
+            """,
+            [like, *date_params],
+        ).fetchone()
+        app_row = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT a.artifact_id) AS total_records
+            FROM raw_index_artifacts a
+            JOIN raw_index_search_text st ON st.artifact_id = a.artifact_id
+            WHERE a.artifact_type = 'SRUM Application Resource Usage'
+              AND st.search_text LIKE ?
+              {date_sql}
+            """,
+            [like, *date_params],
+        ).fetchone()
+        return {
+            "network_total_records": int(net_row["total_records"] if net_row else 0),
+            "total_bytes_sent": int(net_row["total_bytes_sent"] if net_row else 0),
+            "total_bytes_received": int(
+                net_row["total_bytes_received"] if net_row else 0
+            ),
+            "app_total_records": int(app_row["total_records"] if app_row else 0),
+        }
+
     def get_coverage(self) -> dict:
         store = self._require_store()
         return store._coverage_summary(conn=store._conn())

@@ -86,6 +86,8 @@ from api.network import router as network_router
 from api.settings import router as settings_router
 from api.triage import router as triage_router
 from api.project import router as project_router
+from api.privacy import router as privacy_router
+from api.manual import router as manual_router
 
 app.include_router(cases_router)
 app.include_router(artifacts_router)
@@ -104,6 +106,8 @@ app.include_router(network_router)
 app.include_router(settings_router)
 app.include_router(triage_router)
 app.include_router(project_router)
+app.include_router(privacy_router)
+app.include_router(manual_router)
 
 
 @app.get("/api/health")

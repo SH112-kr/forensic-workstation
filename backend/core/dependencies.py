@@ -18,6 +18,7 @@ class DependencySpec:
     blocked_capabilities: list[str]
     install_hint: str
     required: bool = False
+    affects_overall_status: bool = True
     import_names: tuple[str, ...] = ()
     binaries: tuple[str, ...] = ()
 
@@ -67,6 +68,7 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         display_name="pyshark",
         kind="python",
         required=False,
+        affects_overall_status=False,
         required_for="PCAP parsing through tshark",
         blocked_capabilities=["PCAP conversation, DNS, HTTP, and IOC extraction"],
         install_hint="python -m pip install pyshark",
@@ -77,6 +79,7 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         display_name="tshark",
         kind="binary",
         required=False,
+        affects_overall_status=False,
         required_for="PCAP packet decoding used by pyshark",
         blocked_capabilities=["PCAP decoding even when pyshark is installed"],
         install_hint="Install Wireshark and ensure tshark is on PATH.",
@@ -158,13 +161,18 @@ def _dependency_status(spec: DependencySpec) -> dict[str, Any]:
     missing_imports = [name for name in spec.import_names if not _check_import(name)]
     missing_binaries = [name for name in spec.binaries if shutil.which(name) is None]
     available = not missing_imports and not missing_binaries
-    severity = "ok" if available else ("blocked" if spec.required else "degraded")
+    severity = (
+        "ok"
+        if available
+        else ("blocked" if spec.required else ("degraded" if spec.affects_overall_status else "optional"))
+    )
     return {
         "key": spec.key,
         "display_name": spec.display_name,
         "kind": spec.kind,
         "available": available,
         "required": spec.required,
+        "affects_overall_status": spec.affects_overall_status,
         "severity": severity,
         "required_for": spec.required_for,
         "blocked_capabilities": list(spec.blocked_capabilities),
@@ -178,9 +186,14 @@ def dependency_report() -> dict[str, Any]:
     items = [_dependency_status(spec) for spec in DEPENDENCIES]
     missing_required = [item for item in items if item["required"] and not item["available"]]
     missing_optional = [item for item in items if not item["required"] and not item["available"]]
+    missing_affecting_overall = [
+        item
+        for item in missing_optional
+        if item.get("affects_overall_status", True)
+    ]
     if missing_required:
         overall = "blocked"
-    elif missing_optional:
+    elif missing_affecting_overall:
         overall = "degraded"
     else:
         overall = "ready"
@@ -193,6 +206,7 @@ def dependency_report() -> dict[str, Any]:
             "available": sum(1 for item in items if item["available"]),
             "missing_required": len(missing_required),
             "missing_optional": len(missing_optional),
+            "missing_affecting_overall": len(missing_affecting_overall),
         },
     }
 

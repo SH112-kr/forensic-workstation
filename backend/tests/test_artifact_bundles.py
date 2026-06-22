@@ -74,7 +74,9 @@ class _HighVolumeImpactNoiseConnector(_StubConnector):
             {"artifact_type": "Edge Downloads", "count": 3},
             {"artifact_type": "Text Documents", "count": 400},
             {"artifact_type": "$LogFile Analysis", "count": 8000},
+            {"artifact_type": "NTFS LogFile Operation Candidates", "count": 1500},
             {"artifact_type": "UsnJrnl", "count": 200000},
+            {"artifact_type": "USN Rename Transitions", "count": 2500},
             {"artifact_type": "File Signature Mismatch (Document)", "count": 15000},
         ]
 
@@ -87,8 +89,12 @@ class _HighVolumeImpactNoiseConnector(_StubConnector):
             return {"total": 0, "hits": []}
         if artifact_type == "$LogFile Analysis":
             return {"total": 8000, "hits": [{"hit_id": 11, "artifact_type": artifact_type, "source_path": r"C:\$LogFile"}]}
+        if artifact_type == "NTFS LogFile Operation Candidates":
+            return {"total": 1500, "hits": [{"hit_id": 16, "artifact_type": artifact_type, "source_path": r"C:\$LogFile:page:4096"}]}
         if artifact_type == "UsnJrnl":
             return {"total": 200000, "hits": [{"hit_id": 12, "artifact_type": artifact_type, "source_path": r"C:\$Extend\$UsnJrnl"}]}
+        if artifact_type == "USN Rename Transitions":
+            return {"total": 2500, "hits": [{"hit_id": 17, "artifact_type": artifact_type, "source_path": r"C:\$Extend\$UsnJrnl:$J:rename:100:120"}]}
         if artifact_type == "File Signature Mismatch (Document)":
             return {"total": 15000, "hits": [{"hit_id": 13, "artifact_type": artifact_type, "source_path": r"C:\ProgramData\helper.dll"}]}
         if artifact_type == "Potential Browser Activity":
@@ -106,4 +112,12 @@ def test_impact_bundle_uses_signal_score_instead_of_raw_volume():
 
     assert impact["evidence_total"] > remote["evidence_total"]
     assert impact["signal_score"] < impact["evidence_total"]
+    assert any(
+        a["artifact_type"] == "NTFS LogFile Operation Candidates"
+        for a in impact["artifacts"]
+    )
+    assert any(
+        a["artifact_type"] == "USN Rename Transitions"
+        for a in impact["artifacts"]
+    )
     assert remote["signal_score"] > 0

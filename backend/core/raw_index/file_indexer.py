@@ -155,6 +155,8 @@ def index_mft_listing(
                     "Size": str(rec.get("size", "")),
                     "MFT Segment": str(rec.get("segment", "")),
                 }
+                if rec.get("sequence") not in (None, ""):
+                    strings["MFT Sequence Number"] = str(rec.get("sequence"))
                 if rec.get("is_dir"):
                     strings["Type"] = "Directory"
                 if rec.get("in_use") is False:

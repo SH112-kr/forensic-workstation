@@ -42,6 +42,15 @@ from core.connectors.ghidra import GhidraConnector
 from core.connectors.volatility_connector import VolatilityConnector
 from core.connectors.log_connector import LogConnector
 from core.analysis.masker import DataMasker
+from core.analysis.privacy_proxy import (
+    apply_tool_privacy,
+    current_privacy_scope,
+    project_payload_for_event,
+    replay_intercept as _privacy_replay,
+    resolve_aliases_in_payload,
+    scoped_state_path,
+    set_privacy_scope_for_evidence,
+)
 from core.config import config
 from core.dependencies import dependency_report, diagnose_exception
 from api.raw_support import annotate_parsed_fallback, raw_exception_result
@@ -105,6 +114,7 @@ _SERVER_PID = os.getpid()
 _WATCHED_CODE_FILES = [
     os.path.abspath(__file__),
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.py"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "analysis", "privacy_proxy.py"),
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "connectors", "axiom_mfdb.py"),
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "connectors", "e01_image.py"),
 ]
@@ -151,25 +161,31 @@ def _log_event(event_type: str, tool: str, data: Any = None, params: Any = None,
     files behind. Rotation is a simple overwrite — the UI's in-memory buffer
     handles continuity for anyone watching live.
     """
+    scope = current_privacy_scope()
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "type": event_type,
         "tool": tool,
+        "scope": scope,
     }
     if params is not None:
-        entry["params"] = _truncate(_mask(params) if _masker.enabled else params)
+        visible_params = _mask(params) if _masker.enabled else params
+        entry["params"] = _truncate(project_payload_for_event(visible_params, tool=tool, direction="request"))
     if data is not None:
-        entry["data"] = _truncate(_mask(data) if _masker.enabled else data)
+        visible_data = _mask(data) if _masker.enabled else data
+        entry["data"] = _truncate(project_payload_for_event(visible_data, tool=tool, direction="error"))
     if result is not None:
-        # ``result`` is already masked by the tool's fn(); truncating only.
-        entry["result"] = _truncate(result)
+        entry["result"] = _truncate(project_payload_for_event(result, tool=tool, direction="response"))
     if duration:
         entry["duration_ms"] = round(duration * 1000)
     _event_log.append(entry)
     if len(_event_log) > 200:
         _event_log.pop(0)
     try:
-        event_file = os.path.join(os.path.dirname(__file__), ".mcp_events.jsonl")
+        event_file = scoped_state_path(
+            "mcp_events.jsonl",
+            global_path=os.path.join(os.path.dirname(__file__), ".mcp_events.jsonl"),
+        )
         # Rotate before writing so we never exceed the cap.
         try:
             if os.path.exists(event_file) and os.path.getsize(event_file) > _EVENT_LOG_MAX_BYTES:
@@ -208,6 +224,11 @@ def _truncate(data: Any, max_len: int = 500) -> Any:
 
 def _mask(data: Any) -> Any:
     return _masker.mask(data) if _masker.enabled else data
+
+
+def _dealias(value: Any) -> Any:
+    """Resolve LLM-visible privacy aliases back to raw local values for execution."""
+    return resolve_aliases_in_payload(value)
 
 
 def _runtime_status() -> dict[str, Any]:
@@ -1027,6 +1048,22 @@ async def disable_masking() -> dict:
 
 
 @mcp.tool()
+async def privacy_replay_intercept(intercept_id: str) -> dict:
+    """Return the analyst-approved payload for a resolved privacy intercept.
+
+    Use this after a tool response returns privacy_intercept.status=pending
+    and the analyst resolves it in the Web UI.
+    """
+    return await _traced(
+        "privacy_replay_intercept",
+        {"intercept_id": intercept_id},
+        lambda: _privacy_replay(intercept_id),
+        timeout_seconds=TIMEOUT_LIGHT,
+        apply_privacy=False,
+    )
+
+
+@mcp.tool()
 async def set_timezone(tz_name: str = "KST", utc_offset_hours: int = 9) -> dict:
     """Set local timezone for timestamp display.
 
@@ -1061,7 +1098,31 @@ TIMEOUT_MEDIUM = int(os.environ.get("FW_TIMEOUT_MEDIUM", "600"))
 TIMEOUT_HEAVY = int(os.environ.get("FW_TIMEOUT_HEAVY", "1200"))
 
 
-async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEOUT_MEDIUM):
+def _prepare_request_scope(tool_name: str, params: dict[str, Any]) -> None:
+    """Move source-selection requests into the target evidence scope before logging."""
+    try:
+        if tool_name == "open_case":
+            path = str(params.get("path") or "")
+            if path and is_path_allowed(path):
+                set_privacy_scope_for_evidence(
+                    evidence_paths=[path],
+                    project_name=str(params.get("case_name") or os.path.basename(path) or "Case"),
+                )
+            return
+        if tool_name == "mount_image":
+            ref = str(params.get("evidence_ref") or params.get("e01_path") or "")
+            resolved = resolve_image_evidence(ref)
+            path = str(resolved.get("path") or params.get("e01_path") or "")
+            if path and (is_path_allowed(path) or resolve_active_case_evidence(path)):
+                set_privacy_scope_for_evidence(
+                    evidence_paths=[path],
+                    project_name=os.path.basename(path) or "E01 Image",
+                )
+    except Exception:
+        return
+
+
+async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEOUT_MEDIUM, apply_privacy: bool = True):
     """Run a tool function with full request/response event logging.
 
     Post-processing pipeline: fn() → _mask() → _localize_timestamps()
@@ -1071,6 +1132,7 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
     """
     import time as _time
     import asyncio
+    _prepare_request_scope(tool_name, params)
     _log_event("request", tool_name, params=params)
     t0 = _time.time()
     try:
@@ -1090,6 +1152,17 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
             or bool(result.get("error"))
         ):
             result = _annotate_hydration_failure(result)
+        if apply_privacy:
+            result = await loop.run_in_executor(
+                None,
+                lambda: apply_tool_privacy(
+                    tool_name,
+                    params,
+                    result,
+                    channel="mcp",
+                    wait_for_resolution=True,
+                ),
+            )
         elapsed = _time.time() - t0
         _log_event("response", tool_name, result=result, duration=elapsed)
         return result
@@ -1117,6 +1190,21 @@ async def _traced(tool_name: str, params: dict, fn, timeout_seconds: int = TIMEO
                 error_payload["selected_evidence_guidance"] = guidance
         except Exception:
             pass
+        if apply_privacy:
+            try:
+                loop = asyncio.get_event_loop()
+                error_payload = await loop.run_in_executor(
+                    None,
+                    lambda: apply_tool_privacy(
+                        tool_name,
+                        params,
+                        error_payload,
+                        channel="mcp",
+                        wait_for_resolution=True,
+                    ),
+                )
+            except Exception:
+                error_payload = project_payload_for_event(error_payload, tool=tool_name, direction="error")
         _log_event("error", tool_name, data=error_payload, duration=elapsed)
         return error_payload
 
@@ -1758,6 +1846,18 @@ async def build_raw_artifact_index(
     include_mplog: bool = True,
     include_wmi: bool = True,
     include_bits: bool = True,
+    include_tasks: bool = True,
+    include_pca: bool = True,
+    include_activities: bool = True,
+    include_browser: bool = True,
+    include_lnk: bool = True,
+    include_srum: bool = True,
+    include_amcache: bool = True,
+    include_userassist: bool = True,
+    include_shimcache: bool = True,
+    include_recyclebin: bool = True,
+    include_usnjrnl: bool = True,
+    include_logfile: bool = True,
     started_at: str = "",
 ) -> dict:
     """Semantically index EVTX + registry artifacts into the raw sidecar.
@@ -1765,13 +1865,52 @@ async def build_raw_artifact_index(
     Runs after build_raw_file_index. Extracts high-value EVTX channels and
     SYSTEM/NTUSER hives from the mounted image for READ-ONLY parsing
     (DO_NOT_EXECUTE marker, temp dir removed afterwards), then indexes:
-      - Windows Event Logs (P1 event set: logons, 7045/4697 services,
-        4698/4702 tasks, 1102/104 log clears, 4103/4104 PowerShell,
-        TerminalServices/RDP session events, BITS, Defender)
+      - Windows Event Logs (P1/P2 event set: logons, process creation,
+        service/task persistence and state, log clears, PowerShell
+        Operational/classic, Sysmon, WinRM, WMI-Activity, DNS-Client,
+        TerminalServices/RDP session events, SMB, BITS, Defender)
+      - Scheduled Tasks (Task Scheduler XML under Windows\\System32\\Tasks
+        plus SOFTWARE TaskCache Tree/Tasks registry state: command,
+        arguments, principal, run level, enabled/hidden state, trigger type,
+        registration/start-boundary timestamps, GUID mapping, and best-effort
+        TaskCache action strings)
+      - PCA Program Compatibility Activity (Windows appcompat\\pca\\pca.db:
+        schema-introspected path/timestamp rows for execution-context leads)
+      - Windows Timeline Activity (user ConnectedDevicesPlatform
+        ActivitiesCache.db: schema-introspected app/display/path/timestamp
+        rows for user-activity leads)
+      - Browser History / Downloads / Cache (Chrome, Edge, and Naver Whale
+        Chromium History SQLite visits/downloads, Firefox places.sqlite
+        visits/download annotations, IE/Legacy Edge WebCacheV*.dat ESE
+        URL/download/cache candidates, plus Chromium Cache/Code Cache file
+        anchors; web-origin context, not execution proof)
+      - LNK Files / Jump Lists (user Recent/Desktop/Downloads/Documents
+        shortcuts and Recent Automatic/CustomDestinations files; best-effort
+        embedded path extraction)
+      - SRUM (Windows System32\\sru\\SRUDB.dat ESE: Network Usage and
+        Application Resource Usage records with AppId resolution through
+        SruDbIdMapTable when available)
+      - AmCache / UserAssist / ShimCache (Amcache.hve file/program/driver
+        metadata, NTUSER UserAssist ROT13 Count values, and SYSTEM
+        AppCompatCache best-effort path recovery)
+      - Recycle Bin Deleted Items ($Recycle.Bin SID folders: $I metadata for
+        original path/size/deletion time, linked to $R companion path when
+        present; deletion context, not wiping or execution proof)
+      - USN Journal Entries ($Extend\\$UsnJrnl:$J USN_RECORD_V2/V3:
+        filename, parent/file reference, reason flags, USN, timestamp, and
+        MFT-backed path candidates with sequence-match confidence when File
+        System Entry segments/sequences are indexed; plus USN Rename
+        Transitions pairing RENAME_OLD_NAME -> RENAME_NEW_NAME by same FRN and
+        tight USN/time windows; strong file-system change evidence, not full
+        journal replay)
+      - NTFS LogFile Operation Candidates ($LogFile RSTR/RCRD page candidates:
+        page offsets, embedded path/name strings, and operation-name hints;
+        strong filesystem transaction-log context, not redo/undo replay)
       - System Services / BAM Execution Entries (user-SID execution
         evidence) / USB Devices (USBSTOR + MountPoints2 + setupapi.dev.log) /
         AutoRun Items (Run, RunOnce) / Office Trusted Documents
-        (TrustRecords macro-enable) / Office Recent Documents (File MRU)
+        (TrustRecords macro-enable) / Office Recent Documents (File MRU) /
+        ShellBags (UsrClass BagMRU path hints)
       - Mark of the Web (Zone.Identifier ADS) for Downloads/Desktop/Documents
         — internet-origin + source URL per file (ingress lane)
       - Defender MPLog Activity (process execution inventory, injection
@@ -1798,16 +1937,40 @@ async def build_raw_artifact_index(
         "include_mplog": include_mplog,
         "include_wmi": include_wmi,
         "include_bits": include_bits,
+        "include_tasks": include_tasks,
+        "include_pca": include_pca,
+        "include_activities": include_activities,
+        "include_browser": include_browser,
+        "include_lnk": include_lnk,
+        "include_srum": include_srum,
+        "include_amcache": include_amcache,
+        "include_userassist": include_userassist,
+        "include_shimcache": include_shimcache,
+        "include_recyclebin": include_recyclebin,
+        "include_usnjrnl": include_usnjrnl,
+        "include_logfile": include_logfile,
     }
 
     def fn():
         from core.connectors.raw_image_index import RawImageIndexConnector
         from core.raw_index.artifact_indexer import (
+            index_activities_cache_artifacts,
+            index_amcache_artifacts,
             index_bits_jobs,
+            index_browser_artifacts,
             index_evtx_artifacts,
+            index_lnk_jumplist_artifacts,
+            index_logfile_artifacts,
             index_motw_artifacts,
             index_mplog_artifacts,
+            index_pca_artifacts,
+            index_recycle_bin_artifacts,
             index_registry_artifacts,
+            index_scheduled_task_artifacts,
+            index_shimcache_artifacts,
+            index_srum_artifacts,
+            index_usn_journal_artifacts,
+            index_userassist_artifacts,
             index_wmi_persistence,
         )
         from core.raw_index.store import RawIndexStore
@@ -1852,6 +2015,42 @@ async def build_raw_artifact_index(
                 results["wmi"] = index_wmi_persistence(image, store, started_at=stamp)
             if include_bits:
                 results["bits"] = index_bits_jobs(image, store, started_at=stamp)
+            if include_tasks:
+                results["scheduled_tasks"] = index_scheduled_task_artifacts(
+                    image, store, started_at=stamp)
+            if include_pca:
+                results["pca"] = index_pca_artifacts(
+                    image, store, started_at=stamp)
+            if include_activities:
+                results["activities"] = index_activities_cache_artifacts(
+                    image, store, started_at=stamp)
+            if include_browser:
+                results["browser"] = index_browser_artifacts(
+                    image, store, started_at=stamp)
+            if include_lnk:
+                results["lnk_jumplist"] = index_lnk_jumplist_artifacts(
+                    image, store, started_at=stamp)
+            if include_srum:
+                results["srum"] = index_srum_artifacts(
+                    image, store, started_at=stamp)
+            if include_amcache:
+                results["amcache"] = index_amcache_artifacts(
+                    image, store, started_at=stamp)
+            if include_userassist:
+                results["userassist"] = index_userassist_artifacts(
+                    image, store, started_at=stamp)
+            if include_shimcache:
+                results["shimcache"] = index_shimcache_artifacts(
+                    image, store, started_at=stamp)
+            if include_recyclebin:
+                results["recyclebin"] = index_recycle_bin_artifacts(
+                    image, store, started_at=stamp)
+            if include_usnjrnl:
+                results["usnjrnl"] = index_usn_journal_artifacts(
+                    image, store, started_at=stamp)
+            if include_logfile:
+                results["logfile"] = index_logfile_artifacts(
+                    image, store, started_at=stamp)
         finally:
             store.close()
 
@@ -6833,12 +7032,14 @@ async def list_files(path: str = "/", pattern: str = "") -> dict:
     """List or search files inside mounted disk image."""
     params = {"path": path, "pattern": pattern}
     def fn():
+        effective_path = _dealias(path)
+        effective_pattern = _dealias(pattern)
         e01 = _get_e01()
-        if pattern:
-            files = e01.find_files(pattern, path, limit=100)
+        if effective_pattern:
+            files = e01.find_files(effective_pattern, effective_path, limit=100)
         else:
-            files = e01.list_directory(path)
-        return _mask({"path": path, "pattern": pattern, "count": len(files), "files": files})
+            files = e01.list_directory(effective_path)
+        return _mask({"path": effective_path, "pattern": effective_pattern, "count": len(files), "files": files})
     return await _traced("list_files", params, fn, timeout_seconds=TIMEOUT_LIGHT)
 
 
@@ -6920,12 +7121,13 @@ async def get_file_timestamps(internal_path: str) -> dict:
     """
     params = {"internal_path": internal_path}
     def fn():
+        effective_internal_path = _dealias(internal_path)
         e01 = _get_e01()
-        info = e01.get_file_info(internal_path)
+        info = e01.get_file_info(effective_internal_path)
         if "error" in info:
             return info
         result = {
-            "path": info.get("path", internal_path),
+            "path": info.get("path", effective_internal_path),
             "size": info.get("size", 0),
             "timestamps": {},
             "forensic_notes": [],
@@ -7083,8 +7285,10 @@ async def vss_get_file_timestamps(
     params = {"snapshot_id": snapshot_id, "internal_path": internal_path, "volume": volume}
 
     def fn():
+        effective_internal_path = _dealias(internal_path)
+        effective_volume = _dealias(volume)
         e01 = _get_e01()
-        info = e01.vss_get_file_info(snapshot_id, internal_path, volume=volume)
+        info = e01.vss_get_file_info(snapshot_id, effective_internal_path, volume=effective_volume)
         snapshot = {k: info.get(k, "") for k in (
             "temporal_layer",
             "snapshot_id",
@@ -7098,14 +7302,14 @@ async def vss_get_file_timestamps(
                 **info,
                 "ok": False,
                 "source": "vss_snapshot",
-                "evidence_context": _vss_context(snapshot, internal_path),
+                "evidence_context": _vss_context(snapshot, effective_internal_path),
                 "interpretation_guardrails": _vss_snapshot_guardrails(total=0),
             })
 
         result = {
             "ok": True,
             "source": "vss_snapshot",
-            "path": info.get("path", internal_path),
+            "path": info.get("path", effective_internal_path),
             "size": info.get("size", 0),
             "timestamps": {},
             "forensic_notes": [],
@@ -7133,7 +7337,7 @@ async def vss_get_file_timestamps(
             notes.append(f"$SI and $FN creation times differ - possible timestomping ($SI={si_c}, $FN={fn_c})")
         if not notes:
             notes.append("No timestamp anomalies detected in this VSS snapshot")
-        result["evidence_context"] = _vss_context(snapshot, internal_path)
+        result["evidence_context"] = _vss_context(snapshot, effective_internal_path)
         result["interpretation_guardrails"] = _vss_snapshot_guardrails()
         return _mask(result)
 
@@ -8490,39 +8694,6 @@ async def srum_by_process(
             names.insert(0, process_name.strip())
         if not names:
             return {"error": "Provide process_name or process_names"}
-        raw = _get_raw_index()
-        if raw and not _parsed_case_available():
-            return _mask({
-                "ok": False,
-                "status": "not_evaluable",
-                "source_type": "raw_image_sidecar",
-                "processes": names,
-                "results": {},
-                "query": {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "limit": cap,
-                    "offset": offset,
-                },
-                "coverage_gap": {
-                    "status": "not_evaluable",
-                    "reason": "raw_srum_unsupported",
-                    "detail": (
-                        "srum_by_process requires parsed SRUM Application "
-                        "Resource Usage and SRUM Network Usage artifacts. The "
-                        "active raw sidecar does not index SRUM records yet."
-                    ),
-                },
-                "raw_index_coverage": raw.get_coverage(),
-                "notes": [
-                    (
-                        "Do not interpret empty SRUM results as no process "
-                        "CPU, IO, or network activity. Use AXIOM/KAPE SRUM "
-                        "parity sources until raw SRUM indexing is implemented."
-                    ),
-                ],
-            })
-        axiom = _get_axiom()
 
         def _match_hit(hit, pn_lower):
             """Partial match against hit fields AND nested fields dict."""
@@ -8538,6 +8709,123 @@ async def srum_by_process(
                 if val and pn_lower in str(val).lower():
                     return True
             return False
+
+        raw = _get_raw_index()
+        if raw and not _parsed_case_available():
+            counts = {
+                item.get("artifact_name"): int(item.get("hit_count", 0) or 0)
+                for item in raw.get_artifact_type_counts()
+            }
+            has_raw_srum = bool(
+                counts.get("SRUM Application Resource Usage")
+                or counts.get("SRUM Network Usage")
+            )
+            if has_raw_srum:
+                results_by_process = {}
+                for pn in names:
+                    pn_lower = pn.lower()
+                    app_results = raw.search(
+                        keyword=pn,
+                        filters={
+                            "artifact_type": "SRUM Application Resource Usage",
+                            "start_date": start_date,
+                            "end_date": end_date,
+                        },
+                        limit=cap,
+                        offset=offset,
+                    )
+                    net_results = raw.search(
+                        keyword=pn,
+                        filters={
+                            "artifact_type": "SRUM Network Usage",
+                            "start_date": start_date,
+                            "end_date": end_date,
+                        },
+                        limit=cap,
+                        offset=offset,
+                    )
+                    if app_results.get("ok") is False or net_results.get("ok") is False:
+                        return _mask({
+                            "ok": False,
+                            "status": "not_evaluable",
+                            "source_type": "raw_image_sidecar",
+                            "processes": names,
+                            "results": {},
+                            "query": {
+                                "start_date": start_date,
+                                "end_date": end_date,
+                                "limit": cap,
+                                "offset": offset,
+                            },
+                            "coverage_gap": {
+                                "status": "not_evaluable",
+                                "reason": "raw_srum_query_not_evaluable",
+                            },
+                            "raw_index_coverage": raw.get_coverage(),
+                        })
+                    app_hits = [
+                        h for h in app_results.get("hits", [])
+                        if _match_hit(h, pn_lower)
+                    ]
+                    net_hits = [
+                        h for h in net_results.get("hits", [])
+                        if _match_hit(h, pn_lower)
+                    ]
+                    agg = raw.srum_network_aggregate(pn, start_date, end_date)
+                    results_by_process[pn] = {
+                        "cpu_io_records": agg.get("app_total_records", len(app_hits)),
+                        "network_records": agg.get("network_total_records", len(net_hits)),
+                        "total_bytes_sent": agg.get("total_bytes_sent", 0),
+                        "total_bytes_received": agg.get("total_bytes_received", 0),
+                        "returned_app_records": len(app_hits[:limit]),
+                        "returned_net_records": len(net_hits[:limit]),
+                        "application_resource_usage": app_hits[:limit],
+                        "network_usage": net_hits[:limit],
+                    }
+                return _mask({
+                    "source_type": "raw_image_sidecar",
+                    "processes": names,
+                    "results": results_by_process,
+                    "query": {
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "limit": cap,
+                        "offset": offset,
+                    },
+                    "raw_index_coverage": raw.get_coverage(),
+                })
+            return _mask({
+                "ok": False,
+                "status": "not_evaluable",
+                "source_type": "raw_image_sidecar",
+                "processes": names,
+                "results": {},
+                "query": {
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "limit": cap,
+                    "offset": offset,
+                },
+                "coverage_gap": {
+                    "status": "not_evaluable",
+                    "reason": "raw_srum_not_indexed",
+                    "detail": (
+                        "The active raw sidecar has no SRUM Application "
+                        "Resource Usage or SRUM Network Usage records. Run "
+                        "build_raw_artifact_index(include_srum=True) and check "
+                        "srum_indexer coverage gaps."
+                    ),
+                },
+                "raw_index_coverage": raw.get_coverage(),
+                "notes": [
+                    (
+                        "Do not interpret empty SRUM results as no process "
+                        "CPU, IO, or network activity. Check whether SRUDB.dat "
+                        "was present, readable, and parsed successfully."
+                    ),
+                ],
+            })
+        axiom = _get_axiom()
 
         results_by_process = {}
         for pn in names:

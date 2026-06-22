@@ -21,6 +21,7 @@ import KapeBuilder from './KapeBuilder';
 import CoveragePanel from './CoveragePanel';
 import CaseComparePanel from './CaseComparePanel';
 import PivotPanel from './PivotPanel';
+import ManualWorkbench from './ManualWorkbench';
 
 const VIEWS: Record<string, React.FC> = {
   dashboard: Dashboard,
@@ -31,6 +32,7 @@ const VIEWS: Record<string, React.FC> = {
   coverage: CoveragePanel,
   compare: CaseComparePanel,
   pivot: PivotPanel,
+  manual: ManualWorkbench,
   memory: MemoryAnalysis,
   binary: BinaryAnalysis,
   logs: LogAnalysis,

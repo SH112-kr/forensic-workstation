@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { post } from '../hooks/useApi';
+import IOCGraph from './IOCGraph';
 
 export default function IOCTable() {
   const [iocs, setIocs] = useState<any[]>([]);
@@ -106,6 +107,8 @@ export default function IOCTable() {
           <span>Showing: {filtered.length}</span>
         </div>
       )}
+
+      <IOCGraph />
 
       {/* Table */}
       <div style={{ flex: 1, overflowY: 'auto' }}>

@@ -15,14 +15,14 @@ class _MftImage:
     def __init__(self, records=None, cap_after=0):
         self._records = records if records is not None else [
             {"segment": 40, "path": "/c:/Windows/notepad.exe", "name": "notepad.exe",
-             "is_dir": False, "in_use": True, "size": 1024,
+             "sequence": 1, "is_dir": False, "in_use": True, "size": 1024,
              "created": _EPOCH_MS, "modified": _EPOCH_MS + 1000,
              "accessed": _EPOCH_MS + 2000, "changed": _EPOCH_MS + 500},
             {"segment": 41, "path": "/c:/Windows", "name": "Windows",
-             "is_dir": True, "in_use": True, "size": 0,
+             "sequence": 1, "is_dir": True, "in_use": True, "size": 0,
              "created": _EPOCH_MS, "modified": None, "accessed": None, "changed": None},
             {"segment": 99, "path": "/c:/Temp/deleted.exe", "name": "deleted.exe",
-             "is_dir": False, "in_use": False, "size": 512,
+             "sequence": 7, "is_dir": False, "in_use": False, "size": 512,
              "created": _EPOCH_MS, "modified": _EPOCH_MS, "accessed": _EPOCH_MS,
              "changed": _EPOCH_MS},
         ]
@@ -92,6 +92,7 @@ def test_mft_indexing_records_paths_times_and_deleted(tmp_path):
     hit = conn.search(keyword="notepad.exe", filters={}, limit=5)["hits"][0]
     detail = conn.get_hit_detail(hit["hit_id"])
     assert detail.get("timestamps")  # Created/Modified/Accessed present
+    assert detail["fields"]["MFT Sequence Number"] == "1"
     conn.disconnect()
 
 

@@ -21,16 +21,19 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+_DEFAULT_MAPPING_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "masking_map.json",
+)
+
+
 class DataMasker:
     """Masks sensitive forensic data with reversible tokens."""
 
     def __init__(self, mapping_path: str = "") -> None:
-        if not mapping_path:
-            mapping_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "masking_map.json",
-            )
-        self._mapping_path = mapping_path
+        self._explicit_mapping_path = bool(mapping_path)
+        self._mapping_path = mapping_path or _DEFAULT_MAPPING_FILE
+        self._loaded_mapping_path = ""
         self._enabled = False
 
         # Forward map: original_value -> token
@@ -55,7 +58,7 @@ class DataMasker:
         # User-defined sensitive values (hostnames, usernames, etc.)
         self._sensitive_values: dict[str, str] = {}  # value -> type
 
-        self._load_mapping()
+        self._ensure_scope_loaded()
 
     @property
     def enabled(self) -> bool:
@@ -77,6 +80,7 @@ class DataMasker:
         Returns:
             The assigned token.
         """
+        self._ensure_scope_loaded()
         value_type = value_type.upper()
         if value_type not in self._counters:
             self._counters[value_type] = 0
@@ -90,6 +94,7 @@ class DataMasker:
         """
         if not self._enabled:
             return data
+        self._ensure_scope_loaded()
         result = self._mask_recursive(data)
         self._save_mapping()
         return result
@@ -143,19 +148,51 @@ class DataMasker:
 
     def get_mapping(self) -> dict[str, str]:
         """Get the current token -> original mapping."""
+        self._ensure_scope_loaded()
         return dict(self._reverse)
 
     def get_stats(self) -> dict:
+        self._ensure_scope_loaded()
         return {
             "enabled": self._enabled,
             "total_masked_values": len(self._forward),
             "by_type": dict(self._counters),
-            "mapping_file": self._mapping_path,
+            "mapping_file": self._current_mapping_path(),
         }
 
     # ── Persistence ──
 
+    def _empty_counters(self) -> dict[str, int]:
+        return {
+            "IP": 0, "DOMAIN": 0, "EMAIL": 0, "HASH": 0,
+            "HOST": 0, "USER": 0, "PATH": 0,
+        }
+
+    def _clear_memory(self) -> None:
+        self._forward.clear()
+        self._reverse.clear()
+        self._sensitive_values.clear()
+        self._counters = self._empty_counters()
+
+    def _current_mapping_path(self) -> str:
+        if self._explicit_mapping_path:
+            return self._mapping_path
+        try:
+            from core.analysis.privacy_proxy import scoped_state_path
+            return scoped_state_path("masking_map.json", global_path=self._mapping_path)
+        except Exception:
+            return self._mapping_path
+
+    def _ensure_scope_loaded(self) -> None:
+        path = self._current_mapping_path()
+        if path == self._loaded_mapping_path:
+            return
+        self._clear_memory()
+        self._loaded_mapping_path = path
+        self._load_mapping(path)
+
     def _save_mapping(self) -> None:
+        path = self._current_mapping_path()
         data = {
             "created": datetime.now(timezone.utc).isoformat(),
             "counters": self._counters,
@@ -163,16 +200,18 @@ class DataMasker:
             "sensitive_values": self._sensitive_values,
         }
         try:
-            with open(self._mapping_path, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except OSError:
             pass
 
-    def _load_mapping(self) -> None:
-        if not os.path.exists(self._mapping_path):
+    def _load_mapping(self, path: str | None = None) -> None:
+        path = path or self._current_mapping_path()
+        if not os.path.exists(path):
             return
         try:
-            with open(self._mapping_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._counters = data.get("counters", self._counters)
             self._reverse = data.get("mapping", {})
@@ -183,9 +222,8 @@ class DataMasker:
 
     def reset(self) -> None:
         """Clear all mappings and start fresh."""
-        self._forward.clear()
-        self._reverse.clear()
-        self._sensitive_values.clear()
-        self._counters = {k: 0 for k in self._counters}
-        if os.path.exists(self._mapping_path):
-            os.remove(self._mapping_path)
+        self._ensure_scope_loaded()
+        path = self._current_mapping_path()
+        self._clear_memory()
+        if os.path.exists(path):
+            os.remove(path)

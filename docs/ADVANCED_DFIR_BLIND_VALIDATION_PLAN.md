@@ -104,7 +104,7 @@ Manual assessment:
 이 케이스는 현재 로드맵의 우선순위가 맞다는 것을 확인시킨다.
 
 1. E01 global inventory 대신 known-path lazy extraction을 기본 경로로 둔다.
-2. PCAP HTTP object extraction과 suspicious host pivot을 자동화해야 한다.
+2. PCAP이 포함된 케이스에서는 HTTP object extraction과 suspicious host pivot을 자동화해야 한다. 단, PCAP은 기본 E01 endpoint readiness의 필수 축이 아니라 선택적 보조 증거로 둔다.
 3. EVTX semantic parser는 4624/4625/4776/1149/7045/4697/4688/1102를 구조화해야 한다.
 4. Registry service/run key parser가 없으면 persistence 판단이 약하다.
 5. MFT/USN parser가 없으면 exfil/delete/timestomp 판단이 약하다.

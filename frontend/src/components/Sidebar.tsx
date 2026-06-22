@@ -25,6 +25,7 @@ const SECTIONS: NavSection[] = [
       { id: 'coverage', labelKey: 'nav.coverage', code: 'COV' },
       { id: 'pivot', labelKey: 'nav.pivot', code: 'PIV' },
       { id: 'compare', labelKey: 'nav.compare', code: 'CMP' },
+      { id: 'manual', labelKey: 'nav.manualWorkbench', code: 'MAN' },
     ],
   },
   {

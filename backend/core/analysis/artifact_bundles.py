@@ -71,7 +71,9 @@ _BUNDLE_SPECS: list[dict[str, Any]] = [
             {"artifact_type": "Text Documents", "keyword": "README", "signal_weight": 1.2, "count_cap": 10},
             {"artifact_type": "Windows Event Logs", "keyword": "Ransom:", "signal_weight": 6.0, "count_cap": 4},
             {"artifact_type": "$LogFile Analysis", "signal_weight": 0.15, "count_cap": 8},
+            {"artifact_type": "NTFS LogFile Operation Candidates", "signal_weight": 0.15, "count_cap": 8},
             {"artifact_type": "UsnJrnl", "signal_weight": 0.12, "count_cap": 10},
+            {"artifact_type": "USN Rename Transitions", "signal_weight": 0.12, "count_cap": 10},
             {"artifact_type": "File Signature Mismatch (Document)", "signal_weight": 0.2, "count_cap": 8},
         ],
     },
@@ -182,7 +184,9 @@ def _impact_bundle_bonus(entries: list[dict[str, Any]]) -> float:
     notes = int(by_type.get("Text Documents", {}).get("search_total", 0) or 0)
     av_ransom = int(by_type.get("Windows Event Logs", {}).get("search_total", 0) or 0)
     usn = int(by_type.get("UsnJrnl", {}).get("search_total", 0) or 0)
+    usn += int(by_type.get("USN Rename Transitions", {}).get("search_total", 0) or 0)
     logfile = int(by_type.get("$LogFile Analysis", {}).get("search_total", 0) or 0)
+    logfile += int(by_type.get("NTFS LogFile Operation Candidates", {}).get("search_total", 0) or 0)
     bonus = 0.0
 
     # Strong impact should come from combined signals, not from raw journal volume.

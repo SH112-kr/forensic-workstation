@@ -191,7 +191,105 @@ _RULES: list[dict[str, Any]] = [
         "match_artifact": re.compile(r"scheduled\s*tasks?", re.I),
         "reason": "Scheduled task XML / registry proves a task exists but may lack creation-time context.",
     },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"\bPCA\b|program\s*compatibility\s*activity|pca\.db", re.I),
+        "reason": (
+            "Program Compatibility Assistant pca.db is an execution-context "
+            "lead on modern Windows builds, but it should be corroborated with "
+            "Prefetch, SRUM, BAM, EVTX process creation, or file timestamps "
+            "before strong execution wording."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"shell\s*bags?|bagmru", re.I),
+        "reason": (
+            "ShellBags record folder navigation/view-state context. They can "
+            "support user-browsing or staging hypotheses, but do not prove file "
+            "execution, file copy, or exfiltration by themselves."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"windows\s*timeline|activitiescache|activity\s*cache", re.I),
+        "reason": (
+            "Windows Timeline ActivitiesCache records user-activity context "
+            "from modern Windows builds. Treat it as user-action corroboration "
+            "and verify execution or file access with Prefetch, SRUM, EVTX, "
+            "BAM, LNK/JumpList, or filesystem timestamps."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"\bLNK\b|link\s*files?|jump\s*lists?", re.I),
+        "reason": (
+            "LNK and JumpList artifacts provide user-action and file/path "
+            "access context. They are valuable corroboration for opened files "
+            "or launched applications, but do not prove execution or exfiltration "
+            "without supporting artifacts."
+        ),
+    },
     # ── weak ───────────────────────────────────────────────────────────────
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(
+            r"browser\s*(history|downloads?|cache)|"
+            r"(chrome|edge|chromium|firefox)\s*(web\s*visits?|downloads?)|"
+            r"web\s*visits?|webcache",
+            re.I,
+        ),
+        "reason": (
+            "Browser history, downloads, and cache artifacts are ingress and "
+            "user-activity context. They can anchor a web-origin hypothesis, "
+            "but do not prove payload execution, compromise, or successful "
+            "download without file timestamps, MOTW, Prefetch/SRUM/BAM, EVTX, "
+            "or filesystem corroboration."
+        ),
+    },
+    {
+        "tier": "strong",
+        "match_artifact": re.compile(
+            r"ntfs\s*log\s*file|ntfs\s*logfile|\$LogFile|logfile\s*(operation|restart)",
+            re.I,
+        ),
+        "reason": (
+            "NTFS $LogFile RSTR/RCRD pages are strong filesystem "
+            "transaction-log context for file-system activity. The raw index "
+            "captures page-level path/name/operation candidates only; do not "
+            "claim full redo/undo replay, full-path reconstruction, actor "
+            "attribution, or malicious cleanup without MFT/USN/VSS/EVTX or "
+            "timeline corroboration."
+        ),
+    },
+    {
+        "tier": "strong",
+        "match_artifact": re.compile(
+            r"usn\s*(journal|rename|transition)|\$UsnJrnl",
+            re.I,
+        ),
+        "reason": (
+            "USN Journal records NTFS file-system change events with reason "
+            "flags and timestamps. It is strong file-change evidence. Raw "
+            "indexing may add MFT-backed path candidates from parent/file "
+            "references and labels them sequence_verified, "
+            "sequence_mismatch_candidate, or candidate when MFT sequence data "
+            "is available. Even sequence-verified paths are not full journal "
+            "replay; corroborate with MFT/$LogFile/VSS or timeline context "
+            "before strong anti-forensics or actor attribution wording."
+        ),
+    },
+    {
+        "tier": "moderate",
+        "match_artifact": re.compile(r"recycle\s*bin|\$Recycle\.Bin", re.I),
+        "reason": (
+            "Recycle Bin $I metadata records original path, original size, and "
+            "deletion time for an item moved to the Recycle Bin. It is deletion "
+            "context, not proof of secure wiping, original-file absence, "
+            "execution, or malicious cleanup without USN/$LogFile/VSS/EVTX or "
+            "filesystem corroboration."
+        ),
+    },
     {
         "tier": "weak",
         "match_artifact": re.compile(r"shim\s*cache|appcompat\s*cache|application\s*compatibility\s*cache", re.I),

@@ -64,7 +64,7 @@ Tracked dependencies include:
 | `python-evtx` | Offline EVTX parsing | Falls back to PowerShell `Get-WinEvent` where possible |
 | `volatility3` | Memory analysis | Blocks memory process, network, and malfind views |
 | `yara-python` | YARA scans | Blocks YARA rule loading and scans |
-| `pyshark` + `tshark` | PCAP analysis | Blocks network conversation, DNS, HTTP, and IOC extraction |
+| `pyshark` + `tshark` | Optional PCAP analysis | Blocks PCAP-only conversation, DNS, HTTP, and IOC extraction. Missing PCAP dependencies do not degrade endpoint E01 readiness. |
 | `pyhidra` | Ghidra integration | Blocks decompile/import/string/API views |
 
 You can query dependency health directly:
@@ -92,7 +92,7 @@ dependency_health
 | Document file | `.docx`, `.hwp`, `.pdf`, `.txt` | Metadata/path/timestamp context only; content extraction and reading are blocked |
 | Binary | `.exe`, `.dll` | Static Ghidra analysis only; never execute extracted files |
 | Logs | IIS, Apache, syslog-style logs | Import and keyword/status/IP search |
-| Network capture | `.pcap`, `.pcapng` | Requires `pyshark` and `tshark` |
+| Network capture | `.pcap`, `.pcapng` | Optional supplementary evidence; requires `pyshark` and `tshark` when used |
 
 ## MCP Tools
 

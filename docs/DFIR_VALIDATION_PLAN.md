@@ -51,6 +51,9 @@ malware samples or executing unknown binaries.
   claims without confirming artifacts.
 - Privacy leakage tests: raw sensitive values must not appear in LLM/MCP-safe
   outputs unless an explicit reveal policy allows them.
+- PCAP checks are optional supplementary validation. Missing PCAP tooling should
+  not lower Windows endpoint E01 readiness unless a case explicitly includes
+  PCAP evidence and the analyst requests that lane.
 
 ## Candidate Public Sources
 

@@ -40,6 +40,11 @@ GOLDEN_TIERS = {
     "RDP Client Destinations": "moderate",
     "Office Recent Documents": "moderate",
     "USB Devices": "moderate",
+    "PCA Program Compatibility Activity": "moderate",
+    "ShellBags": "moderate",
+    "Windows Timeline Activity": "moderate",
+    "LNK Files": "moderate",
+    "Jump Lists": "moderate",
     # weak
     "Shim Cache": "weak",
     "AppCompatCache": "weak",
