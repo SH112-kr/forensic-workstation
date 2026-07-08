@@ -236,6 +236,3 @@ forensic-workstation/
 - Registry state는 캡처된 hive의 설정 상태를 보여줄 뿐 실행을 직접 증명하지 않습니다.
 - Prefetch는 활성화된 시스템에서 실행 증거가 될 수 있지만, 단독으로 침해 결론을 내리기에는 부족합니다.
 
-## 라이선스
-
-Internal Use Only.
