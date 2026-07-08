@@ -237,7 +237,3 @@ The following files are generated locally and ignored by git:
 - A missing artifact or 0-result query is not proof of absence. Check coverage, parser failures, and source availability.
 - Registry state proves configuration in the captured hive, not necessarily execution.
 - Prefetch is execution evidence when enabled, but it is not a full incident verdict by itself.
-
-## License
-
-Internal Use Only.
